@@ -80,6 +80,8 @@ test('partial success is persisted as failed with successful results and handoff
  const m=new JobManager(path.join(dir,'jobs'),async()=>result);
  const j=await m.start('agent_implement',input);const finished=await done(m,j.job_id);
  assert.equal(finished.status,'failed');assert.equal(finished.result.outcome,'partial_success');assert.equal(finished.result.successCount,1);assert.equal(finished.result.results[1].usage.totalTokens,12);assert.equal(finished.result.handoff.requiresWorkspaceReview,true);
+ // A real restart occurs after shutdown has flushed the final job snapshot.
+ await m.close();
  const restarted=new JobManager(path.join(dir,'jobs'),async()=>{throw Error('Do not resume automatically');});
  assert.equal((await restarted.status(j.job_id)).result.results[0].text,'completed portion');await m.close();await restarted.close();
 });
