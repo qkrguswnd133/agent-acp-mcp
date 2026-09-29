@@ -122,7 +122,7 @@ test('batch launchers are refused before spawn for every UNC cwd form',windows,a
     assert.throws(()=>assertBatchCwdSupported('C:/x/claude.cmd','\\\\wsl$\\d','win32'),/UNC/);
     assert.doesNotThrow(()=>assertBatchCwdSupported('C:/x/claude.exe','\\\\wsl$\\d','win32'));
     assert.doesNotThrow(()=>assertBatchCwdSupported('/x/claude.cmd','//server/share','linux'));
-    assert.equal(isUncPath('C:\\Users\\park'),false);assert.equal(isUncPath('/home/user'),false);
+    assert.equal(isUncPath('C:\\workspace\\project'),false);assert.equal(isUncPath('/workspace/project'),false);
   }finally{await fs.rm(directory,{recursive:true,force:true});}
 });
 
