@@ -162,14 +162,21 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
     if(busy||state.phase==='installing'||state.pending||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return state;busy=true;controller=new AbortController();const m=selectedRelease.manifest,final=path.join(updateDir,m.asset.name),part=`${final}.part`;
     set({phase:'downloading',error:null,progress:{received:0,total:m.asset.size}});
     let timeout;try{
-      await fsp.mkdir(updateDir,{recursive:true});let existing=await fsp.stat(part).then(s=>s.size).catch(()=>0);if(existing>m.asset.size){await fsp.unlink(part);existing=0;}
-      timeout=setTimeout(()=>controller.abort(),20*60*1000);const response=await verifiedDownloadResponse(fetcher,selectedRelease.urls.archive,{'User-Agent':'Agent-Monitor-Updater',Accept:'application/octet-stream',...(existing?{Range:`bytes=${existing}-`}:{})},controller.signal);
-      if(![200,206].includes(response.status))throw updateError('NETWORK',`다운로드 실패 (${response.status})`);
-      if(response.status===206&&response.headers.get('content-range')?.startsWith(`bytes ${existing}-`)!==true)throw updateError('NETWORK','이어받기 범위가 올바르지 않습니다.');
-      if(response.status===200)existing=0;let received=existing;const meter=new Transform({transform(chunk,_,cb){received+=chunk.length;if(received>m.asset.size)return cb(updateError('SIZE','다운로드 크기 초과'));set({progress:{received,total:m.asset.size}});cb(null,chunk);}});
-      await pipeline(response.body,meter,fs.createWriteStream(part,{flags:existing?'a':'w'}));if(received!==m.asset.size)throw updateError('SIZE','다운로드 크기가 일치하지 않습니다.');
-      const digest=await hashFile(part);if(digest.toLowerCase()!==m.asset.sha256.toLowerCase())throw updateError('HASH','다운로드 해시 검증 실패');
-      await fsp.rename(part,final);set({phase:'downloaded',downloaded:true,progress:null});
+      await fsp.mkdir(updateDir,{recursive:true});let existing=await fsp.stat(part).then(s=>s.size).catch(()=>0);
+      if(existing>=m.asset.size){if(existing===m.asset.size&&(await hashFile(part)).toLowerCase()===m.asset.sha256.toLowerCase()){await fsp.rename(part,final);set({phase:'downloaded',downloaded:true,progress:null});return state;}await fsp.unlink(part);existing=0;}
+      timeout=setTimeout(()=>controller.abort(),20*60*1000);
+      for(let attempt=0;attempt<2;attempt++){
+        const response=await verifiedDownloadResponse(fetcher,selectedRelease.urls.archive,{'User-Agent':'Agent-Monitor-Updater',Accept:'application/octet-stream',...(existing?{Range:`bytes=${existing}-`}:{})},controller.signal);
+        const match=response.status===206?/^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range')||''):null;
+        const badRange=response.status===206&&(!match||Number(match[1])!==existing||Number(match[2])<existing||Number(match[2])>=m.asset.size||Number(match[3])!==m.asset.size);
+        if((response.status===416||badRange)&&existing&&attempt===0){await response.body?.cancel?.().catch(()=>{});await fsp.unlink(part);existing=0;set({progress:{received:0,total:m.asset.size}});continue;}
+        if(badRange)throw updateError('NETWORK','이어받기 범위가 올바르지 않습니다.');
+        if(![200,206].includes(response.status))throw updateError('NETWORK',`다운로드 실패 (${response.status})`);
+        if(response.status===200)existing=0;let received=existing;const meter=new Transform({transform(chunk,_,cb){received+=chunk.length;if(received>m.asset.size)return cb(updateError('SIZE','다운로드 크기 초과'));set({progress:{received,total:m.asset.size}});cb(null,chunk);}});
+        await pipeline(response.body,meter,fs.createWriteStream(part,{flags:existing?'a':'w'}));if(received!==m.asset.size)throw updateError('SIZE','다운로드 크기가 일치하지 않습니다.');
+        const digest=await hashFile(part);if(digest.toLowerCase()!==m.asset.sha256.toLowerCase()){await fsp.unlink(part);throw updateError('HASH','다운로드 해시 검증 실패');}
+        await fsp.rename(part,final);set({phase:'downloaded',downloaded:true,progress:null});break;
+      }
     }catch(e){set({phase:'idle',error:e.name==='AbortError'?'다운로드를 취소했습니다. 이어받을 수 있습니다.':safeMessage(e),progress:null});}finally{clearTimeout(timeout);busy=false;controller=null;}return state;
   }
   async function hashFile(file){const h=crypto.createHash('sha256');for await(const chunk of fs.createReadStream(file))h.update(chunk);return h.digest('hex');}

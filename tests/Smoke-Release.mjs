@@ -32,7 +32,9 @@ if(process.argv[2]==='--dispatch'){
     if(url===base+manifest.asset.name)return new Response(syncFs.createReadStream(path.join(artifacts,manifest.asset.name)),{headers:{'content-length':String(manifest.asset.size)}});
     throw Error('Unexpected release request');
   };
-  const service=createUpdater({stateDir:path.join(root,'data'),monitorDirectory:path.join(root,'monitor'),gatewayDirectory:path.join(root,'gateway'),fetcher,keyFile:path.join(repository,'monitor/update/trusted-key.pem'),appVersion:manifest.components.monitor});
+  // This dispatcher is plain Node, not Electron. The app's production finder
+  // excludes its own executable (Electron), so inject our verified test runtime.
+  const service=createUpdater({stateDir:path.join(root,'data'),monitorDirectory:path.join(root,'monitor'),gatewayDirectory:path.join(root,'gateway'),fetcher,keyFile:path.join(repository,'monitor/update/trusted-key.pem'),appVersion:manifest.components.monitor,nodeFinder:async()=>process.execPath});
   await service.load();await service.check(true);assert.equal(service.getState().selected?.version,manifest.version);
   await service.download();assert.equal(service.getState().downloaded,true,service.getState().error);
   const started=await service.install();assert.equal(started.started,true,started.reason);
@@ -75,8 +77,8 @@ try{
 }finally{
   await client?.close().catch(()=>{});
   const pids=await monitorPids(exe).catch(()=>[]);
-  if(Array.isArray(pids)?pids.length:pids){await exec(exe,['--quit',`--data-dir=${data}`],{windowsHide:true,timeout:10000}).catch(()=>{});await sleep(1500);}
+  if(Array.isArray(pids)?pids.length:pids){await exec(exe,['--quit',`--data-dir=${data}`],{windowsHide:true,timeout:10000}).catch(()=>{});await waitFor(async()=>{const current=await monitorPids(exe);return !(Array.isArray(current)?current.length:current);},15000).catch(()=>{});}
   // Keep failed fixtures for diagnosis. Never remove paths outside this generated root.
-  if(success&&path.dirname(root)===os.tmpdir()&&/^agent-release-e2e-[A-Za-z0-9]+$/.test(path.basename(root)))await fs.rm(root,{recursive:true,force:true});
+  if(success&&path.dirname(root)===os.tmpdir()&&/^agent-release-e2e-[A-Za-z0-9]+$/.test(path.basename(root)))await fs.rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:500});
   else if(!success)console.error('Fixture retained for diagnosis: '+root);
 }

@@ -96,13 +96,15 @@ export async function verifyPayloadManifest(root) {
   return manifest;
 }
 
-export async function scanFirstParty(roots) {
+export async function scanFirstParty(roots,{skipRelativeFiles=[]}={}) {
   const findings=[];
+  const skipped=new Set(skipRelativeFiles);
   for(const root of roots) {
     const stat=await fs.lstat(root);
     if(stat.isSymbolicLink()) throw new Error(`Link in first-party source: ${root}`);
     const files=stat.isFile()?[path.basename(root)]:await regularFiles(root);
     for(const rel of files) {
+      if(skipped.has(rel)) continue;
       if(forbiddenNames.test(rel)) { findings.push(`${rel}: excluded filename`); continue; }
       if(!/\.(?:js|mjs|cjs|ts|json|md|ps1|toml|css|html|txt)$/i.test(rel)) continue;
       const content=await fs.readFile(stat.isFile()?root:path.join(root,...rel.split('/')),'utf8');

@@ -41,6 +41,22 @@ test('download resumes partial data and verifies SHA-256 before exposing install
   const archive=crypto.randomBytes(32000),release=signedRelease(keys,'2.2.0',archive),calls=[],updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher:fetcherFor([release],calls)});
   await updater.load();await updater.check();const part=path.join(root,'updates',`${release.manifest.asset.name}.part`);await fs.writeFile(part,archive.subarray(0,10000));await updater.download();assert.equal(updater.getState().downloaded,true);assert.equal((await fs.readFile(path.join(root,'updates',release.manifest.asset.name))).length,archive.length);assert.equal(calls.some(x=>x.options.headers?.Range==='bytes=10000-'),true);
 });
+test('corrupt complete download is removed and retry starts without a Range request',async t=>{
+  const {root,keys,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  const archive=crypto.randomBytes(10000),release=signedRelease(keys,'2.2.0',archive),calls=[],base=fetcherFor([release],calls),assetUrl=release.release.assets.at(-1).browser_download_url;
+  let archiveCalls=0;const fetcher=async(url,options)=>{if(url===assetUrl&&archiveCalls++===0)return new Response(Buffer.alloc(archive.length,7));return base(url,options);};
+  const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher});await updater.load();await updater.check();await updater.download();assert.equal(updater.getState().downloaded,false);
+  const part=path.join(root,'updates',`${release.manifest.asset.name}.part`);assert.equal(await fs.stat(part).then(()=>true).catch(()=>false),false);
+  await updater.download();assert.equal(updater.getState().downloaded,true);assert.equal(archiveCalls,2);
+  const final=await fs.readFile(path.join(root,'updates',release.manifest.asset.name));assert.deepEqual(final,archive);
+});
+test('stale partial rejected with 416 retries once from byte zero',async t=>{
+  const {root,keys,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  const archive=crypto.randomBytes(10000),release=signedRelease(keys,'2.2.0',archive),calls=[],base=fetcherFor([release],calls),assetUrl=release.release.assets.at(-1).browser_download_url;
+  let archiveCalls=0;const fetcher=async(url,options)=>{if(url===assetUrl&&archiveCalls++===0)return new Response('range stale',{status:416});return base(url,options);};
+  const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher});await updater.load();await updater.check();const part=path.join(root,'updates',`${release.manifest.asset.name}.part`);await fs.writeFile(part,archive.subarray(0,5000));
+  await updater.download();assert.equal(updater.getState().downloaded,true);assert.equal(archiveCalls,2);assert.equal(calls.at(-1).options.headers?.Range,undefined);
+});
 function zipBuffer(files){return new Promise((resolve,reject)=>{const zip=new yazl.ZipFile(),chunks=[];for(const [name,data] of Object.entries(files))zip.addBuffer(Buffer.from(data),name);zip.outputStream.on('data',chunk=>chunks.push(chunk));zip.outputStream.on('end',()=>resolve(Buffer.concat(chunks)));zip.outputStream.on('error',reject);zip.end();});}
 test('ZIP extraction requires exact internal hashes and rejects traversal names',async t=>{
   const {root}=await fixture(t),run=Buffer.from('runner'),update=Buffer.from('update'),gateway=Buffer.from('gateway'),monitor=Buffer.from('monitor');

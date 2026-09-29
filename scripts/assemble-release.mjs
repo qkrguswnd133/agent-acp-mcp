@@ -15,11 +15,22 @@ const monitorPackage=path.join(repo,'monitor','release',packaged[0].name);
 for(const required of ['Agent Monitor.exe','resources/app.asar']) await fs.access(path.join(monitorPackage,...required.split('/')));
 const gatewayDocs=(await fs.readdir(path.join(repo,'gateway'))).filter(name=>name.endsWith('.md')).sort();
 await scanFirstParty([
+  path.join(repo,'README.md'),
+  path.join(repo,'package.json'),
+  path.join(repo,'scripts'),
+  path.join(repo,'tests'),
+  path.join(repo,'distribution'),
   path.join(repo,'gateway','src'),
+  path.join(repo,'gateway','tests'),
+  path.join(repo,'gateway','scripts'),
   path.join(repo,'gateway','profiles'),
+  path.join(repo,'gateway','package.json'),
   path.join(repo,'monitor','backend'),
   path.join(repo,'monitor','ui'),
   path.join(repo,'monitor','update'),
+  path.join(repo,'monitor','test'),
+  path.join(repo,'monitor','scripts'),
+  path.join(repo,'monitor','package.json'),
   path.join(repo,'monitor','main.cjs'),
   path.join(repo,'monitor','preload.cjs'),
   path.join(repo,'monitor','geometry.cjs'),
@@ -49,5 +60,7 @@ for(const name of gatewayDocs) await copyFile(`gateway/${name}`,`gateway/${name}
 await copyTree(monitorPackage,path.join(stage,'monitor'));
 const info={schemaVersion:1,version:releaseVersion,components:{gateway:gateway.version,monitor:monitor.version}};
 await fs.writeFile(path.join(stage,'release-info.json'),JSON.stringify(info,null,2)+'\n');
-await scanFirstParty([stage]);
+// Electron/Chromium license notices are third-party legal text and remain in
+// the ZIP. They can contain upstream authors' Unix paths and private domains.
+await scanFirstParty([stage],{skipRelativeFiles:['monitor/LICENSE','monitor/LICENSES.chromium.html']});
 console.log(`Assembled ${stage}`);

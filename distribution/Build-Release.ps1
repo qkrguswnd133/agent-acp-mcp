@@ -34,6 +34,18 @@ function Npm([string]$WorkingDirectory,[string[]]$Arguments) {
     try { Node (@($NpmCli)+$Arguments) }
     finally { Pop-Location }
 }
+function CleanSourceCommit {
+    Push-Location -LiteralPath $repository
+    try {
+        $changes = @(git status --porcelain=v1 --untracked-files=all)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect source working tree.' }
+        if ($changes.Count) { throw 'Build requires a clean committed source tree.' }
+        $commit = [string](git rev-parse HEAD)
+        if ($LASTEXITCODE -ne 0 -or $commit.Trim() -notmatch '^[0-9a-f]{40}$') { throw 'Build requires a source commit.' }
+        return $commit.Trim()
+    } finally { Pop-Location }
+}
+$sourceCommit = CleanSourceCommit
 $output = [IO.Path]::GetFullPath((Join-Path $repository ('build\release\v'+$releaseVersion)))
 $expected = [IO.Path]::GetFullPath((Join-Path $repository ('build\release\v'+$releaseVersion)))
 if ($output -ne $expected -or -not $output.StartsWith($repository+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe release output path.' }
@@ -84,5 +96,6 @@ try {
 } finally { $stream.Dispose() }
 Node @((Join-Path $repository 'scripts\finalize-release.mjs'),$SigningKey,$PublishedAt)
 if (-not $SkipTests) { Node @((Join-Path $repository 'tests\Smoke-Release.mjs'),$output) }
-Node @((Join-Path $repository 'scripts\write-provenance.mjs'),([string](-not $SkipTests)).ToLowerInvariant())
+if ((CleanSourceCommit) -ne $sourceCommit) { throw 'Source commit changed during release build.' }
+Node @((Join-Path $repository 'scripts\write-provenance.mjs'),([string](-not $SkipTests)).ToLowerInvariant(),$sourceCommit)
 Write-Host "Release ready: $output"
