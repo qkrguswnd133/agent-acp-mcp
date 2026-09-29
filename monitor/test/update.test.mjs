@@ -69,6 +69,13 @@ test('stale partial rejected with 416 retries once from byte zero',async t=>{
   const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher});await updater.load();await updater.check();const part=path.join(root,'updates',`${release.manifest.asset.name}.part`);await fs.writeFile(part,archive.subarray(0,5000));
   await updater.download();assert.equal(updater.getState().downloaded,true);assert.equal(archiveCalls,2);assert.equal(calls.at(-1).options.headers?.Range,undefined);
 });
+test('cancelling download leaves installer unlaunched',async t=>{
+  const {root,keys,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  const archive=crypto.randomBytes(10000),release=signedRelease(keys,'2.2.0',archive),assetUrl=release.release.assets.at(-1).browser_download_url,base=fetcherFor([release],[]);let launches=0;
+  const fetcher=(url,options)=>url===assetUrl?new Promise((_,reject)=>{if(options.signal.aborted)return reject(Object.assign(Error('cancelled'),{name:'AbortError'}));options.signal.addEventListener('abort',()=>reject(Object.assign(Error('cancelled'),{name:'AbortError'})),{once:true});}):base(url,options);
+  const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher,launch:async()=>{launches++;return 12345;}});await updater.load();await updater.check();const downloading=updater.download();updater.cancel();await downloading;
+  assert.equal(updater.getState().downloaded,false);assert.equal((await updater.install()).started,false);assert.equal(launches,0);
+});
 function zipBuffer(files){return new Promise((resolve,reject)=>{const zip=new yazl.ZipFile(),chunks=[];for(const [name,data] of Object.entries(files))zip.addBuffer(Buffer.from(data),name);zip.outputStream.on('data',chunk=>chunks.push(chunk));zip.outputStream.on('end',()=>resolve(Buffer.concat(chunks)));zip.outputStream.on('error',reject);zip.end();});}
 test('ZIP extraction requires exact internal hashes and rejects traversal names',async t=>{
   const {root}=await fixture(t),run=Buffer.from('runner'),update=Buffer.from('update'),gateway=Buffer.from('gateway'),monitor=Buffer.from('monitor');
@@ -89,4 +96,18 @@ test('install handoff persists one pending operation and accepts matching blocke
   const blockedResult={schemaVersion:1,operationId:request.operationId,status:'blocked',version:'2.2.0',startedAt:'2026-09-29T00:00:00Z',finishedAt:'2026-09-29T00:01:00Z',message:'gateway busy',backups:[]};await fs.writeFile(request.resultFile,JSON.stringify(blockedResult));await fs.writeFile(path.join(root,'updates','history.json'),JSON.stringify([blockedResult]));
   await reopened.pollResult();assert.equal(reopened.getState().phase,'idle');assert.equal(reopened.getState().result.status,'blocked');assert.equal(reopened.getState().localHistory.length,1);
   await updater.pollResult();assert.equal((await updater.install()).started,true);time+=11001;await updater.pollResult();assert.equal(updater.getState().pending,null);assert.match(updater.getState().blocked,/결과를 남기지/);
+});
+test('hash failure and cancellation during preparation never launch installer; verified retry does',async t=>{
+  const {root,keys,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  const files={'Run-Update.ps1':'runner','Update.ps1':'update','gateway/file.txt':'gateway','monitor/file.txt':'monitor','release-info.json':JSON.stringify({schemaVersion:1,version:'2.2.0',components:{gateway:'2.2.0',monitor:'1.1.0'}})};
+  const internal={platform:'win32-x64',gatewayVersion:'2.2.0',monitorVersion:'1.1.0',files:Object.entries(files).map(([name,data])=>({path:name,sha256:digest(data),size:Buffer.byteLength(data)}))};
+  const archive=await zipBuffer({...files,'manifest.json':JSON.stringify(internal)}),release=signedRelease(keys,'2.2.0',archive),launches=[];
+  const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher:fetcherFor([release],[]),nodeFinder:async()=>process.execPath,launch:async()=>{launches.push(true);const pending=path.join(root,'updates','pending-install.json');await fs.rename(pending,`${pending}.saved`);await fs.mkdir(pending);return 12345;}});
+  await updater.load();await updater.check();await updater.download();const final=path.join(root,'updates',release.manifest.asset.name);
+  await fs.writeFile(final,Buffer.alloc(archive.length,7));assert.equal((await updater.install()).started,false);assert.equal(launches.length,0);assert.equal(updater.getState().downloaded,false);
+  await updater.download();assert.equal(updater.getState().downloaded,true);
+  updater.cancel();assert.equal((await updater.install()).started,false);assert.equal(launches.length,0);
+  await updater.download();assert.equal(updater.getState().downloaded,true);
+  const preparing=updater.install();assert.equal(updater.getState().phase,'preparing');updater.cancel();assert.equal((await preparing).started,false);assert.equal(launches.length,0);assert.match(updater.getState().error,/취소/);
+  await updater.download();assert.equal((await updater.install()).started,true);assert.equal(launches.length,1);assert.equal(updater.getState().phase,'installing');
 });

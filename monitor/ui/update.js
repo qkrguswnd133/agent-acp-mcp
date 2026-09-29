@@ -1,5 +1,6 @@
 const $=id=>document.getElementById(id);
 let current={};
+let updateInFlight=false,cancelRequested=false;
 const resultLabels={success:'완료',blocked:'설치 보류',failed:'실패',rolled_back:'이전 버전 복구',rollback_failed:'수동 복구 필요'};
 function line(parent,title,sub){const row=document.createElement('div'),name=document.createElement('strong'),small=document.createElement('small');name.textContent=title;small.textContent=sub;row.append(name,small);parent.append(row);}
 function notes(parent,title,values){const heading=document.createElement('h3'),list=document.createElement('ul');heading.textContent=title;for(const value of values||[]){const li=document.createElement('li');li.textContent=value;list.append(li);}parent.append(heading,list);}
@@ -17,10 +18,20 @@ function render(state){current=state||{};const phase=current.phase||'idle',relea
   $('release-meta').textContent=release?`${new Date(release.publishedAt).toLocaleDateString('ko-KR')} · ZIP ${Math.ceil(release.size/1048576)} MB`:'';
   $('notes').replaceChildren();if(release){notes($('notes'),'Gateway',release.notes.gateway);notes($('notes'),'Monitor',release.notes.monitor);}
   const active=['checking','downloading','preparing','installing'].includes(phase),newer=release&&(!installed?.version||release.version!==installed.version);
-  $('check').disabled=active;$('download').disabled=active||!newer||!!current.blocked||current.downloaded;$('cancel').hidden=phase!=='downloading';$('install').disabled=active||!current.downloaded||!!current.blocked;
+  $('check').disabled=active;$('update').disabled=active||updateInFlight||!newer||!!current.blocked;$('update').textContent=phase==='downloading'?'다운로드 중':phase==='preparing'?'검증 중':phase==='installing'?'설치 중':'업데이트';$('cancel').hidden=!['downloading','preparing'].includes(phase)&&!(phase==='downloaded'&&updateInFlight);
   $('progress').hidden=phase!=='downloading';if(current.progress){$('progress').max=current.progress.total;$('progress').value=current.progress.received;$('progress-label').textContent=`${Math.floor(current.progress.received/1048576)} / ${Math.ceil(current.progress.total/1048576)} MB`;}else $('progress-label').textContent='';
   $('github-history').replaceChildren();for(const item of current.history||[])line($('github-history'),item.version,`${item.publishedAt} · Gateway ${item.components.gateway} · Monitor ${item.components.monitor}`);if(!current.history?.length)$('github-history').textContent='검증된 릴리스 기록이 없습니다.';
   $('local-history').replaceChildren();if(installed?.version)line($('local-history'),installed.version,installed.installedAt||'설치 시간 확인 불가');for(const item of current.localHistory||[])line($('local-history'),`${item.version||'버전 확인 불가'} · ${resultLabels[item.status]||'확인 필요'}`,item.finishedAt||item.startedAt||'시간 확인 불가');if(!$('local-history').children.length)$('local-history').textContent='로컬 설치 기록이 없습니다.';
 }
 window.monitor.onUpdate(render);window.monitor.updateState().then(render);
-$('check').addEventListener('click',()=>window.monitor.updateCheck());$('download').addEventListener('click',()=>window.monitor.updateDownload());$('cancel').addEventListener('click',()=>window.monitor.updateCancel());$('install').addEventListener('click',()=>window.monitor.updateInstall());
+$('check').addEventListener('click',()=>window.monitor.updateCheck());
+$('update').addEventListener('click',async()=>{
+  if(updateInFlight)return;updateInFlight=true;cancelRequested=false;render(current);
+  try{
+    const downloaded=await window.monitor.updateDownload();
+    const latest=await window.monitor.updateState();
+    if(cancelRequested||downloaded?.phase!=='downloaded'||!downloaded.downloaded||latest?.phase!=='downloaded'||!latest.downloaded||latest.blocked||latest.error)return;
+    await window.monitor.updateInstall();
+  }catch{current={...current,error:'업데이트 요청에 실패했습니다. 다시 시도하세요.'};}finally{updateInFlight=false;render(current);}
+});
+$('cancel').addEventListener('click',()=>{cancelRequested=true;window.monitor.updateCancel();});

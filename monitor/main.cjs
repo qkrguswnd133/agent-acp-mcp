@@ -178,8 +178,12 @@ async function runSmoke(){
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#installed').textContent"),/Gateway 2\.1\.0 · Monitor 1\.1\.0/);
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#release-meta').textContent"),/ZIP 157 MB/);
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#changelog-disclosure').open"),false);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelectorAll('#update').length"),1);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#download, #install')"),null);
     assert.equal(updates.getBounds().width,470);assert.equal(updates.getBounds().height,500);
     fs.writeFileSync(path.join(out,'update-window.png'),await captureReady(updates));
+    for(const phase of ['downloading','preparing']){fixtureUpdate.phase=phase;updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,30));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#cancel').hidden"),false);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#update').disabled"),true);}
+    fixtureUpdate.phase='installing';updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,30));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#cancel').hidden"),true);fixtureUpdate.phase='idle';
     fixtureUpdate.result={status:'rollback_failed',message:'Automatic rollback incomplete.',backups:['C:/Temp/sample-project.backup']};updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,40));
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#last-result').textContent"),/수동 복구 필요/);
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery').hidden"),false);

@@ -122,7 +122,7 @@ function resolveGatewayRoot(monitorDirectory,env=process.env){
 function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globalThis.fetch,keyFile=path.join(__dirname,'trusted-key.pem'),appVersion,launch,nodeFinder=findNode,helperAlive=pid=>{try{process.kill(pid,0);return true;}catch{return false;}},clock=Date.now}={}){
   if(!stateDir||!monitorDirectory||!appVersion)throw Error('updater configuration incomplete');
   const updateDir=path.join(stateDir,'updates'),cacheFile=path.join(updateDir,'release-cache.json'),resultFile=path.join(updateDir,'install-result.json'),historyFile=path.join(updateDir,'history.json'),pendingFile=path.join(updateDir,'pending-install.json'),cooldownFile=path.join(updateDir,'rate-limit.json');
-  let state={phase:'idle',error:null,checkedAt:null,history:[],localHistory:[],installed:null,currentComponents:{gateway:null,monitor:appVersion},selected:null,downloaded:false,progress:null,result:null,blocked:null,pending:null,retryAt:null},selectedRelease,controller,busy=false,onChange=()=>{};
+  let state={phase:'idle',error:null,checkedAt:null,history:[],localHistory:[],installed:null,currentComponents:{gateway:null,monitor:appVersion},selected:null,downloaded:false,progress:null,result:null,blocked:null,pending:null,retryAt:null},selectedRelease,controller,busy=false,cancelRequested=false,onChange=()=>{};
   const emit=()=>onChange({...state});const set=patch=>{state={...state,...patch};emit();};
   async function load(){
     const [monitorReceipt,gatewayReceipt,gatewayPackage,result,history,pending,cooldown]=await Promise.all([readReceipt(path.join(monitorDirectory,'release-receipt.json')),gatewayDirectory?readReceipt(path.join(gatewayDirectory,'release-receipt.json')):null,gatewayDirectory?readJson(path.join(gatewayDirectory,'package.json'),64*1024):null,readJson(resultFile,64*1024),readJson(historyFile,64*1024),readJson(pendingFile,16*1024),readJson(cooldownFile,4096)]);
@@ -173,11 +173,12 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
     }catch(e){if(e.code==='RATE_LIMIT'){const retryAt=Number.isFinite(Date.parse(e.retryAt))?new Date(Math.min(Date.parse(e.retryAt),clock()+MAX_RATE_COOLDOWN)).toISOString():new Date(clock()+60000).toISOString();await writeJson(cooldownFile,{schemaVersion:1,retryAt}).catch(()=>{});set({phase:'idle',retryAt,error:rateMessage(retryAt)});}else set({phase:'idle',error:safeMessage(e),blocked:e.code==='TRUST_KEY'?safeMessage(e):state.blocked});}finally{busy=false;}return state;
   }
   async function download(){
-    if(busy||state.phase==='installing'||state.pending||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return state;busy=true;controller=new AbortController();const m=selectedRelease.manifest,final=path.join(updateDir,m.asset.name),part=`${final}.part`;
+    if(busy||state.phase==='installing'||state.pending||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return state;busy=true;cancelRequested=false;controller=new AbortController();const m=selectedRelease.manifest,final=path.join(updateDir,m.asset.name),part=`${final}.part`;
     set({phase:'downloading',error:null,progress:{received:0,total:m.asset.size}});
     let timeout;try{
-      await fsp.mkdir(updateDir,{recursive:true});let existing=await fsp.stat(part).then(s=>s.size).catch(()=>0);
-      if(existing>=m.asset.size){if(existing===m.asset.size&&(await hashFile(part)).toLowerCase()===m.asset.sha256.toLowerCase()){await fsp.rename(part,final);set({phase:'downloaded',downloaded:true,progress:null});return state;}await fsp.unlink(part);existing=0;}
+      await fsp.mkdir(updateDir,{recursive:true});const finalStat=await fsp.stat(final).catch(()=>null);if(finalStat){if(finalStat.isFile()&&finalStat.size===m.asset.size&&(await hashFile(final)).toLowerCase()===m.asset.sha256.toLowerCase()){if(cancelRequested)throw updateError('CANCELLED','업데이트를 취소했습니다.');set({phase:'downloaded',downloaded:true,progress:null});return state;}await fsp.unlink(final);}
+      let existing=await fsp.stat(part).then(s=>s.size).catch(()=>0);
+      if(existing>=m.asset.size){if(existing===m.asset.size&&(await hashFile(part)).toLowerCase()===m.asset.sha256.toLowerCase()){if(cancelRequested)throw updateError('CANCELLED','업데이트를 취소했습니다.');await fsp.rename(part,final);set({phase:'downloaded',downloaded:true,progress:null});return state;}await fsp.unlink(part);existing=0;}
       timeout=setTimeout(()=>controller.abort(),20*60*1000);
       for(let attempt=0;attempt<2;attempt++){
         const response=await verifiedDownloadResponse(fetcher,selectedRelease.urls.archive,{'User-Agent':'Agent-Monitor-Updater',Accept:'application/octet-stream',...(existing?{Range:`bytes=${existing}-`}:{})},controller.signal);
@@ -188,25 +189,27 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
         if(![200,206].includes(response.status))throw updateError('NETWORK',`다운로드 실패 (${response.status})`);
         if(response.status===200)existing=0;let received=existing;const meter=new Transform({transform(chunk,_,cb){received+=chunk.length;if(received>m.asset.size)return cb(updateError('SIZE','다운로드 크기 초과'));set({progress:{received,total:m.asset.size}});cb(null,chunk);}});
         await pipeline(response.body,meter,fs.createWriteStream(part,{flags:existing?'a':'w'}));if(received!==m.asset.size)throw updateError('SIZE','다운로드 크기가 일치하지 않습니다.');
-        const digest=await hashFile(part);if(digest.toLowerCase()!==m.asset.sha256.toLowerCase()){await fsp.unlink(part);throw updateError('HASH','다운로드 해시 검증 실패');}
+        const digest=await hashFile(part);if(cancelRequested)throw updateError('CANCELLED','업데이트를 취소했습니다.');if(digest.toLowerCase()!==m.asset.sha256.toLowerCase()){await fsp.unlink(part);throw updateError('HASH','다운로드 해시 검증 실패');}
         await fsp.rename(part,final);set({phase:'downloaded',downloaded:true,progress:null});break;
       }
-    }catch(e){set({phase:'idle',error:e.name==='AbortError'?'다운로드를 취소했습니다. 이어받을 수 있습니다.':safeMessage(e),progress:null});}finally{clearTimeout(timeout);busy=false;controller=null;}return state;
+    }catch(e){set({phase:'idle',downloaded:false,error:e.name==='AbortError'?'다운로드를 취소했습니다. 이어받을 수 있습니다.':safeMessage(e),progress:null});}finally{clearTimeout(timeout);busy=false;controller=null;}return state;
   }
   async function hashFile(file){const h=crypto.createHash('sha256');for await(const chunk of fs.createReadStream(file))h.update(chunk);return h.digest('hex');}
-  function cancel(){controller?.abort();}
+  function cancel(){if(['downloading','downloaded','preparing'].includes(state.phase)){cancelRequested=true;controller?.abort();}}
+  function requireNotCancelled(){if(cancelRequested)throw updateError('CANCELLED','업데이트를 취소했습니다.');}
   async function install(){
-    if(busy||state.phase==='installing'||state.pending||!state.downloaded||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return {started:false,reason:'업데이트를 설치할 수 없습니다.'};busy=true;set({phase:'preparing',error:null});
+    if(busy||cancelRequested||state.phase==='installing'||state.pending||!state.downloaded||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return {started:false,reason:'업데이트를 설치할 수 없습니다.'};busy=true;set({phase:'preparing',error:null});let pendingSaved=false;
     try{
-      const m=selectedRelease.manifest,archive=path.join(updateDir,m.asset.name);if(!await fsp.stat(archive).then(s=>s.isFile()&&s.size===m.asset.size).catch(()=>false)||(await hashFile(archive)).toLowerCase()!==m.asset.sha256.toLowerCase())throw updateError('HASH','다운로드 파일 검증 실패. 다시 다운로드하세요.');
-      const operationId=crypto.randomUUID(),stage=path.join(updateDir,`stage-${operationId}`);await extractVerifiedZip(archive,stage,m);
-      const nodeExecutable=await nodeFinder(path.join(monitorDirectory,'agent-monitor.config.json'));if(!nodeExecutable)throw updateError('NODE','Node.js 22.12 이상(x64)을 찾지 못했습니다. Node.js를 설치하거나 agent-monitor.config.json의 nodeExecutable에 실행 파일 경로를 지정하세요.');
-      const request={schemaVersion:1,operationId,packageDirectory:stage,...(gatewayDirectory?{gatewayDirectory}:{}),monitorDirectory,nodeExecutable,resultFile,userDataDir:stateDir};const requestFile=path.join(updateDir,`request-${operationId}.json`);await writeJson(requestFile,request);
-      const runner=path.join(stage,'Run-Update.ps1'),pending={schemaVersion:1,operationId,version:m.version,startedAt:new Date(clock()).toISOString()};await writeJson(pendingFile,pending);
-      let helperPid;try{helperPid=await (launch||launchRunner)(runner,requestFile);}catch(e){await fsp.unlink(pendingFile).catch(()=>{});throw e;}
-      if(Number.isSafeInteger(helperPid)&&helperPid>0){pending.helperPid=helperPid;await writeJson(pendingFile,pending);}
+      const m=selectedRelease.manifest,archive=path.join(updateDir,m.asset.name);requireNotCancelled();if(!await fsp.stat(archive).then(s=>s.isFile()&&s.size===m.asset.size).catch(()=>false))throw updateError('HASH','다운로드 파일 검증 실패. 다시 다운로드하세요.');
+      if((await hashFile(archive)).toLowerCase()!==m.asset.sha256.toLowerCase())throw updateError('HASH','다운로드 파일 검증 실패. 다시 다운로드하세요.');requireNotCancelled();
+      const operationId=crypto.randomUUID(),stage=path.join(updateDir,`stage-${operationId}`);await extractVerifiedZip(archive,stage,m);requireNotCancelled();
+      const nodeExecutable=await nodeFinder(path.join(monitorDirectory,'agent-monitor.config.json'));requireNotCancelled();if(!nodeExecutable)throw updateError('NODE','Node.js 22.12 이상(x64)을 찾지 못했습니다. Node.js를 설치하거나 agent-monitor.config.json의 nodeExecutable에 실행 파일 경로를 지정하세요.');
+      const request={schemaVersion:1,operationId,packageDirectory:stage,...(gatewayDirectory?{gatewayDirectory}:{}),monitorDirectory,nodeExecutable,resultFile,userDataDir:stateDir};const requestFile=path.join(updateDir,`request-${operationId}.json`);await writeJson(requestFile,request);requireNotCancelled();
+      const runner=path.join(stage,'Run-Update.ps1'),pending={schemaVersion:1,operationId,version:m.version,startedAt:new Date(clock()).toISOString()};await writeJson(pendingFile,pending);pendingSaved=true;requireNotCancelled();
+      set({phase:'installing',error:null});let helperPid;try{helperPid=await (launch||launchRunner)(runner,requestFile);}catch(e){await fsp.unlink(pendingFile).catch(()=>{});pendingSaved=false;throw e;}
+      if(Number.isSafeInteger(helperPid)&&helperPid>0){pending.helperPid=helperPid;await writeJson(pendingFile,pending).catch(()=>{});}
       set({phase:'installing',error:null,pending});return {started:true,operationId};
-    }catch(e){set({phase:'idle',error:safeMessage(e)});return {started:false,reason:safeMessage(e)};}finally{busy=false;}
+    }catch(e){if(pendingSaved)await fsp.unlink(pendingFile).catch(()=>{});set({phase:'idle',downloaded:e.code==='HASH'?false:state.downloaded,error:safeMessage(e)});return {started:false,reason:safeMessage(e)};}finally{busy=false;}
   }
   async function launchRunner(runner,requestFile){
     if(process.platform!=='win32')throw updateError('PLATFORM','Windows에서만 설치할 수 있습니다.');
