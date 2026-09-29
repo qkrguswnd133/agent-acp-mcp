@@ -51,28 +51,27 @@ try {
     $status = @(git status --porcelain=v1 --untracked-files=all)
     AssertCommand 'Cannot inspect working tree.'
     if ($status.Count) { throw 'Commit all source changes before publishing; the working tree must be clean.' }
-    $branch = [string](git branch --show-current)
+    $branch = (@(git branch --show-current) -join "`n").Trim()
     AssertCommand 'Cannot inspect current branch.'
     if ($branch.Trim() -ne 'main') { throw 'Publish from main.' }
-    $head = [string](git rev-parse HEAD)
+    $head = (@(git rev-parse HEAD) -join "`n").Trim()
     AssertCommand 'Cannot inspect HEAD.'
-    $head = $head.Trim()
-    $originUrl = [string](git remote get-url origin)
+    $originUrl = (@(git remote get-url origin) -join "`n").Trim()
     AssertCommand 'Cannot inspect origin URL.'
     if ($originUrl.Trim() -notin @('https://github.com/qkrguswnd133/agent-acp-mcp.git','https://github.com/qkrguswnd133/agent-acp-mcp','git@github.com:qkrguswnd133/agent-acp-mcp.git')) { throw 'Origin must be the public qkrguswnd133/agent-acp-mcp repository.' }
-    $remoteMain = [string](git ls-remote origin refs/heads/main)
+    $remoteMain = (@(git ls-remote origin refs/heads/main) -join "`n").Trim()
     AssertCommand 'Cannot verify origin/main.'
     if (($remoteMain.Trim() -split '\s+')[0] -ne $head) { throw 'Push this commit to origin/main before publishing.' }
-    $localTag = [string](git tag --list $tag)
+    $localTag = (@(git tag --list $tag) -join "`n").Trim()
     AssertCommand 'Cannot inspect local tag.'
     if ($localTag.Trim()) {
-        $localCommit = [string](git rev-list -n 1 $tag)
+        $localCommit = (@(git rev-list -n 1 $tag) -join "`n").Trim()
         AssertCommand 'Cannot resolve local tag.'
         if ($localCommit.Trim() -ne $head) { throw 'Local release tag points to a different commit.' }
     }
-    $remotePeeled = [string](git ls-remote origin ('refs/tags/'+$tag+'^{}'))
+    $remotePeeled = (@(git ls-remote origin ('refs/tags/'+$tag+'^{}')) -join "`n").Trim()
     AssertCommand 'Cannot inspect remote tag.'
-    $remoteTag = [string](git ls-remote origin ('refs/tags/'+$tag))
+    $remoteTag = (@(git ls-remote origin ('refs/tags/'+$tag)) -join "`n").Trim()
     AssertCommand 'Cannot inspect remote tag.'
     $remoteCommit = if ($remotePeeled.Trim()) { ($remotePeeled.Trim() -split '\s+')[0] } elseif ($remoteTag.Trim()) { ($remoteTag.Trim() -split '\s+')[0] } else { '' }
     if ($remoteCommit -and $remoteCommit -ne $head) { throw 'Remote release tag points to a different commit.' }
@@ -133,9 +132,9 @@ try {
         & $GhExecutable release download $tag --repo $repoName --dir $download --pattern '*'
         AssertCommand 'Draft asset download failed.'
         VerifyAssets $download $head
-        $finalPeeled = [string](git ls-remote origin ('refs/tags/'+$tag+'^{}'))
+        $finalPeeled = (@(git ls-remote origin ('refs/tags/'+$tag+'^{}')) -join "`n").Trim()
         AssertCommand 'Cannot recheck release tag.'
-        $finalLightweight = [string](git ls-remote origin ('refs/tags/'+$tag))
+        $finalLightweight = (@(git ls-remote origin ('refs/tags/'+$tag)) -join "`n").Trim()
         AssertCommand 'Cannot recheck release tag.'
         $finalCommit = if ($finalPeeled.Trim()) { ($finalPeeled.Trim() -split '\s+')[0] } elseif ($finalLightweight.Trim()) { ($finalLightweight.Trim() -split '\s+')[0] } else { '' }
         if ($finalCommit -ne $head) { throw 'Release tag changed before publication.' }
