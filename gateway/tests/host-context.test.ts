@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {CLIENT_INFO_META_KEY,type McpServer,type ServerContext} from '@modelcontextprotocol/server';
+import {CLIENT_INFO_META_KEY,PROTOCOL_VERSION_META_KEY,LOG_LEVEL_META_KEY,type McpServer,type ServerContext} from '@modelcontextprotocol/server';
 import {detectHost} from '../src/host.js';
 const server=(info:unknown)=>({server:{getClientVersion:()=>info}} as unknown as McpServer);
-const context=(envelope:unknown)=>({mcpReq:{envelope}} as ServerContext);
+const context=(envelope:object)=>({mcpReq:{envelope:{[PROTOCOL_VERSION_META_KEY]:'2026-07-28',...envelope}}} as unknown as ServerContext);
 test('legacy initialize identity remains supported',()=>{
   assert.equal(detectHost(server({name:'Claude Desktop',version:'1'})).host,'claude');
   assert.equal(detectHost(server({name:'codex-mcp-client'})).host,'codex');
+  assert.equal(detectHost(server({name:'Claude Desktop'}),{mcpReq:{envelope:{[LOG_LEVEL_META_KEY]:'info'}}} as unknown as ServerContext).host,'claude');
 });
 test('request identity takes precedence and is never retained across requests',()=>{
   const s=server({name:'codex-mcp-client'});

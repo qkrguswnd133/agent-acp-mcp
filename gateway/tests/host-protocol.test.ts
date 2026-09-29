@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {CLIENT_INFO_META_KEY,PROTOCOL_VERSION_META_KEY,CLIENT_CAPABILITIES_META_KEY} from '@modelcontextprotocol/server';
+import {CLIENT_INFO_META_KEY,PROTOCOL_VERSION_META_KEY,CLIENT_CAPABILITIES_META_KEY,LOG_LEVEL_META_KEY} from '@modelcontextprotocol/server';
 
 async function bridge(t:any){
   const child=spawn(process.execPath,[fileURLToPath(new URL('../src/index.js',import.meta.url))],{windowsHide:true,env:{...process.env,GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false',ALLOW_SELF_PROVIDER:'false'},stdio:['pipe','pipe','pipe']});
@@ -27,7 +27,7 @@ function result(reply:any){assert.equal(reply.error,undefined,JSON.stringify(rep
 for(const modern of [false,true])test(`${modern?'request envelope':'initialize'} detects Claude and blocks its own provider without any provider call`,async t=>{
   const b=await bridge(t);
   if(!modern){const init=await b.send('initialize',{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'Claude Desktop',version:'fixture'}});assert.equal(init.error,undefined);b.notify('notifications/initialized');}
-  const call=async(name:string,args:any={})=>result(await b.send('tools/call',{name,arguments:args,...(modern?{_meta:meta('Claude Desktop')}:{})}));
+  const call=async(name:string,args:any={})=>result(await b.send('tools/call',{name,arguments:args,_meta:modern?meta('Claude Desktop'):{[LOG_LEVEL_META_KEY]:'info'}}));
   for(const tool of ['agent_status','agent_cli_status']){
     const status=await call(tool);assert.equal(status.host.host,'claude');assert.equal(status.providers.claude.callable,false);assert.equal(status.providers.claude.blocked_reason,'self_provider');
   }

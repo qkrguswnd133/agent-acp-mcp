@@ -1,4 +1,4 @@
-import {CLIENT_INFO_META_KEY,type McpServer,type ServerContext} from '@modelcontextprotocol/server';
+import {CLIENT_INFO_META_KEY,PROTOCOL_VERSION_META_KEY,type McpServer,type ServerContext} from '@modelcontextprotocol/server';
 import type {HostProvider} from './types.js';
 
 export interface HostDetection {
@@ -36,7 +36,10 @@ export function detectHost(server:McpServer,context?:ServerContext):HostDetectio
   // SDK v2 lifts reserved _meta keys into mcpReq.envelope. Never cache this
   // identity on the server or fall back to another request's initialized client.
   const envelope=context?.mcpReq.envelope;
-  const candidate:unknown=envelope!==undefined
+  // Legacy requests may also carry reserved logging/tracing keys. Those keys
+  // alone do not replace the identity negotiated during initialize.
+  const requestIdentity=envelope!==undefined&&(Object.hasOwn(envelope,PROTOCOL_VERSION_META_KEY)||Object.hasOwn(envelope,CLIENT_INFO_META_KEY));
+  const candidate:unknown=requestIdentity
     ?(envelope as Record<string,unknown>)[CLIENT_INFO_META_KEY]
     :server.server.getClientVersion?.();
   if(!candidate||typeof candidate!=='object'||Array.isArray(candidate))return {host:'unknown',clientName:'unknown'};
