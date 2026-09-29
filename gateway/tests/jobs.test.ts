@@ -45,18 +45,20 @@ test('start returns before runner finishes, status persists results and rejects 
  await assert.rejects(()=>m.start('grok_implement',input),/overlapping/);
  resolve({error:null,sessionId:'fixture',usage:{totalTokens:12}});
  const s=await done(m,j.job_id);assert.equal(s.status,'completed');assert.equal(s.result.usage.totalTokens,12);
+ await m.close();
  const restarted=new JobManager(path.join(dir,'jobs'),async()=>{throw Error('Must not replay');});
- assert.equal((await restarted.status(j.job_id)).status,'completed');await m.close();
+ assert.equal((await restarted.status(j.job_id)).status,'completed');await restarted.close();
 });
 test('stalled status does not cancel a live runner; explicit cancel returns partial result',async()=>{
- const {dir,input}=await fixture();let signal:AbortSignal|undefined;
+ const {dir,input}=await fixture();let signal:AbortSignal|undefined,finishCancellation!:()=>void;
  const m=new JobManager(path.join(dir,'jobs'),async(_k,_i,s,h)=>{
    signal=s;h.onActivity({phase:'prompt',sessionId:'fixture'});
-   return new Promise(r=>s.addEventListener('abort',()=>setTimeout(()=>r({error:'Cancelled',errorKind:'cancelled',clientOperations:{writes:2}}),20),{once:true}));
+   return new Promise(r=>s.addEventListener('abort',()=>{finishCancellation=()=>r({error:'Cancelled',errorKind:'cancelled',clientOperations:{writes:2}});},{once:true}));
  },10);
  const j=await m.start('grok_implement',input);while(!signal)await sleep(1);await sleep(20);
  assert.equal((await m.status(j.job_id)).stalled_suspected,true);assert.equal(signal.aborted,false);
  assert.equal((await m.cancel(j.job_id)).status,'cancelling');
+ finishCancellation();
  const s=await done(m,j.job_id);assert.equal(s.status,'cancelled');assert.equal(s.result.clientOperations.writes,2);await m.close();
 });
 test('restart recognizes orphan state without replay and reports runner failure',async()=>{
