@@ -4,7 +4,10 @@
 (() => {
   const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');
   const artifacts=process.env.AGENT_SMOKE_ARTIFACTS,events=process.env.AGENT_SMOKE_EVENTS;
-  if(!artifacts||!events)throw Error('Missing isolated smoke harness configuration');
+  // The installed --quit helper is a second launch of this same copied ASAR.
+  // WMI does not inherit the smoke environment; let Electron's normal
+  // single-instance handling deliver --quit to the original process.
+  if(!artifacts||!events)return;
   const raw=fs.readFileSync(path.join(artifacts,'update-manifest.json'));
   const signature=fs.readFileSync(path.join(artifacts,'update-manifest.sig'));
   const manifest=JSON.parse(raw),base=`https://github.com/${manifest.repository}/releases/download/${manifest.tag}/`;

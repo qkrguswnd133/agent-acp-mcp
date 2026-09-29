@@ -88,7 +88,12 @@ try {
     return null;
   },180000,'installer dispatch from Electron UI');
   assert.ok(operation.operationId);
-  await waitFor(()=>originalExitedAt,120000,'original monitor shutdown');
+  await waitFor(async()=>{
+    if(originalExitedAt)return originalExitedAt;
+    const early=await read(path.join(data,'updates','install-result.json'));
+    if(early?.operationId===operation.operationId&&early.status!=='success')throw Error(`Installer returned ${early.status} before original monitor exited: ${early.message||''}`);
+    return null;
+  },120000,'original monitor shutdown');
   const pending=await read(pendingFile);
   if(pending?.helperPid)assert.doesNotThrow(()=>process.kill(pending.helperPid,0),'WMI installer stopped with original Electron process');
   const result=await waitFor(async()=>{const value=await read(path.join(data,'updates','install-result.json'));return value?.operationId===operation.operationId?value:null;},240000,'independent installer result');
