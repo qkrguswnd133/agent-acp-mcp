@@ -61,9 +61,43 @@ function StartMonitor([string]$Target,[string]$DataDir) {
     $created=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=('"'+$exe+'" "--data-dir='+$DataDir+'"');CurrentDirectory=$Target;ProcessStartupInformation=$startup}
     if ($created.ReturnValue -ne 0) { throw 'Independent monitor restart failed.' }
 }
+function SafeDisplay([string]$Value) {
+    $clean=($Value -replace '[\x00-\x1f\x7f]',' ').Trim()
+    if ($clean.Length -gt 700) { return $clean.Substring(0,700)+'...' }
+    return $clean
+}
+function RecoveryMessage($Result,[string]$ResultFile,[string[]]$Targets) {
+    $lines=@('Automatic update rollback was incomplete. Do not start Agent Monitor or retry the update until the installation is restored.','','Installation directories:')
+    foreach($target in $Targets) { $lines+=('  '+(SafeDisplay $target)) }
+    $lines+=@('','New backup directories:')
+    if (@($Result.backups).Count) { foreach($backup in @($Result.backups)) { $lines+=('  '+(SafeDisplay ([string]$backup))) } }
+    else { $lines+='  None found. Inspect the installation directories before taking action.' }
+    $lines+=@('','Inspect the backups and restore the original installation manually. Result details: '+(SafeDisplay $ResultFile))
+    $message=$lines -join [Environment]::NewLine
+    if ($message.Length -gt 3500) { return $message.Substring(0,3500) }
+    return $message
+}
+# A function already defined by the caller can observe this UI boundary in tests.
+# Production launches use -NoProfile and the default implementation below.
+if (-not (Get-Command ShowRecoveryDialog -CommandType Function -ErrorAction SilentlyContinue)) {
+    function ShowRecoveryDialog([string]$Message) {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show($Message,'Agent ACP MCP update recovery',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+function PersistOutcome($Result,[string]$ResultFile,[string]$HistoryFile) {
+    if ($ResultFile) { try { AtomicJson $ResultFile $Result } catch { Write-Warning 'Could not persist update result.' } }
+    if ($HistoryFile) {
+        try {
+            $entries=@();if (Test-Path -LiteralPath $HistoryFile) { $entries=@(Get-Content -LiteralPath $HistoryFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
+            $entries=@($Result)+@($entries | Where-Object {$_.operationId -ne $Result.operationId} | Select-Object -First 49)
+            AtomicJson $HistoryFile $entries
+        } catch { Write-Warning 'Could not persist update history.' }
+    }
+}
 
 $result=[ordered]@{schemaVersion=1;operationId=$null;status='failed';version=$null;startedAt=[DateTime]::UtcNow.ToString('o');finishedAt=$null;message='Update failed validation.';backups=@()}
-$resultFile=$null;$historyFile=$null;$monitor=$null;$userData=$null;$wasRunning=$false
+$resultFile=$null;$historyFile=$null;$monitor=$null;$gateway=$null;$userData=$null;$wasRunning=$false
 try {
     $RequestFile=FullPath $RequestFile;NoLinks $RequestFile
     $request=Get-Content -LiteralPath $RequestFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -93,21 +127,29 @@ try {
     $arguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $package 'Update.ps1'),'-NodeExecutable',$node,'-Component',$component,'-MonitorDirectory',$monitor,'-MonitorDataDirectory',$userData)
     if ($hasGateway) { $arguments+=@('-GatewayDirectory',$gateway) }
     $ErrorActionPreference='Continue';$output=(& powershell.exe @arguments 2>&1 | Out-String);$code=$LASTEXITCODE;$ErrorActionPreference='Stop'
+    # Only newly created siblings of selected installation targets are recovery backups.
+    foreach($target in @($gateway,$monitor) | Where-Object {$_}) { $parent=Split-Path -Parent $target;$leaf=Split-Path -Leaf $target;foreach($backup in @(Get-ChildItem -LiteralPath $parent -Directory -Filter ($leaf+'.backup-*') -ErrorAction SilentlyContinue)) { if (-not $beforeBackups.ContainsKey($backup.FullName)) { $result.backups+=@($backup.FullName) } } }
     if ($code -eq 0) {
         $result.status='success';$result.message='Installed components updated.'
-        foreach($target in @($gateway,$monitor) | Where-Object {$_}) { $parent=Split-Path -Parent $target;$leaf=Split-Path -Leaf $target;foreach($backup in @(Get-ChildItem -LiteralPath $parent -Directory -Filter ($leaf+'.backup-*') -ErrorAction SilentlyContinue)) { if (-not $beforeBackups.ContainsKey($backup.FullName)) { $result.backups+=@($backup.FullName) } } }
-    } elseif ($output -match 'Automatic rollback was incomplete') { $result.status='rollback_failed';$result.message='Automatic rollback incomplete. Inspect backup before restarting.' }
+    } elseif ($output -match 'Automatic rollback was incomplete' -or @($result.backups).Count) { $result.status='rollback_failed';$result.message='Automatic rollback incomplete. Keep Agent Monitor closed; inspect the backup directories and restore the original installation before retrying.' }
     elseif ($output -match 'in use|busy|did not acknowledge|Unfinished job|active child|maintenance|not exit|restarted') { $result.status='blocked';$result.message='Update blocked by an active component.' }
     elseif ($output -match 'Original installation paths were preserved/restored') { $result.status='rolled_back';$result.message='Update failed; original installations restored.' }
     else { $result.status='failed';$result.message='Update failed before completion.' }
 } catch { $result.status='failed';$result.message='Update request or package validation failed.' }
 finally {
     $result.finishedAt=[DateTime]::UtcNow.ToString('o')
-    if ($resultFile) { try { AtomicJson $resultFile $result } catch { Write-Warning 'Could not persist update result.' } }
-    if ($historyFile) { try { $entries=@();if (Test-Path -LiteralPath $historyFile) { $entries=@(Get-Content -LiteralPath $historyFile -Raw -Encoding UTF8 | ConvertFrom-Json) };AtomicJson $historyFile (@($result)+@($entries | Select-Object -First 49)) } catch { Write-Warning 'Could not persist update history.' } }
+    PersistOutcome $result $resultFile $historyFile
+    if ($result.status -eq 'rollback_failed') {
+        $targetPaths=@(@($gateway,$monitor) | Where-Object {$_})
+        try { ShowRecoveryDialog (RecoveryMessage $result $resultFile $targetPaths) } catch { Write-Warning 'Could not show recovery dialog; inspect the update result file.' }
+    }
     if ($wasRunning -and $result.status -ne 'rollback_failed' -and $monitor -and (Installed 'Monitor' $monitor)) {
         try { StartMonitor $monitor $userData }
-        catch { $result.message+=' Monitor restart failed.';if ($resultFile) { try { AtomicJson $resultFile $result } catch {} } }
+        catch {
+            $result.message+=' Monitor restart failed. Open the installation manually after checking the result file.'
+            PersistOutcome $result $resultFile $historyFile
+            try { ShowRecoveryDialog ('Agent Monitor could not restart. Inspect the update result at '+(SafeDisplay $resultFile)+'.') } catch { Write-Warning 'Could not show monitor restart warning.' }
+        }
     }
 }
 if ($result.status -ne 'success') { exit 1 }

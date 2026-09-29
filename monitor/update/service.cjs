@@ -16,10 +16,20 @@ const API=`https://api.github.com/repos/${REPOSITORY}/releases?per_page=20`;
 const MAX_JSON=2*1024*1024,MAX_MANIFEST=64*1024,MAX_PACKAGE_MANIFEST=8*1024*1024,MAX_SIGNATURE=4096;
 const MAX_ZIP=1024*1024*1024,MAX_UNPACKED=2*1024*1024*1024,MAX_ENTRIES=100000;
 const CHECK_INTERVAL=6*60*60*1000;
+const MAX_RATE_COOLDOWN=6*60*60*1000;
 const SHA=/^[a-f0-9]{64}$/i;
 const VERSION=/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const updateError=(code,message)=>Object.assign(new Error(message),{code});
 const safeMessage=error=>error?.code==='RATE_LIMIT'?'GitHub 요청 제한 중입니다. 나중에 다시 확인하세요.':error?.message||'업데이트 작업에 실패했습니다.';
+const rateMessage=retryAt=>`GitHub 요청 제한 중입니다. ${new Date(retryAt).toLocaleString('ko-KR')} 이후 다시 확인하세요.`;
+function rateRetryAt(headers,now=Date.now()){
+  const retry=headers.get('retry-after');let candidate;
+  if(retry&&/^\d+(?:\.\d+)?$/.test(retry.trim()))candidate=now+Number(retry)*1000;
+  else if(retry&&Number.isFinite(Date.parse(retry)))candidate=Date.parse(retry);
+  if(!Number.isFinite(candidate)){const reset=Number(headers.get('x-ratelimit-reset'));if(Number.isFinite(reset)&&reset>0)candidate=reset*1000;}
+  if(!Number.isFinite(candidate))candidate=now+60000;
+  return new Date(Math.min(now+MAX_RATE_COOLDOWN,Math.max(now+5000,candidate))).toISOString();
+}
 async function readJson(file,max=MAX_JSON){try{const s=await fsp.stat(file);if(!s.isFile()||s.size>max)return null;return JSON.parse(await fsp.readFile(file,'utf8'));}catch{return null;}}
 async function writeJson(file,value){await fsp.mkdir(path.dirname(file),{recursive:true});const temp=`${file}.${process.pid}.tmp`;await fsp.writeFile(temp,JSON.stringify(value,null,2));await fsp.rename(temp,file);}
 function validVersion(value){return typeof value==='string'&&VERSION.test(value)&&!!semver.valid(value);}
@@ -43,7 +53,7 @@ async function boundedFetch(fetcher,url,max,{signal,accept='application/json',ti
       if(location.protocol!=='https:'||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(location.hostname))throw updateError('NETWORK','허용되지 않은 다운로드 주소입니다.');
       return boundedFetch(fetcher,location.href,max,{signal,accept,timeoutMs,redirects:redirects+1});
     }
-    if(response.status===403||response.status===429)throw updateError('RATE_LIMIT','GitHub 요청 제한');
+    if(response.status===403||response.status===429)throw Object.assign(updateError('RATE_LIMIT','GitHub 요청 제한'),{retryAt:rateRetryAt(response.headers)});
     if(!response.ok)throw updateError('NETWORK',`GitHub 요청 실패 (${response.status})`);
     const length=Number(response.headers.get('content-length'));if(Number.isFinite(length)&&length>max)throw updateError('SIZE','GitHub 응답 크기 초과');
     const parts=[];let size=0;for await(const part of response.body){size+=part.length;if(size>max)throw updateError('SIZE','GitHub 응답 크기 초과');parts.push(part);}return Buffer.concat(parts);
@@ -111,18 +121,19 @@ function resolveGatewayRoot(monitorDirectory,env=process.env){
 }
 function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globalThis.fetch,keyFile=path.join(__dirname,'trusted-key.pem'),appVersion,launch,nodeFinder=findNode,helperAlive=pid=>{try{process.kill(pid,0);return true;}catch{return false;}},clock=Date.now}={}){
   if(!stateDir||!monitorDirectory||!appVersion)throw Error('updater configuration incomplete');
-  const updateDir=path.join(stateDir,'updates'),cacheFile=path.join(updateDir,'release-cache.json'),resultFile=path.join(updateDir,'install-result.json'),historyFile=path.join(updateDir,'history.json'),pendingFile=path.join(updateDir,'pending-install.json');
-  let state={phase:'idle',error:null,checkedAt:null,history:[],localHistory:[],installed:null,currentComponents:{gateway:null,monitor:appVersion},selected:null,downloaded:false,progress:null,result:null,blocked:null,pending:null},selectedRelease,controller,busy=false,onChange=()=>{};
+  const updateDir=path.join(stateDir,'updates'),cacheFile=path.join(updateDir,'release-cache.json'),resultFile=path.join(updateDir,'install-result.json'),historyFile=path.join(updateDir,'history.json'),pendingFile=path.join(updateDir,'pending-install.json'),cooldownFile=path.join(updateDir,'rate-limit.json');
+  let state={phase:'idle',error:null,checkedAt:null,history:[],localHistory:[],installed:null,currentComponents:{gateway:null,monitor:appVersion},selected:null,downloaded:false,progress:null,result:null,blocked:null,pending:null,retryAt:null},selectedRelease,controller,busy=false,onChange=()=>{};
   const emit=()=>onChange({...state});const set=patch=>{state={...state,...patch};emit();};
   async function load(){
-    const [monitorReceipt,gatewayReceipt,gatewayPackage,result,history,pending]=await Promise.all([readReceipt(path.join(monitorDirectory,'release-receipt.json')),gatewayDirectory?readReceipt(path.join(gatewayDirectory,'release-receipt.json')):null,gatewayDirectory?readJson(path.join(gatewayDirectory,'package.json'),64*1024):null,readJson(resultFile,64*1024),readJson(historyFile,64*1024),readJson(pendingFile,16*1024)]);
+    const [monitorReceipt,gatewayReceipt,gatewayPackage,result,history,pending,cooldown]=await Promise.all([readReceipt(path.join(monitorDirectory,'release-receipt.json')),gatewayDirectory?readReceipt(path.join(gatewayDirectory,'release-receipt.json')):null,gatewayDirectory?readJson(path.join(gatewayDirectory,'package.json'),64*1024):null,readJson(resultFile,64*1024),readJson(historyFile,64*1024),readJson(pendingFile,16*1024),readJson(cooldownFile,4096)]);
     const installed=monitorReceipt&&gatewayReceipt&&monitorReceipt.version!==gatewayReceipt.version?null:monitorReceipt||gatewayReceipt;
     const localHistory=Array.isArray(history)?history.filter(x=>x?.schemaVersion===1&&typeof x.operationId==='string').slice(0,20):[];
     if(result?.schemaVersion===1&&typeof result.operationId==='string'&&!localHistory.some(x=>x.operationId===result.operationId))localHistory.unshift(result);
     const completed=result?.schemaVersion===1&&['success','blocked','failed','rolled_back','rollback_failed'].includes(result.status);
     const unresolved=pending?.schemaVersion===1&&typeof pending.operationId==='string'&&(!completed||result.operationId!==pending.operationId)?pending:null;
     if(pending&&!unresolved)await fsp.unlink(pendingFile).catch(()=>{});
-    set({installed:installed?{version:installed.version,components:installed.components,installedAt:installed.installedAt,source:'receipt'}:{version:null,source:'unknown'},currentComponents:{gateway:validVersion(gatewayPackage?.version)?gatewayPackage.version:null,monitor:appVersion},result:result?.schemaVersion===1?result:null,localHistory,pending:unresolved,phase:unresolved?'installing':'idle'});
+    const retryMs=cooldown?.schemaVersion===1?Date.parse(cooldown.retryAt):NaN,retryAt=Number.isFinite(retryMs)&&retryMs>clock()?new Date(Math.min(retryMs,clock()+MAX_RATE_COOLDOWN)).toISOString():null;
+    set({installed:installed?{version:installed.version,components:installed.components,installedAt:installed.installedAt,source:'receipt'}:{version:null,source:'unknown'},currentComponents:{gateway:validVersion(gatewayPackage?.version)?gatewayPackage.version:null,monitor:appVersion},result:result?.schemaVersion===1?result:null,localHistory,pending:unresolved,phase:unresolved?'installing':'idle',retryAt,error:retryAt?rateMessage(retryAt):null});
     const cached=await readJson(cacheFile,MAX_JSON);if(cached?.checkedAt&&Array.isArray(cached.releases)){
       try{const key=await fsp.readFile(keyFile,'utf8');const verified=cached.releases.map(x=>{const raw=Buffer.from(x.manifest,'base64'),sig=Buffer.from(x.signature,'base64');const m=validateSignedManifest(raw,sig,key,x.release),archive=releaseAssetUrl(x.release,m.asset.name);if(!archive||archive.size!==m.asset.size)throw Error('Invalid cached asset');return {manifest:m,release:x.release,urls:{archive:archive.url}};});
         selectedRelease=verified.find(x=>!state.installed?.version||semver.gt(x.manifest.version,state.installed.version))||verified[0];set({checkedAt:cached.checkedAt,history:verified.map(publicRelease),selected:selectedRelease?publicRelease(selectedRelease):null,blocked:selectedRelease&&semver.gt(selectedRelease.manifest.minimumUpdaterVersion,UPDATER_VERSION)?'이 업데이트에는 최신 설치 관리자가 필요합니다. GitHub 릴리스에서 수동으로 설치하세요.':null});
@@ -145,7 +156,10 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
     return state;
   }
   async function check(force=false){
-    if(busy||state.phase==='installing'||state.pending)return state;if(!force&&state.checkedAt&&clock()-Date.parse(state.checkedAt)<CHECK_INTERVAL)return state;
+    if(busy||state.phase==='installing'||state.pending)return state;
+    if(state.retryAt&&clock()<Date.parse(state.retryAt)){set({phase:'idle',error:rateMessage(state.retryAt)});return state;}
+    if(state.retryAt){await fsp.unlink(cooldownFile).catch(()=>{});set({retryAt:null,error:null});}
+    if(!force&&state.checkedAt&&clock()-Date.parse(state.checkedAt)<CHECK_INTERVAL)return state;
     busy=true;set({phase:'checking',error:null,blocked:null});try{
       const key=await fsp.readFile(keyFile,'utf8').catch(()=>null);if(!key)throw updateError('TRUST_KEY','신뢰할 수 있는 업데이트 공개 키가 포함되지 않았습니다. 수동 업데이트가 필요합니다.');
       const response=await withRetry(()=>boundedFetch(fetcher,API,MAX_JSON));const releases=JSON.parse(response.toString('utf8'));if(!Array.isArray(releases))throw updateError('NETWORK','GitHub 릴리스 응답이 올바르지 않습니다.');
@@ -153,10 +167,10 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
         const manifestAsset=releaseAssetUrl(release,'update-manifest.json'),sigAsset=releaseAssetUrl(release,'update-manifest.sig');if(!manifestAsset||!sigAsset)continue;
         try{const [raw,sig]=await Promise.all([withRetry(()=>boundedFetch(fetcher,manifestAsset.url,MAX_MANIFEST,{accept:'application/octet-stream'})),withRetry(()=>boundedFetch(fetcher,sigAsset.url,MAX_SIGNATURE,{accept:'application/octet-stream'}))]);const m=validateSignedManifest(raw,sig,key,release);const archive=releaseAssetUrl(release,m.asset.name);if(!archive||archive.size!==m.asset.size){invalidCount++;continue;}valid.push({release:{tag_name:release.tag_name,assets:release.assets.map(a=>({name:a.name,size:a.size,browser_download_url:a.browser_download_url}))},manifest:m,urls:{archive:archive.url},raw,sig});}catch(e){if(e.code==='RATE_LIMIT')throw e;invalidCount++;}
       }
-      valid.sort((a,b)=>semver.rcompare(a.manifest.version,b.manifest.version));selectedRelease=valid.find(x=>!state.installed?.version||semver.gt(x.manifest.version,state.installed.version))||valid[0];const checkedAt=new Date(clock()).toISOString();await writeJson(cacheFile,{checkedAt,releases:valid.map(x=>({release:x.release,urls:x.urls,manifest:x.raw.toString('base64'),signature:x.sig.toString('base64')}))});
+      valid.sort((a,b)=>semver.rcompare(a.manifest.version,b.manifest.version));selectedRelease=valid.find(x=>!state.installed?.version||semver.gt(x.manifest.version,state.installed.version))||valid[0];const checkedAt=new Date(clock()).toISOString();await writeJson(cacheFile,{checkedAt,releases:valid.map(x=>({release:x.release,urls:x.urls,manifest:x.raw.toString('base64'),signature:x.sig.toString('base64')}))});await fsp.unlink(cooldownFile).catch(()=>{});
       const blocked=selectedRelease&&semver.gt(selectedRelease.manifest.minimumUpdaterVersion,UPDATER_VERSION)?'이 업데이트에는 최신 설치 관리자가 필요합니다. GitHub 릴리스에서 수동으로 설치하세요.':null;
-      set({phase:'idle',checkedAt,history:valid.map(publicRelease),selected:selectedRelease?publicRelease(selectedRelease):null,downloaded:false,blocked,error:invalidCount?`${invalidCount}개 릴리스의 서명 또는 파일 정보를 확인하지 못했습니다.`:valid.length?null:'검증된 안정 릴리스가 없습니다.'});
-    }catch(e){set({phase:'idle',error:safeMessage(e),blocked:e.code==='TRUST_KEY'?safeMessage(e):state.blocked});}finally{busy=false;}return state;
+      set({phase:'idle',checkedAt,history:valid.map(publicRelease),selected:selectedRelease?publicRelease(selectedRelease):null,downloaded:false,blocked,retryAt:null,error:invalidCount?`${invalidCount}개 릴리스의 서명 또는 파일 정보를 확인하지 못했습니다.`:valid.length?null:'검증된 안정 릴리스가 없습니다.'});
+    }catch(e){if(e.code==='RATE_LIMIT'){const retryAt=Number.isFinite(Date.parse(e.retryAt))?new Date(Math.min(Date.parse(e.retryAt),clock()+MAX_RATE_COOLDOWN)).toISOString():new Date(clock()+60000).toISOString();await writeJson(cooldownFile,{schemaVersion:1,retryAt}).catch(()=>{});set({phase:'idle',retryAt,error:rateMessage(retryAt)});}else set({phase:'idle',error:safeMessage(e),blocked:e.code==='TRUST_KEY'?safeMessage(e):state.blocked});}finally{busy=false;}return state;
   }
   async function download(){
     if(busy||state.phase==='installing'||state.pending||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return state;busy=true;controller=new AbortController();const m=selectedRelease.manifest,final=path.join(updateDir,m.asset.name),part=`${final}.part`;

@@ -36,6 +36,18 @@ test('missing trusted key blocks network and minimum updater version blocks inst
   let calls=0;const absent=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile:path.join(root,'missing.pem'),fetcher:async()=>{calls++;throw Error('should not fetch');}});await absent.load();await absent.check();assert.equal(calls,0);assert.match(absent.getState().blocked,/수동/);
   const release=signedRelease(keys,'2.2.0',Buffer.from('test'),{minimumUpdaterVersion:'1.0.5'});const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher:fetcherFor([release],[])});await updater.load();await updater.check();assert.match(updater.getState().blocked,/수동/);assert.equal((await updater.install()).started,false);
 });
+test('GitHub 403 reset persists cooldown across restart and manual checks',async t=>{
+  const {root,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  let time=Date.now(),calls=0;const fetcher=async()=>{calls++;return calls===1?new Response('',{status:403,headers:{'x-ratelimit-remaining':'0','x-ratelimit-reset':String(Math.floor((Date.now()+60000)/1000))}}):new Response('[]');};
+  const options={stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher,clock:()=>time};const updater=createUpdater(options);await updater.load();await updater.check(true);const retryAt=updater.getState().retryAt;assert.ok(Date.parse(retryAt)>time);assert.match(updater.getState().error,/이후/);await updater.check(true);assert.equal(calls,1);
+  const reopened=createUpdater(options);await reopened.load();assert.equal(reopened.getState().retryAt,retryAt);await reopened.check(true);assert.equal(calls,1);
+  time=Date.parse(retryAt)+1;await reopened.check(true);assert.equal(calls,2);assert.equal(reopened.getState().retryAt,null);
+});
+test('GitHub 429 Retry-After takes precedence and bounds manual retry cooldown',async t=>{
+  const {root,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  const started=Date.now();let calls=0;const updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,clock:()=>started,fetcher:async()=>{calls++;return new Response('',{status:429,headers:{'retry-after':'120','x-ratelimit-reset':String(Math.floor((started+3600000)/1000))}});}});
+  await updater.load();await updater.check(true);const retryAt=Date.parse(updater.getState().retryAt);assert.ok(retryAt>=started+119000&&retryAt<=started+121000);await updater.check(true);assert.equal(calls,1);
+});
 test('download resumes partial data and verifies SHA-256 before exposing install',async t=>{
   const {root,keys,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
   const archive=crypto.randomBytes(32000),release=signedRelease(keys,'2.2.0',archive),calls=[],updater=createUpdater({stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher:fetcherFor([release],calls)});

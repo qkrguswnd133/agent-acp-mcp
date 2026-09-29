@@ -45,12 +45,13 @@ function hoverStep(point,now=Date.now()){
 }
 function openPanel(provider){if(!['grok','claude','codex'].includes(provider))return;selected=provider;const bounds=bar.getBounds();hideAt=0;panel.setBounds(popupBounds(bounds));panel.webContents.send('provider',selected);bar.webContents.send('provider',selected);panel.showInactive();}
 function show(){if(!bar||bar.isDestroyed())return;bar.showInactive();reposition();}
-function openUpdates(){if(!updates||updates.isDestroyed()){updates=new BrowserWindow({width:620,height:700,minWidth:520,minHeight:500,show:false,title:'Agent ACP MCP 업데이트',backgroundColor:'#171a24',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});updates.setMenu(null);updates.webContents.setWindowOpenHandler(()=>({action:'deny'}));updates.webContents.on('will-navigate',event=>event.preventDefault());updates.loadFile(path.join(__dirname,'ui','update.html'));}updates.show();updates.focus();}
+function openUpdates(section){if(!updates||updates.isDestroyed()){updates=new BrowserWindow({width:620,height:700,minWidth:520,minHeight:500,show:false,title:'Agent ACP MCP 업데이트',backgroundColor:'#171a24',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});updates.setMenu(null);updates.webContents.setWindowOpenHandler(()=>({action:'deny'}));updates.webContents.on('will-navigate',event=>event.preventDefault());updates.loadFile(path.join(__dirname,'ui','update.html'));}updates.show();updates.focus();if(section==='history'){const scroll=()=>{if(!updates.isDestroyed())void updates.webContents.executeJavaScript("document.querySelector('#history-section')?.scrollIntoView({block:'start'})").catch(()=>{});};if(updates.webContents.isLoading())updates.webContents.once('did-finish-load',scroll);else scroll();}}
 function menu(){Menu.buildFromTemplate([
   {label:bar.isVisible()?'상태 바 숨기기':'상태 바 표시',click:()=>{if(bar.isVisible()){closePanel();bar.hide();}else show();}},
   {label:'지금 새로고침',click:()=>refresh()},
   {label:'업데이트 확인',click:()=>{openUpdates();void updater.check(true);}},
-  {label:'정보 · 버전',click:openUpdates},
+  {label:'업데이트 이력',click:()=>openUpdates('history')},
+  {label:'정보 · 버전',click:()=>openUpdates()},
   {label:'위치 초기화',click:()=>{closePanel();bar.setBounds(barBounds(undefined,screen.getPrimaryDisplay().workArea));savePosition();show();}},
   {type:'separator'}, {label:'Agent Monitor 종료',click:()=>app.quit()}
 ]).popup({window:bar});}
@@ -67,11 +68,14 @@ function startBackend(){
 function query(){startBackend();return new Promise((resolve,reject)=>{const id=++sequence;const timer=setTimeout(async()=>{pending.delete(id);await stopBackend();reject(Error('상태 조회 시간이 초과되었습니다. 마지막 확인값을 표시합니다.'));},90000);pending.set(id,{resolve,reject,timer});backend.stdin.write(JSON.stringify({id,method:'status'})+'\n',error=>{if(error){pending.delete(id);clearTimeout(timer);reject(error);}});});}
 async function refresh(){if(state.refreshing||smoke||installing)return;state={...state,refreshing:true,error:null,lastAttempt:new Date().toISOString()};broadcast();try{const snapshot=await query();state={snapshot,refreshing:false,error:null,lastAttempt:state.lastAttempt};try{fs.writeFileSync(path.join(stateDir,'latest-status.json'),JSON.stringify(snapshot,null,2));}catch{}}catch(error){state={...state,refreshing:false,error:error.message};}broadcast();}
 function createWindow(file,options){const win=new BrowserWindow({frame:false,transparent:true,resizable:false,maximizable:false,minimizable:false,fullscreenable:false,skipTaskbar:true,alwaysOnTop:true,show:false,hasShadow:false,backgroundColor:'#00000000',...options,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});win.setMenu(null);win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',event=>event.preventDefault());win.loadFile(path.join(__dirname,'ui',file));return win;}
+function withDeadline(promise,milliseconds,code){let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error(code),{code})),milliseconds);})]).finally(()=>clearTimeout(timer));}
 async function captureReady(win){
   for(let attempt=0;attempt<5;attempt++){
-    await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-    try{const image=await win.webContents.capturePage();if(image.isEmpty())throw Error('Electron captured an empty page.');return image.toPNG();}
-    catch(error){if(!String(error?.message??error).includes('UnknownVizError')||attempt===4)throw error;await new Promise(resolve=>setTimeout(resolve,200*(attempt+1)));}
+    try{
+      try{await withDeadline(win.webContents.executeJavaScript('new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),250);requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true)}))})'),500,'FRAME_TIMEOUT');}catch(error){if(error?.code!=='FRAME_TIMEOUT')throw error;}
+      const image=await withDeadline(win.webContents.capturePage(),1800,'CAPTURE_TIMEOUT');
+      if(image.isEmpty())throw Error('Electron captured an empty page.');return image.toPNG();
+    }catch(error){if(error?.code!=='CAPTURE_TIMEOUT'&&!String(error?.message??error).includes('UnknownVizError')||attempt===4)throw error;await new Promise(resolve=>setTimeout(resolve,150*(attempt+1)));}
   }
 }
 function trusted(event){return [bar,panel,updates].some(w=>w&&!w.isDestroyed()&&w.webContents===event.sender);}
@@ -173,6 +177,11 @@ async function runSmoke(){
     fixtureUpdate.selected.notes.gateway=['Gateway 최신 릴리스 정보'];updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,40));
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#installed').textContent"),/현재 Gateway 2\.1\.0 · 현재 Monitor 1\.1\.0/);
     fs.writeFileSync(path.join(out,'update-window.png'),await captureReady(updates));
+    fixtureUpdate.result={status:'rollback_failed',message:'Automatic rollback incomplete.',backups:['C:/Temp/sample-project.backup']};updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,40));
+    assert.match(await updates.webContents.executeJavaScript("document.querySelector('#last-result').textContent"),/수동 복구 필요/);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery').hidden"),false);
+    assert.match(await updates.webContents.executeJavaScript("document.querySelector('#recovery-action').textContent"),/수동으로 복구/);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery-paths li').textContent"),'C:/Temp/sample-project.backup');
     fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted'],stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
   }catch(error){console.error(error);app.exit(1);}
 }

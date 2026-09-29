@@ -330,10 +330,12 @@ try {
     AssertStopped $items
     foreach ($item in $items) {
         AssertOwnedSibling $item.Backup $item '.backup-'
-        Move-Item -LiteralPath $item.Target -Destination $item.Backup
+        # All paths are siblings on the same volume. Directory.Move is one
+        # rename, so a locked file cannot leave a partly copied backup tree.
+        [IO.Directory]::Move($item.Target,$item.Backup)
         $item.OldMoved = $true
         if (Test-Path -LiteralPath $item.Target) { throw 'Installation path was recreated by another process.' }
-        Move-Item -LiteralPath $item.Stage -Destination $item.Target
+        [IO.Directory]::Move($item.Stage,$item.Target)
         $item.Installed = $true
     }
 } catch {
@@ -347,11 +349,11 @@ try {
                 $failed = $item.Target+'.failed-'+$updateId
                 AssertOwnedSibling $failed $item '.failed-'
                 if (Test-Path -LiteralPath $failed) { throw 'Failed-update recovery path already exists.' }
-                Move-Item -LiteralPath $item.Target -Destination $failed
+                [IO.Directory]::Move($item.Target,$failed)
             }
             AssertOwnedSibling $item.Backup $item '.backup-'
             if (Test-Path -LiteralPath $item.Target) { throw 'Refusing to overwrite an unexpected directory during rollback.' }
-            Move-Item -LiteralPath $item.Backup -Destination $item.Target
+            [IO.Directory]::Move($item.Backup,$item.Target)
             $item.OldMoved = $false
         } catch { $rollbackErrors += "$($item.Name): $($_.Exception.Message); backup: $($item.Backup)" }
     }

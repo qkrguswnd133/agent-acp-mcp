@@ -7,7 +7,8 @@ All package and installation paths in these tests are disposable fixtures.
 #>
 param(
     [string]$Updater = (Join-Path (Split-Path -Parent $PSScriptRoot) 'distribution\Update.ps1'),
-    [string]$NodeExecutable
+    [string]$NodeExecutable,
+    [string]$Filter = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,19 +110,28 @@ function Invoke-Update($Fixture, [string[]]$Additional = @(), [string]$GatewayTa
     $output = & powershell.exe @args 2>&1 | Out-String
     return [pscustomobject]@{ ExitCode=$LASTEXITCODE; Output=$output }
 }
-function Invoke-Runner($Fixture,[switch]$OmitGateway) {
+function Invoke-Runner($Fixture,[switch]$OmitGateway,[switch]$MockDialog) {
     $userData=Join-Path $Fixture.Base 'user-data'
     $requestFile=Join-Path $Fixture.Base 'request.json'
     $resultFile=Join-Path $userData 'updates\result.json'
     $request=[ordered]@{schemaVersion=1;operationId=[guid]::NewGuid().ToString();packageDirectory=$Fixture.Package;monitorDirectory=$Fixture.Monitor;nodeExecutable=$NodeExecutable;resultFile=$resultFile;userDataDir=$userData}
     if (-not $OmitGateway) { $request.gatewayDirectory=$Fixture.Gateway }
     Put $requestFile ($request | ConvertTo-Json -Depth 8)
+    $dialogFile=Join-Path $Fixture.Base 'recovery-dialog.txt'
     $ErrorActionPreference='Continue'
-    $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Fixture.Package 'Run-Update.ps1') -RequestFile $requestFile 2>&1 | Out-String
+    if ($MockDialog) {
+        $runner=(Join-Path $Fixture.Package 'Run-Update.ps1').Replace("'","''")
+        $requestLiteral=$requestFile.Replace("'","''")
+        $dialogLiteral=$dialogFile.Replace("'","''")
+        $resultLiteral=$resultFile.Replace("'","''")
+        $mock="function ShowRecoveryDialog([string]`$Message) { if (Test-Path -LiteralPath '$resultLiteral') { [IO.File]::WriteAllText('$dialogLiteral',`$Message) } }; . '$runner' -RequestFile '$requestLiteral'"
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($mock))
+        $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Out-String
+    } else { $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Fixture.Package 'Run-Update.ps1') -RequestFile $requestFile 2>&1 | Out-String }
     $code=$LASTEXITCODE
     $ErrorActionPreference='Stop'
     $value=if (Test-Path -LiteralPath $resultFile) { Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
-    return [pscustomobject]@{ExitCode=$code;Output=$output;Result=$value;History=(Join-Path $userData 'updates\history.json')}
+    return [pscustomobject]@{ExitCode=$code;Output=$output;Result=$value;History=(Join-Path $userData 'updates\history.json');DialogFile=$dialogFile}
 }
 
 function Assert-Old($Fixture) {
@@ -179,6 +189,7 @@ function Stop-FixtureProcess([Diagnostics.Process]$Process) {
 }
 
 function Run([string]$Name, [scriptblock]$Body) {
+    if ($Filter -and $Name -notmatch $Filter) { return }
     try {
         & $Body
         $script:Passed++
@@ -246,14 +257,43 @@ try {
         Assert ($r.Result.status -eq 'blocked') "Wrong runner status: $($r.Result.status)"
         Assert-Old $f
     }
-    Run 'Runner reports rolled back transaction after locked monitor swap' {
+    Run 'Runner reports restored transaction without backup remnants' {
         $f=New-Fixture 'runner-rollback'
-        $locked=PathOf $f.Monitor 'resources/app.asar'
-        $stream=New-Object IO.FileStream($locked,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
-        try { $r=Invoke-Runner $f } finally { $stream.Dispose() }
-        Assert ($r.ExitCode -ne 0) 'Runner accepted a locked monitor payload.'
+        $fake=@'
+param($NodeExecutable,$Component,$MonitorDirectory,$MonitorDataDirectory,$GatewayDirectory)
+Write-Output 'Original installation paths were preserved/restored'
+exit 1
+'@
+        Put (Join-Path $f.Package 'Update.ps1') $fake
+        Rebuild-Manifest $f.Package
+        $r=Invoke-Runner $f -MockDialog
+        Assert ($r.ExitCode -ne 0) 'Runner accepted an unsuccessful updater.'
         Assert ($r.Result.status -eq 'rolled_back') "Wrong rollback status: $($r.Result.status)"
+        Assert (@($r.Result.backups).Count -eq 0) 'A restored transaction retained a reported backup.'
         Assert-Old $f
+    }
+    Run 'Runner exposes only new recovery backup paths after incomplete rollback' {
+        $f=New-Fixture 'runner-rollback-incomplete'
+        $preexisting=$f.Gateway+'.backup-prior'
+        Put (Join-Path $preexisting 'marker.txt') 'previous backup'
+        $fake=@'
+param($NodeExecutable,$Component,$MonitorDirectory,$MonitorDataDirectory,$GatewayDirectory)
+Copy-Item -LiteralPath $GatewayDirectory -Destination ($GatewayDirectory+'.backup-new') -Recurse -Force
+Write-Output 'super-secret-provider-token'
+exit 1
+'@
+        Put (Join-Path $f.Package 'Update.ps1') $fake
+        Rebuild-Manifest $f.Package
+        $r=Invoke-Runner $f -MockDialog
+        Assert ($r.ExitCode -ne 0) 'Incomplete rollback was accepted.'
+        Assert ($r.Result.status -eq 'rollback_failed') "Wrong recovery status: $($r.Result.status)"
+        Assert (@($r.Result.backups).Count -eq 1 -and $r.Result.backups[0] -eq ($f.Gateway+'.backup-new')) 'Recovery backup list was not limited to new backup.'
+        Assert (Test-Path -LiteralPath $r.History) 'Recovery result history missing.'
+        Assert (Test-Path -LiteralPath $r.DialogFile) 'Recovery dialog did not run after result persisted.'
+        $dialog=Read $r.DialogFile
+        Assert ($dialog.Contains($f.Gateway+'.backup-new') -and $dialog.Contains('Do not start Agent Monitor')) 'Recovery dialog did not show backup path and action.'
+        Assert (-not $dialog.Contains($preexisting)) 'Preexisting backup leaked into recovery instructions.'
+        Assert (-not $dialog.Contains('super-secret-provider-token') -and -not ((Read (Join-Path $f.Base 'user-data\updates\result.json')).Contains('super-secret-provider-token'))) 'Raw updater output leaked into recovery records.'
     }
 
     Run 'Gateway component leaves monitor unchanged' {
@@ -525,6 +565,8 @@ class MonitorFixture {
         } finally { $stream.Dispose() }
         Assert-Old $f
         Assert (@(Get-ChildItem -LiteralPath (Split-Path $f.Gateway -Parent) -Directory -Filter 'gateway.failed-*').Count -ge 1) 'Gateway swap was not exercised before rollback.'
+        Assert (@(Get-ChildItem -LiteralPath (Split-Path $f.Monitor -Parent) -Directory -Filter 'monitor.backup-*').Count -eq 0) 'Locked monitor move left a partial backup directory.'
+        Assert (@(Get-ChildItem -LiteralPath (Split-Path $f.Gateway -Parent) -Directory -Filter 'gateway.backup-*').Count -eq 0) 'Gateway backup was not restored.'
     }
 } finally {
     $resolvedRoot = [IO.Path]::GetFullPath($script:Root).TrimEnd('\')
