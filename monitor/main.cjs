@@ -67,6 +67,13 @@ function startBackend(){
 function query(){startBackend();return new Promise((resolve,reject)=>{const id=++sequence;const timer=setTimeout(async()=>{pending.delete(id);await stopBackend();reject(Error('상태 조회 시간이 초과되었습니다. 마지막 확인값을 표시합니다.'));},90000);pending.set(id,{resolve,reject,timer});backend.stdin.write(JSON.stringify({id,method:'status'})+'\n',error=>{if(error){pending.delete(id);clearTimeout(timer);reject(error);}});});}
 async function refresh(){if(state.refreshing||smoke||installing)return;state={...state,refreshing:true,error:null,lastAttempt:new Date().toISOString()};broadcast();try{const snapshot=await query();state={snapshot,refreshing:false,error:null,lastAttempt:state.lastAttempt};try{fs.writeFileSync(path.join(stateDir,'latest-status.json'),JSON.stringify(snapshot,null,2));}catch{}}catch(error){state={...state,refreshing:false,error:error.message};}broadcast();}
 function createWindow(file,options){const win=new BrowserWindow({frame:false,transparent:true,resizable:false,maximizable:false,minimizable:false,fullscreenable:false,skipTaskbar:true,alwaysOnTop:true,show:false,hasShadow:false,backgroundColor:'#00000000',...options,webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});win.setMenu(null);win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',event=>event.preventDefault());win.loadFile(path.join(__dirname,'ui',file));return win;}
+async function captureReady(win){
+  for(let attempt=0;attempt<5;attempt++){
+    await win.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    try{const image=await win.webContents.capturePage();if(image.isEmpty())throw Error('Electron captured an empty page.');return image.toPNG();}
+    catch(error){if(!String(error?.message??error).includes('UnknownVizError')||attempt===4)throw error;await new Promise(resolve=>setTimeout(resolve,200*(attempt+1)));}
+  }
+}
 function trusted(event){return [bar,panel,updates].some(w=>w&&!w.isDestroyed()&&w.webContents===event.sender);}
 function updateTrusted(event){return updates&&!updates.isDestroyed()&&event.sender===updates.webContents;}
 ipcMain.handle('state',event=>trusted(event)?{...state,selected,pinned}:null);
@@ -102,8 +109,8 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
       const out=process.env.AGENT_MONITOR_SMOKE_DIR||path.join(__dirname,'work');fs.mkdirSync(out,{recursive:true});
       openPanel('claude',285);await new Promise(resolve=>setTimeout(resolve,200));
       fs.writeFileSync(path.join(out,'live-status.json'),JSON.stringify(state.snapshot,null,2));
-      fs.writeFileSync(path.join(out,'live-bar.png'),(await bar.webContents.capturePage()).toPNG());
-      fs.writeFileSync(path.join(out,'live-detail.png'),(await panel.webContents.capturePage()).toPNG());
+      fs.writeFileSync(path.join(out,'live-bar.png'),await captureReady(bar));
+      fs.writeFileSync(path.join(out,'live-detail.png'),await captureReady(panel));
       console.log('MONITOR_LIVE_OK');app.quit();
     }else if(!installing){void refresh();refreshTimer=setInterval(()=>void refresh(),60000);}
   }).catch(error=>{console.error(error);app.exit(1);});
@@ -118,13 +125,13 @@ async function runSmoke(){
     assert.equal(await bar.webContents.executeJavaScript("document.querySelectorAll('[data-agent]').length"),3);
     state.snapshot.jobs=['grok','claude','codex'].map(provider=>({project:'sample-project',isolated:true,originalCwd:'C:/dev/sample-project',cwd:'C:/Temp/fixture/sample-project',status:'completed',providers:[{provider}]}));broadcast();
     for(const provider of ['grok','claude','codex']){openPanel(provider);await new Promise(r=>setTimeout(r,40));assert.equal(await panel.webContents.executeJavaScript("document.querySelector('.job-name').textContent"),'sample-project · 격리 작업');assert.match(await panel.webContents.executeJavaScript("document.querySelector('.job-name').title"),/C:\/dev\/sample-project[\s\S]*C:\/Temp\/fixture\/sample-project/);}
-    fs.writeFileSync(path.join(out,'project-detail.png'),(await panel.webContents.capturePage()).toPNG());closePanel();
+    fs.writeFileSync(path.join(out,'project-detail.png'),await captureReady(panel));closePanel();
 
     await bar.webContents.executeJavaScript("document.querySelector('[data-agent=grok]').dispatchEvent(new MouseEvent('mouseenter'))");
     await new Promise(r=>setTimeout(r,160));assert.equal(panel.isVisible(),true);assert.equal(selected,'grok');
     assert.match(await panel.webContents.executeJavaScript('document.body.innerText'),/89/);
     assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#account').textContent"),'grok@example.com');assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#organization').textContent"),'Sample Team');
-    fs.writeFileSync(path.join(out,'bar.png'),(await bar.webContents.capturePage()).toPNG());fs.writeFileSync(path.join(out,'detail.png'),(await panel.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(out,'bar.png'),await captureReady(bar));fs.writeFileSync(path.join(out,'detail.png'),await captureReady(panel));
     await bar.webContents.executeJavaScript("document.querySelector('[data-agent=claude]').dispatchEvent(new MouseEvent('mouseenter'))");await new Promise(r=>setTimeout(r,80));assert.match(await panel.webContents.executeJavaScript('document.body.innerText'),/확인 불가/);assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#account').textContent"),'claude@example.com');
     state.snapshot.providers[1].quota={state:'available',usedPercent:93,remainingPercent:7,source:'fixture',selectedWindow:'five_hour',windows:[{id:'five_hour',label:'5시간',usedPercent:93,remainingPercent:7,resetsAt:new Date(Date.now()+3600000).toISOString()},{id:'seven_day',label:'주간',usedPercent:35,remainingPercent:65,resetsAt:new Date(Date.now()+86400000).toISOString()}]};
     state.snapshot.providers[1].quota.windows.push({id:'seven_day_fable',label:'주간 · Fable',usedPercent:0,remainingPercent:100,resetsAt:new Date(Date.now()+86400000).toISOString()});
@@ -133,10 +140,10 @@ async function runSmoke(){
     const dual=await bar.webContents.executeJavaScript("Object.fromEntries(['claude','codex'].map(name=>{const button=document.querySelector('[data-agent='+name+']');return [name,{values:[...button.querySelectorAll('.quota-number')].map(node=>[node.textContent,getComputedStyle(node).color]),title:button.title}]}))");
     assert.deepEqual(dual.claude.values,[['93%','rgb(237, 133, 140)'],['35%','rgb(138, 201, 180)'],['0%','rgb(180, 166, 245)']]);assert.match(dual.claude.title,/5시간 93% 사용 \/ 주간 전체 35% 사용 \/ 주간 Fable 0% 사용/);
     assert.deepEqual(dual.codex.values,[['13%','rgb(138, 201, 180)'],['75%','rgb(239, 201, 110)']]);assert.match(dual.codex.title,/5시간 13% 사용 \/ 주간 75% 사용/);
-    fs.writeFileSync(path.join(out,'dual-bar.png'),(await bar.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(out,'dual-bar.png'),await captureReady(bar));
     openPanel('claude');await new Promise(r=>setTimeout(r,60));
     assert.match(await panel.webContents.executeJavaScript("document.querySelector('[data-window=seven_day_fable]').innerText"),/0% 사용/);
-    fs.writeFileSync(path.join(out,'fable-detail.png'),(await panel.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(out,'fable-detail.png'),await captureReady(panel));
     for(const [used,color] of [[70,'rgb(239, 201, 110)'],[95,'rgb(237, 133, 140)']]){state.snapshot.providers[1].quota.windows[2].usedPercent=used;broadcast();await new Promise(r=>setTimeout(r,30));assert.equal(await bar.webContents.executeJavaScript("getComputedStyle(document.querySelector('[data-agent=claude] [data-window=seven_day_fable]')).color"),color);assert.equal(await panel.webContents.executeJavaScript("getComputedStyle(document.querySelector('[data-window=seven_day_fable] b')).color"),color);}
     state.snapshot.providers[1].quota.windows.pop();broadcast();await new Promise(r=>setTimeout(r,30));assert.equal(await bar.webContents.executeJavaScript("document.querySelector('[data-agent=claude] [data-window=seven_day_fable]').textContent"),'—');assert.match(await panel.webContents.executeJavaScript("document.querySelector('[data-window=seven_day_fable]').innerText"),/확인 불가/);
 
@@ -165,7 +172,7 @@ async function runSmoke(){
     assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#updates').hidden"),false);
     fixtureUpdate.selected.notes.gateway=['Gateway 최신 릴리스 정보'];updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,40));
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#installed').textContent"),/현재 Gateway 2\.1\.0 · 현재 Monitor 1\.1\.0/);
-    fs.writeFileSync(path.join(out,'update-window.png'),(await updates.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(out,'update-window.png'),await captureReady(updates));
     fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted'],stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
   }catch(error){console.error(error);app.exit(1);}
 }
