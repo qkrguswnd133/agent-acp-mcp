@@ -1,0 +1,8 @@
+{
+  "gateway": [
+    "Gateway 2.2.1: initialize 없이 요청별 clientInfo를 전달하는 MCP 2026 프로토콜에서 host가 unknown으로 표시되던 문제를 수정했습니다.",
+    "SDK 요청 envelope의 clientInfo를 사용하며 기존 initialize 방식도 지원합니다. 호스트가 확인되지 않으면 계속 호출을 차단합니다.",
+    "Claude·Codex·Grok의 요청별 호스트 감지와 self-provider 차단을 검증했습니다. 업데이트 후 MCP 연결을 다시 시작하세요."
+  ],
+  "monitor": ["Monitor 1.1.2를 유지하며 상단 바의 업데이트 진행 표시를 포함합니다."]
+}
