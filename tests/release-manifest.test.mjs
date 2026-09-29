@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {assertRelativePath,createPayloadManifest,createUpdateManifest,scanFirstParty,verifyPayloadManifest,verifyUpdateManifest} from '../scripts/release-lib.mjs';
+import {assertRelativePath,createPayloadManifest,createUpdateManifest,releaseVersion,scanFirstParty,verifyPayloadManifest,verifyUpdateManifest} from '../scripts/release-lib.mjs';
 
 async function fixture(body) {
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'agent-release-test-'));
@@ -35,7 +35,8 @@ test('update manifest fields and exact-byte Ed25519 signature',async()=>fixture(
   await fs.writeFile(publicPath,publicKey.export({format:'pem',type:'spki'}));
   const manifest=createUpdateManifest({publishedAt:'2026-09-29T00:00:00.000Z',gatewayVersion:'2.2.0',monitorVersion:'1.1.0',assetSize:42,assetSha256:'a'.repeat(64)});
   assert.equal(manifest.repository,'qkrguswnd133/agent-acp-mcp');
-  assert.equal(manifest.asset.name,'Agent-ACP-MCP-Windows-2.2.0.zip');
+  assert.equal(manifest.version,releaseVersion);
+  assert.equal(manifest.asset.name,`Agent-ACP-MCP-Windows-${releaseVersion}.zip`);
   assert(manifest.notes.gateway.length>0&&manifest.notes.monitor.length>0);
   const bytes=Buffer.from(JSON.stringify(manifest)+'\n');
   const signature=crypto.sign(null,bytes,privateKey).toString('base64');
