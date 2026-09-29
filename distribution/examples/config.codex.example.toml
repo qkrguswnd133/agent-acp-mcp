@@ -1,0 +1,37 @@
+# Replace YOUR_NAME and node.exe path, or use installer-generated configuration.
+[mcp_servers.agent]
+command = "C:/Program Files/nodejs/node.exe"
+args = ["C:/Users/YOUR_NAME/AppData/Local/Programs/Agent ACP MCP/dist/src/index.js"]
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 180
+
+[mcp_servers.agent.env]
+# Persistent self-provider default: "true" allows host-provider calls in auto and explicit routing.
+# "false" blocks by default. Per-call boolean override takes precedence; auto includes host when true.
+ALLOW_SELF_PROVIDER = "false"
+GROK_ENABLED = "true"
+CLAUDE_ENABLED = "true"
+CODEX_ENABLED = "true"
+GROK_MODEL = "auto"
+GROK_EFFORT = "xhigh"
+CLAUDE_MODEL = "auto"
+# Claude CLI choices: auto (gateway default), low, medium, high, xhigh, max.
+# Actual support depends on model/CLI version. auto omits --effort.
+CLAUDE_EFFORT = "auto"
+CODEX_MODEL = "auto"
+# Codex choices advertised by models/clients: low, medium, high, xhigh, max, ultra.
+# Use only values supported by your selected model/client; auto omits the override.
+# These env settings affect delegated CLI sessions, not the parent host's effort.
+CODEX_EFFORT = "auto"
+# Optional absolute paths when discovery fails:
+# GROK_CLI = "C:/Users/YOUR_NAME/.grok/bin/grok.exe"
+# CLAUDE_CLI = "C:/Users/YOUR_NAME/.local/bin/claude.exe"
+# CODEX_CLI = "C:/Users/YOUR_NAME/AppData/Roaming/npm/codex.cmd"
+
+
+# Optional per-call override: provider="codex", allow_self_provider=true/false.
+# Use uppercase ALLOW_SELF_PROVIDER above for the persistent setting. Reconnect MCP after edits.
+
+
+

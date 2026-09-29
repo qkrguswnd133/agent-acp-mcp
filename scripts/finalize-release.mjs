@@ -1,0 +1,23 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {archiveName,createUpdateManifest,releaseVersion,sha256,signUpdateManifest,verifyUpdateManifest} from './release-lib.mjs';
+
+const [keyPath,publishedAt]=process.argv.slice(2);
+if(!keyPath||!publishedAt) throw new Error('Usage: node scripts/finalize-release.mjs PRIVATE_KEY CANONICAL_UTC_ISO_TIME');
+const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const output=path.join(repo,'build','release',`v${releaseVersion}`);
+const payload=path.join(output,'payload');
+const zip=path.join(output,archiveName);
+const info=JSON.parse(await fs.readFile(path.join(payload,'release-info.json'),'utf8'));
+const stat=await fs.stat(zip);
+const digest=await sha256(zip);
+const manifest=createUpdateManifest({publishedAt,gatewayVersion:info.components.gateway,monitorVersion:info.components.monitor,assetSize:stat.size,assetSha256:digest});
+const bytes=Buffer.from(JSON.stringify(manifest,null,2)+'\n','utf8');
+const signature=await signUpdateManifest(bytes,keyPath);
+const trusted=path.join(repo,'monitor','update','trusted-key.pem');
+if(!await verifyUpdateManifest(bytes,signature,trusted)) throw new Error('Private signing key does not match monitor trusted public key');
+await fs.writeFile(path.join(output,'update-manifest.json'),bytes);
+await fs.writeFile(path.join(output,'update-manifest.sig'),signature+'\n');
+await fs.writeFile(path.join(output,`${archiveName}.sha256`),`${digest}  ${archiveName}\n`);
+console.log(`Finalized ${output} (${stat.size} bytes, sha256 ${digest})`);

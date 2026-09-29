@@ -1,0 +1,11 @@
+{
+  "name": "agent-acp-mcp-release",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:release": "node scripts/release-tests.mjs",
+    "build:release": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File distribution/Build-Release.ps1",
+    "verify:package": "node distribution/Verify-Package.mjs"
+  }
+}

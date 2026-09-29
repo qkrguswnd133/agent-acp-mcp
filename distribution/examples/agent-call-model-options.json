@@ -1,0 +1,10 @@
+{
+  "tool": "agent_review",
+  "arguments": {
+    "provider": "claude",
+    "model": "opus",
+    "effort": "high",
+    "cwd": "C:/dev/my-project",
+    "task": "Review the changes without modifying files."
+  }
+}

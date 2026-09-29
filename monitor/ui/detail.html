@@ -1,0 +1,8 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:"><link rel="stylesheet" href="style.css"><title>Agent 상세</title></head><body class="detail-body"><article class="detail">
+<header><div class="identity"><span id="avatar">G</span><div><h1 id="name">Grok</h1><p id="connection">상태 확인 중</p></div></div><button id="refresh" class="icon-button" title="새로고침" aria-label="새로고침">↻</button></header>
+<section class="usage"><div class="eyebrow">구독 사용량 <span id="quota-label"></span></div><div class="usage-line"><strong id="used">—</strong><span id="remaining">확인 중</span></div><div class="track"><div id="fill"></div></div><div class="reset-row"><span>초기화</span><span id="reset">확인 불가</span></div></section>
+<section id="quota-windows" hidden aria-label="사용량 구간별 상세"></section>
+<section class="facts"><div><span>모델</span><b id="model">확인 불가</b></div><div><span>Reasoning</span><b id="effort">확인 불가</b></div><div><span>로그인 / CLI</span><b id="auth">확인 중</b></div><div><span>CLI 계정</span><b id="account">확인 중</b></div><div id="organization-row" hidden><span>조직</span><b id="organization"></b></div></section>
+<section class="activity"><div class="eyebrow">최근 작업 <span id="job-count"></span></div><div id="jobs"></div></section>
+<footer><div><i id="fresh-dot"></i><span id="updated">첫 상태를 가져오는 중</span></div><p id="source">조회 중</p><p id="notice" role="status"></p></footer>
+</article><script src="detail.js"></script></body></html>

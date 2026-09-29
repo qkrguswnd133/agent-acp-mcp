@@ -1,0 +1,30 @@
+// Documentation example only: use the matching .json for deployment (JSON disallows comments).
+// auto is a gateway sentinel: do not pass an explicit effort override.
+{
+  "mcpServers": {
+    "agent": {
+      "command": "C:/Program Files/nodejs/node.exe",
+      "args": [
+        "C:/Users/YOUR_NAME/AppData/Local/Programs/Agent ACP MCP/dist/src/index.js"
+      ],
+      "env": {
+        // Persistent default: "true" allows self-provider calls in auto/explicit routing; "false" blocks.
+        "ALLOW_SELF_PROVIDER": "false",
+        "GROK_ENABLED": "true",
+        "CLAUDE_ENABLED": "true",
+        "CODEX_ENABLED": "true",
+        "GROK_MODEL": "auto",
+        "GROK_EFFORT": "xhigh",
+        "CLAUDE_MODEL": "auto",
+        // Claude CLI choices: low, medium, high, xhigh, max (model/version dependent).
+        "CLAUDE_EFFORT": "auto",
+        "CODEX_MODEL": "auto",
+        // Codex model/client choices: low, medium, high, xhigh, max, ultra (check model support).
+        "CODEX_EFFORT": "auto"
+      }
+    }
+  }
+}
+
+
+

@@ -1,0 +1,25 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {archiveName,releaseNotes,releaseTag,releaseVersion,repository,sha256,verifyUpdateManifest} from './release-lib.mjs';
+
+const [directory,publicKey]=process.argv.slice(2);
+if(!directory||!publicKey) throw new Error('Usage: node scripts/verify-assets.mjs ASSET_DIRECTORY PUBLIC_KEY');
+const manifestBytes=await fs.readFile(path.join(directory,'update-manifest.json'));
+const manifest=JSON.parse(manifestBytes.toString('utf8'));
+const signature=await fs.readFile(path.join(directory,'update-manifest.sig'),'utf8');
+if(!/^[A-Za-z0-9+/]{86}==\r?\n?$/.test(signature)) throw new Error('Update signature encoding is invalid');
+if(!await verifyUpdateManifest(manifestBytes,signature,publicKey)) throw new Error('Update manifest signature is invalid');
+if(manifest.schemaVersion!==1||manifest.repository!==repository||manifest.version!==releaseVersion||manifest.tag!==releaseTag||manifest.asset?.name!==archiveName) throw new Error('Update manifest release identity mismatch');
+const sourceRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const gateway=JSON.parse(await fs.readFile(path.join(sourceRoot,'gateway','package.json'),'utf8'));
+const monitor=JSON.parse(await fs.readFile(path.join(sourceRoot,'monitor','package.json'),'utf8'));
+if(manifest.components?.gateway!==gateway.version||manifest.components?.monitor!==monitor.version) throw new Error('Update manifest component versions differ from source');
+if(JSON.stringify(manifest.notes)!==JSON.stringify(releaseNotes)) throw new Error('Update manifest notes differ from source');
+const archive=path.join(directory,archiveName);
+const stat=await fs.stat(archive);
+const digest=await sha256(archive);
+if(stat.size!==manifest.asset.size||digest!==manifest.asset.sha256) throw new Error('Downloaded ZIP checksum/size mismatch');
+const checksum=await fs.readFile(path.join(directory,`${archiveName}.sha256`),'utf8');
+if(checksum.trim()!==`${digest}  ${archiveName}`) throw new Error('Downloaded SHA256 sidecar mismatch');
+console.log(`Downloaded assets verified: ${archiveName} (${digest})`);

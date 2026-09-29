@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "agent": {
+      "command": "C:/Program Files/nodejs/node.exe",
+      "args": [
+        "C:/Users/YOUR_NAME/AppData/Local/Programs/Agent ACP MCP/dist/src/index.js"
+      ],
+      "env": {
+        "ALLOW_SELF_PROVIDER": "false",
+        "GROK_ENABLED": "true",
+        "CLAUDE_ENABLED": "true",
+        "CODEX_ENABLED": "true",
+        "GROK_MODEL": "auto",
+        "GROK_EFFORT": "xhigh",
+        "CLAUDE_MODEL": "auto",
+        "CLAUDE_EFFORT": "auto",
+        "CODEX_MODEL": "auto",
+        "CODEX_EFFORT": "auto"
+      }
+    }
+  }
+}
+

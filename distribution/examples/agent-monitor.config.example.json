@@ -1,0 +1,14 @@
+{
+  "gatewayRoot": "C:/Users/YOUR_NAME/AppData/Local/Programs/Agent ACP MCP",
+  "env": {
+    "GROK_ENABLED": "true",
+    "CLAUDE_ENABLED": "true",
+    "CODEX_ENABLED": "true",
+    "GROK_MODEL": "auto",
+    "GROK_EFFORT": "xhigh",
+    "CLAUDE_MODEL": "auto",
+    "CLAUDE_EFFORT": "auto",
+    "CODEX_MODEL": "auto",
+    "CODEX_EFFORT": "auto"
+  }
+}
