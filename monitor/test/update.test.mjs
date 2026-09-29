@@ -111,3 +111,12 @@ test('hash failure and cancellation during preparation never launch installer; v
   const preparing=updater.install();assert.equal(updater.getState().phase,'preparing');updater.cancel();assert.equal((await preparing).started,false);assert.equal(launches.length,0);assert.match(updater.getState().error,/취소/);
   await updater.download();assert.equal((await updater.install()).started,true);assert.equal(launches.length,1);assert.equal(updater.getState().phase,'installing');
 });
+test('unfinished rollback blocks automatic download and install across restart',async t=>{
+  const {root,keys,keyFile}=await fixture(t),monitorDirectory=path.join(root,'monitor');await fs.mkdir(monitorDirectory);
+  const release=signedRelease(keys,'2.2.0',crypto.randomBytes(1024)),calls=[],launches=[];
+  const options={stateDir:root,monitorDirectory,appVersion:'1.1.0',keyFile,fetcher:fetcherFor([release],calls),launch:async()=>{launches.push(true);return 12345;}};
+  const updater=createUpdater(options);await updater.load();await updater.check();await updater.download();assert.equal(updater.getState().downloaded,true);
+  await fs.writeFile(path.join(root,'updates','install-result.json'),JSON.stringify({schemaVersion:1,operationId:'11111111-1111-1111-1111-111111111111',status:'rollback_failed',version:'2.2.0',message:'Manual recovery required.',backups:[]}));await updater.pollResult();
+  assert.equal((await updater.install()).started,false);assert.equal(launches.length,0);
+  const restarted=createUpdater(options);await restarted.load();await restarted.check(true);const before=calls.length;await restarted.download();assert.equal(calls.length,before);assert.equal(restarted.getState().downloaded,false);assert.equal((await restarted.install()).started,false);
+});

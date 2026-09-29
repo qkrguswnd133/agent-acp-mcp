@@ -1,5 +1,9 @@
 const fs=require('node:fs');
 const fsp=require('node:fs/promises');
+// Electron interprets .asar paths as virtual archives. Update payload files
+// must be written as ordinary disk bytes, including a new app.asar archive.
+// Keep regular fs for reading our embedded trust key from the running ASAR.
+const diskFs=process.versions.electron?require('original-fs'):fs;
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {pipeline}=require('node:stream/promises');
@@ -91,7 +95,7 @@ async function extractVerifiedZip(zipFile,stage,manifest){
           const destination=path.resolve(stage,...name.split('/'));if(!destination.startsWith(path.resolve(stage)+path.sep))throw updateError('ZIP_PATH','압축 경로가 작업 폴더를 벗어납니다.');
           await fsp.mkdir(path.dirname(destination),{recursive:true});const stream=await new Promise((res,rej)=>zip.openReadStream(entry,(e,s)=>e?rej(e):res(s)));
           const hash=crypto.createHash('sha256');let bytes=0;const meter=new Transform({transform(chunk,_,cb){bytes+=chunk.length;if(bytes>entry.uncompressedSize||bytes>MAX_ZIP)return cb(updateError('ZIP_SIZE','압축 파일 크기 불일치'));hash.update(chunk);cb(null,chunk);}});
-          await pipeline(stream,meter,fs.createWriteStream(destination,{flags:'wx'}));if(bytes!==entry.uncompressedSize)throw updateError('ZIP_SIZE','압축 파일 크기 불일치');files.set(name,{size:bytes,sha256:hash.digest('hex')});zip.readEntry();
+          await pipeline(stream,meter,diskFs.createWriteStream(destination,{flags:'wx'}));if(bytes!==entry.uncompressedSize)throw updateError('ZIP_SIZE','압축 파일 크기 불일치');files.set(name,{size:bytes,sha256:hash.digest('hex')});zip.readEntry();
         }catch(e){fail(e);zip.close();}
       });zip.readEntry();
     });
@@ -173,7 +177,7 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
     }catch(e){if(e.code==='RATE_LIMIT'){const retryAt=Number.isFinite(Date.parse(e.retryAt))?new Date(Math.min(Date.parse(e.retryAt),clock()+MAX_RATE_COOLDOWN)).toISOString():new Date(clock()+60000).toISOString();await writeJson(cooldownFile,{schemaVersion:1,retryAt}).catch(()=>{});set({phase:'idle',retryAt,error:rateMessage(retryAt)});}else set({phase:'idle',error:safeMessage(e),blocked:e.code==='TRUST_KEY'?safeMessage(e):state.blocked});}finally{busy=false;}return state;
   }
   async function download(){
-    if(busy||state.phase==='installing'||state.pending||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return state;busy=true;cancelRequested=false;controller=new AbortController();const m=selectedRelease.manifest,final=path.join(updateDir,m.asset.name),part=`${final}.part`;
+    if(busy||state.phase==='installing'||state.pending||state.result?.status==='rollback_failed'||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return state;busy=true;cancelRequested=false;controller=new AbortController();const m=selectedRelease.manifest,final=path.join(updateDir,m.asset.name),part=`${final}.part`;
     set({phase:'downloading',error:null,progress:{received:0,total:m.asset.size}});
     let timeout;try{
       await fsp.mkdir(updateDir,{recursive:true});const finalStat=await fsp.stat(final).catch(()=>null);if(finalStat){if(finalStat.isFile()&&finalStat.size===m.asset.size&&(await hashFile(final)).toLowerCase()===m.asset.sha256.toLowerCase()){if(cancelRequested)throw updateError('CANCELLED','업데이트를 취소했습니다.');set({phase:'downloaded',downloaded:true,progress:null});return state;}await fsp.unlink(final);}
@@ -198,7 +202,7 @@ function createUpdater({stateDir,monitorDirectory,gatewayDirectory,fetcher=globa
   function cancel(){if(['downloading','downloaded','preparing'].includes(state.phase)){cancelRequested=true;controller?.abort();}}
   function requireNotCancelled(){if(cancelRequested)throw updateError('CANCELLED','업데이트를 취소했습니다.');}
   async function install(){
-    if(busy||cancelRequested||state.phase==='installing'||state.pending||!state.downloaded||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return {started:false,reason:'업데이트를 설치할 수 없습니다.'};busy=true;set({phase:'preparing',error:null});let pendingSaved=false;
+    if(busy||cancelRequested||state.phase==='installing'||state.pending||state.result?.status==='rollback_failed'||!state.downloaded||!selectedRelease||state.blocked||state.installed?.version&&semver.lte(selectedRelease.manifest.version,state.installed.version))return {started:false,reason:'업데이트를 설치할 수 없습니다.'};busy=true;set({phase:'preparing',error:null});let pendingSaved=false;
     try{
       const m=selectedRelease.manifest,archive=path.join(updateDir,m.asset.name);requireNotCancelled();if(!await fsp.stat(archive).then(s=>s.isFile()&&s.size===m.asset.size).catch(()=>false))throw updateError('HASH','다운로드 파일 검증 실패. 다시 다운로드하세요.');
       if((await hashFile(archive)).toLowerCase()!==m.asset.sha256.toLowerCase())throw updateError('HASH','다운로드 파일 검증 실패. 다시 다운로드하세요.');requireNotCancelled();

@@ -16,7 +16,7 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 
 Monitor에서 새 릴리스를 확인하고 현재 설치된 구성요소를 함께 업데이트할 수 있습니다. Monitor는 Ed25519 서명, 다운로드한 ZIP의 SHA-256, ZIP 내부 파일별 체크섬을 검증한 뒤 업데이트를 실행합니다. 수동 업데이트는 새 ZIP을 별도 폴더에 압축 해제한 후 `Update.ps1`을 실행합니다. 실행 중인 작업을 마치고 MCP 연결을 닫아야 할 수 있습니다. 업데이트는 이전 실행 파일의 백업과 사용자 상태를 보존합니다.
 
-기존 사용자는 v2.2.0 ZIP의 `Update.ps1`을 한 번 실행해야 합니다. 그다음 배포부터 Monitor의 `··· → 업데이트 확인`에서 변경 사항을 보고 설치할 수 있습니다. 업데이트 창에는 배포 버전, MCP Gateway 버전, Monitor 버전을 각각 표시합니다. 설치 영수증이 없는 기존 배포 번호는 **미확인**으로 표시합니다.
+업데이트 기능이 없는 기존 사용자는 최신 ZIP의 `Update.ps1`을 한 번 실행해야 합니다. **v2.2.0 / Monitor 1.1.0도 압축 해제 오류가 있으므로 v2.2.1 ZIP의 `Update.ps1`로 한 번 업데이트하세요.** 수정된 Monitor 1.1.1부터는 `··· → 업데이트 확인`에서 변경 사항을 보고 **업데이트** 버튼 하나로 설치할 수 있습니다. 업데이트 창은 Windows 라이트·다크 테마를 따르며 배포, MCP Gateway, Monitor의 현재·최신 버전을 각각 표시합니다. 설치 영수증이 없는 기존 배포 번호는 **미확인**으로 표시합니다.
 
 ## 개발 및 릴리스
 
@@ -28,7 +28,7 @@ $key = Join-Path $env:USERPROFILE '.agent-acp-mcp-signing\release-ed25519-privat
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\distribution\Build-Release.ps1 -NodeExecutable $node -SigningKey $key
 ```
 
-빌드는 깨끗한 `npm ci`에서 게이트웨이/Monitor 테스트와 컴파일, Electron 패키징, production 게이트웨이 의존성 설치를 수행합니다. 결과는 무시되는 `build/release/v2.2.0/`에 생성됩니다. 소스를 커밋하고 푸시한 뒤 `Publish-Release.ps1` 한 명령으로 빌드, 서명, draft 업로드, 내려받은 asset 검증, 공개까지 수행할 수 있습니다. 공개 배포 순서는 [릴리스 가이드](distribution/README.md)에 있습니다. 개인 설치 폴더, 실행 상태, credential, 서명 개인키를 패키지 입력으로 사용하지 않습니다.
+빌드는 깨끗한 `npm ci`에서 게이트웨이/Monitor 테스트와 컴파일, Electron 패키징, production 게이트웨이 의존성 설치를 수행합니다. 결과는 무시되는 `build/release/v<배포 버전>/`에 생성됩니다. 소스를 커밋하고 푸시한 뒤 `Publish-Release.ps1` 한 명령으로 빌드, 서명, draft 업로드, 내려받은 asset 검증, 공개까지 수행할 수 있습니다. 공개 배포 순서는 [릴리스 가이드](distribution/README.md)에 있습니다. 개인 설치 폴더, 실행 상태, credential, 서명 개인키를 패키지 입력으로 사용하지 않습니다.
 
 ## 문서
 

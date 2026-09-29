@@ -1,7 +1,48 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'"><link rel="stylesheet" href="update.css"><title>Agent ACP MCP 업데이트</title></head><body>
-<main><header><div><h1>업데이트</h1><p>Agent ACP MCP · Agent Monitor</p></div><button id="check">지금 확인</button></header>
-<section class="status"><span id="indicator"></span><div><strong id="status">확인 중</strong><p id="detail"></p></div></section>
-<section class="versions" aria-label="설치 버전과 최신 버전"><div class="version-row"><span>현재</span><div id="installed"></div></div><div class="version-row"><span>최신</span><div id="release"></div></div><div id="last-result"></div><div id="recovery" hidden><details id="recovery-details"><summary>백업 및 복구</summary><p id="recovery-action"></p><ul id="recovery-paths"></ul></details></div></section>
-<section class="update-actions"><p id="release-meta"></p><div class="actions"><button id="update" disabled>업데이트</button><button id="cancel" hidden>취소</button></div><progress id="progress" hidden></progress><p id="progress-label"></p><details id="changelog-disclosure"><summary>변경 사항</summary><div id="notes"></div></details></section>
-<div id="history-section"><details id="github-disclosure" class="history-disclosure"><summary>GitHub 릴리스 기록</summary><div id="github-history" class="history"></div></details><details id="local-disclosure" class="history-disclosure"><summary>로컬 설치 기록</summary><div id="local-history" class="history"></div></details></div>
-</main><script src="update.js"></script></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <link rel="stylesheet" href="update.css">
+  <title>소프트웨어 업데이트</title>
+</head>
+<body>
+<main>
+  <header class="heading">
+    <div><h1>소프트웨어 업데이트</h1><p>Agent ACP MCP</p></div>
+    <button id="check" class="refresh" type="button" title="업데이트 다시 확인" aria-label="업데이트 다시 확인">↻</button>
+  </header>
+
+  <section class="status" role="status" aria-live="polite">
+    <span id="indicator" aria-hidden="true"></span>
+    <div><strong id="status">확인 중</strong><p id="detail"></p></div>
+  </section>
+
+  <section class="versions" aria-label="설치 버전과 최신 버전">
+    <div class="version-heading"><span>구성 요소</span><span>현재</span><span>최신</span></div>
+    <div class="version-row"><span>릴리스</span><b id="current-release">—</b><b id="latest-release">—</b></div>
+    <div class="version-row"><span>MCP Gateway</span><b id="current-gateway">—</b><b id="latest-gateway">—</b></div>
+    <div class="version-row"><span>Monitor</span><b id="current-monitor">—</b><b id="latest-monitor">—</b></div>
+  </section>
+
+  <p id="release-meta" class="release-meta"></p>
+  <div id="feedback" class="feedback" hidden>
+    <p id="error-panel" role="alert" hidden></p>
+    <p id="last-result" hidden></p>
+    <div id="recovery" hidden>
+      <details id="recovery-details"><summary>백업 및 복구</summary><p id="recovery-action"></p><ul id="recovery-paths"></ul></details>
+    </div>
+  </div>
+
+  <div class="actions"><button id="update" class="primary" type="button" disabled>업데이트</button><button id="cancel" type="button" hidden>취소</button></div>
+  <progress id="progress" aria-label="다운로드 진행률" hidden></progress><p id="progress-label" class="progress-label" aria-live="polite"></p>
+
+  <details id="changelog-disclosure" class="disclosure"><summary>변경 사항</summary><div id="notes"></div></details>
+  <div id="history-section">
+    <details id="github-disclosure" class="disclosure"><summary>GitHub 릴리스 기록</summary><div id="github-history" class="history"></div></details>
+    <details id="local-disclosure" class="disclosure"><summary>로컬 설치 기록</summary><div id="local-history" class="history"></div></details>
+  </div>
+</main>
+<script src="update-flow.js"></script><script src="update.js"></script>
+</body>
+</html>
