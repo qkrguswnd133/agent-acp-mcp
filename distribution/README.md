@@ -4,9 +4,20 @@
 
 Windows x64와 Node.js 22.12+ x64가 필요합니다. `Install.ps1`은 압축 해제한 릴리스 루트에서 실행합니다. 기본 위치는 `%LOCALAPPDATA%\Programs\Agent ACP MCP`와 `%LOCALAPPDATA%\Programs\Agent Monitor`이며 `-GatewayDirectory`, `-MonitorDirectory`, `-NodeExecutable`, `-NoShortcuts`로 조정할 수 있습니다. 기존 경로가 있으면 중지하고 오류를 표시합니다.
 
+Node.js가 없으면 PowerShell에서 다음을 실행하고 터미널을 다시 엽니다. 설치 후 `node --version`으로 22.12 이상인지 확인하세요.
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS --exact --source winget
+node --version
+```
+
 설치 프로그램은 MCP 설정 예제를 게이트웨이의 `configuration` 폴더에 생성합니다. 실제 Codex/Claude 설정과 개인의 전역 지침 파일은 자동으로 수정하지 않습니다. 해당 클라이언트의 설정에 필요한 항목만 병합하세요. 릴리스의 `examples/` 및 `instructions/` 템플릿은 시작점이고 `gateway/`의 Markdown 파일에 동작 설명이 있습니다. provider CLI와 인증은 각 사용자가 별도로 준비해야 합니다.
 
 ## 수동 업데이트
+
+업데이트 기능이 없는 기존 사용자는 v2.2.0 ZIP으로 아래 명령을 한 번 실행합니다. 이후 배포부터 Monitor의 `··· → 업데이트 확인` 또는 트레이 메뉴에서 설치할 수 있습니다. 자동 확인은 시작 시와 6시간마다 수행하며 다운로드와 설치는 사용자가 선택합니다. 앱에서는 이미 설치된 구성요소만 업데이트합니다.
+
+업데이트 창의 **설치된 버전**에서 MCP Gateway, Monitor, 배포 묶음 버전을 구분해 확인합니다. 기존 설치에 영수증이 없으면 배포 번호는 미확인으로 표시합니다. Gateway를 교체한 뒤에는 MCP 클라이언트에서 연결을 다시 시작하세요.
 
 새 릴리스 ZIP을 설치 폴더 밖의 빈 폴더에 풉니다. 해당 폴더에서 다음을 실행합니다.
 

@@ -234,10 +234,20 @@ try {
         Assert ($r.Result.status -eq 'success') 'Runner did not report success.'
         Assert ($r.Result.operationId -match '^[0-9a-f-]{36}$') 'Operation identity missing.'
         Assert (Test-Path -LiteralPath $r.History) 'Runner history missing.'
+        Assert ((Read $r.History).TrimStart().StartsWith('[')) 'One-entry history was serialized as an object.'
         Assert ((Read (PathOf $f.Gateway 'dist/src/index.js')) -eq $script:OldGatewayEntry) 'Omitted gateway was changed.'
         Assert ((Read (PathOf $f.Monitor 'resources/app.asar')) -eq 'new monitor app') 'Monitor was not updated.'
         $receipt=Get-Content -LiteralPath (PathOf $f.Monitor 'release-receipt.json') -Raw | ConvertFrom-Json
         Assert ($receipt.version -eq '9.9.9' -and $receipt.components.gateway -eq '9.9.9' -and $receipt.components.monitor -eq '9.9.9') 'Shared monitor receipt missing.'
+    }
+    Run 'Runner migrates old object history into an array' {
+        $f=New-Fixture 'runner-object-history'
+        Put (PathOf $f.Base 'user-data/updates/history.json') '{"schemaVersion":1,"operationId":"11111111-1111-4111-8111-111111111111","status":"success","version":"1.0.0"}'
+        $r=Invoke-Runner $f -OmitGateway
+        Assert ($r.ExitCode -eq 0) "Runner failed with old history: $($r.Output)"
+        Assert ((Read $r.History).TrimStart().StartsWith('[')) 'History migration did not write an array.'
+        $entries=Get-Content -LiteralPath $r.History -Raw | ConvertFrom-Json
+        Assert (@($entries).Count -eq 2) 'Old and new history entries were not preserved.'
     }
     Run 'Runner accepts verified package staged under monitor user data' {
         $f=New-Fixture 'runner-stage-under-data'

@@ -29,7 +29,7 @@ function FileHash([string]$Path) {
 function WriteJsonAtomic([string]$Path,$Value) {
     $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
     try {
-        [IO.File]::WriteAllText($temp,($Value | ConvertTo-Json -Depth 8 -Compress),(New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($temp,(ConvertTo-Json -InputObject $Value -Depth 8 -Compress),(New-Object Text.UTF8Encoding($false)))
         Move-Item -LiteralPath $temp -Destination $Path -Force
     } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
 }

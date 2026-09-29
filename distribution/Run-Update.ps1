@@ -18,7 +18,7 @@ function NoLinks([string]$Path,[switch]$Tree) {
 function AtomicJson([string]$Path,$Value) {
     $parent=Split-Path -Parent $Path;if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
     $temp=$Path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
-    try { [IO.File]::WriteAllText($temp,($Value | ConvertTo-Json -Depth 12 -Compress),(New-Object Text.UTF8Encoding($false)));Move-Item -LiteralPath $temp -Destination $Path -Force }
+    try { [IO.File]::WriteAllText($temp,(ConvertTo-Json -InputObject $Value -Depth 12 -Compress),(New-Object Text.UTF8Encoding($false)));Move-Item -LiteralPath $temp -Destination $Path -Force }
     finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
 }
 function VerifyPackage([string]$Package) {
