@@ -7,13 +7,14 @@ function render(state){current=state||{};const phase=current.phase||'idle',relea
   $('indicator').className=current.error||current.blocked?'error':release&&(!installed?.version||release.version!==installed.version)?'available':'';
   $('status').textContent=phase==='checking'?'릴리스 확인 중':phase==='downloading'?'다운로드 중':phase==='preparing'?'설치 파일 확인 중':phase==='installing'?'설치 프로그램 시작됨':current.blocked?'수동 설치 필요':current.error?'확인 필요':release&&(!installed?.version||release.version!==installed.version)?'업데이트 사용 가능':'최신 릴리스 확인됨';
   $('detail').textContent=current.blocked||current.error||(current.checkedAt?`마지막 확인: ${new Date(current.checkedAt).toLocaleString('ko-KR')}`:'GitHub 안정 릴리스를 확인합니다.');
-  $('installed').textContent=`릴리스 ${installed?.version||'설치 기록 없음'} · 현재 Gateway ${current.currentComponents?.gateway||'확인 불가'} · 현재 Monitor ${current.currentComponents?.monitor||'확인 불가'}`;
+  $('installed').textContent=`릴리스 ${installed?.version||'설치 기록 없음'} · Gateway ${current.currentComponents?.gateway||'확인 불가'} · Monitor ${current.currentComponents?.monitor||'확인 불가'}`;
   const result=current.result;$('last-result').textContent=result?.status?`최근 설치: ${resultLabels[result.status]||'확인 필요'} · ${result.message||''}`:'';
   const backups=Array.isArray(result?.backups)?result.backups.filter(value=>typeof value==='string'&&value.trim()).slice(0,10):[];
-  $('recovery').hidden=!backups.length&&result?.status!=='rollback_failed';$('recovery-paths').replaceChildren();
+  $('recovery').hidden=!backups.length&&result?.status!=='rollback_failed';$('recovery-details').open=result?.status==='rollback_failed';$('recovery-paths').replaceChildren();
   $('recovery-action').textContent=result?.status==='rollback_failed'?'자동 복구가 완료되지 않았습니다. 앱을 종료하고 백업 폴더를 보존한 뒤 설치 폴더를 수동으로 복구하세요.':result?.status==='rolled_back'?'이전 설치로 되돌렸습니다. 백업 폴더를 보존하고 설치 상태를 확인하세요.':result?.status==='success'?'이전 설치 파일의 백업입니다. 되돌려야 할 때 아래 폴더를 사용하세요.':'설치가 완료되지 않았습니다. 백업 폴더를 보존하고 설치 상태를 확인하세요.';
   for(const backup of backups){const item=document.createElement('li');item.textContent=backup;$('recovery-paths').append(item);}
   $('release').textContent=release?`${release.version} · Gateway ${release.components.gateway} · Monitor ${release.components.monitor}`:'확인된 릴리스가 없습니다.';
+  $('release-meta').textContent=release?`${new Date(release.publishedAt).toLocaleDateString('ko-KR')} · ZIP ${Math.ceil(release.size/1048576)} MB`:'';
   $('notes').replaceChildren();if(release){notes($('notes'),'Gateway',release.notes.gateway);notes($('notes'),'Monitor',release.notes.monitor);}
   const active=['checking','downloading','preparing','installing'].includes(phase),newer=release&&(!installed?.version||release.version!==installed.version);
   $('check').disabled=active;$('download').disabled=active||!newer||!!current.blocked||current.downloaded;$('cancel').hidden=phase!=='downloading';$('install').disabled=active||!current.downloaded||!!current.blocked;

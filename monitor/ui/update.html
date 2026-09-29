@@ -1,8 +1,7 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'"><link rel="stylesheet" href="update.css"><title>Agent ACP MCP 업데이트</title></head><body>
 <main><header><div><h1>업데이트</h1><p>Agent ACP MCP · Agent Monitor</p></div><button id="check">지금 확인</button></header>
 <section class="status"><span id="indicator"></span><div><strong id="status">확인 중</strong><p id="detail"></p></div></section>
-<section><h2>설치된 버전</h2><div id="installed"></div><div id="last-result"></div><div id="recovery" hidden><strong>백업 및 복구</strong><p id="recovery-action"></p><ul id="recovery-paths"></ul></div></section>
-<section><h2>최신 안정 릴리스</h2><div id="release"></div><div id="notes"></div><div class="actions"><button id="download" disabled>다운로드</button><button id="cancel" hidden>취소</button><button id="install" disabled>설치</button></div><progress id="progress" hidden></progress><p id="progress-label"></p></section>
-<section id="history-section"><h2>GitHub 릴리스 기록</h2><div id="github-history" class="history"></div></section>
-<section><h2>로컬 설치 기록</h2><div id="local-history" class="history"></div></section>
+<section class="versions" aria-label="설치 버전과 최신 버전"><div class="version-row"><span>현재</span><div id="installed"></div></div><div class="version-row"><span>최신</span><div id="release"></div></div><div id="last-result"></div><div id="recovery" hidden><details id="recovery-details"><summary>백업 및 복구</summary><p id="recovery-action"></p><ul id="recovery-paths"></ul></details></div></section>
+<section class="update-actions"><p id="release-meta"></p><div class="actions"><button id="download" disabled>다운로드</button><button id="cancel" hidden>취소</button><button id="install" disabled>설치</button></div><progress id="progress" hidden></progress><p id="progress-label"></p><details id="changelog-disclosure"><summary>변경 사항</summary><div id="notes"></div></details></section>
+<div id="history-section"><details id="github-disclosure" class="history-disclosure"><summary>GitHub 릴리스 기록</summary><div id="github-history" class="history"></div></details><details id="local-disclosure" class="history-disclosure"><summary>로컬 설치 기록</summary><div id="local-history" class="history"></div></details></div>
 </main><script src="update.js"></script></body></html>

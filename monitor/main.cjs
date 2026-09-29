@@ -45,7 +45,7 @@ function hoverStep(point,now=Date.now()){
 }
 function openPanel(provider){if(!['grok','claude','codex'].includes(provider))return;selected=provider;const bounds=bar.getBounds();hideAt=0;panel.setBounds(popupBounds(bounds));panel.webContents.send('provider',selected);bar.webContents.send('provider',selected);panel.showInactive();}
 function show(){if(!bar||bar.isDestroyed())return;bar.showInactive();reposition();}
-function openUpdates(section){if(!updates||updates.isDestroyed()){updates=new BrowserWindow({width:620,height:700,minWidth:520,minHeight:500,show:false,title:'Agent ACP MCP 업데이트',backgroundColor:'#171a24',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});updates.setMenu(null);updates.webContents.setWindowOpenHandler(()=>({action:'deny'}));updates.webContents.on('will-navigate',event=>event.preventDefault());updates.loadFile(path.join(__dirname,'ui','update.html'));}updates.show();updates.focus();if(section==='history'){const scroll=()=>{if(!updates.isDestroyed())void updates.webContents.executeJavaScript("document.querySelector('#history-section')?.scrollIntoView({block:'start'})").catch(()=>{});};if(updates.webContents.isLoading())updates.webContents.once('did-finish-load',scroll);else scroll();}}
+function openUpdates(section){if(!updates||updates.isDestroyed()){updates=new BrowserWindow({width:470,height:500,minWidth:440,minHeight:450,show:false,title:'Agent ACP MCP 업데이트',backgroundColor:'#171a24',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});updates.setMenu(null);updates.webContents.setWindowOpenHandler(()=>({action:'deny'}));updates.webContents.on('will-navigate',event=>event.preventDefault());updates.loadFile(path.join(__dirname,'ui','update.html'));}updates.show();updates.focus();if(section==='history'){const scroll=()=>{if(!updates.isDestroyed())void updates.webContents.executeJavaScript("document.querySelector('#github-disclosure').open=true;document.querySelector('#local-disclosure').open=true;document.querySelector('#history-section').scrollIntoView({block:'start'})").catch(()=>{});};if(updates.webContents.isLoading())updates.webContents.once('did-finish-load',scroll);else scroll();}}
 function menu(){Menu.buildFromTemplate([
   {label:bar.isVisible()?'상태 바 숨기기':'상태 바 표시',click:()=>{if(bar.isVisible()){closePanel();bar.hide();}else show();}},
   {label:'지금 새로고침',click:()=>refresh()},
@@ -169,19 +169,24 @@ async function runSmoke(){
     const outside={x:-100000,y:-100000};hoverStep(outside,1000);const card=panel.getBounds();hoverStep({x:card.x+20,y:card.y+20},1200);assert.equal(panel.isVisible(),true);hoverStep(outside,1400);hoverStep(outside,1721);assert.equal(panel.isVisible(),false);
     const bounds=bar.getBounds();bar.setPosition(bounds.x+25,bounds.y+25);reposition();assert.deepEqual(loadPosition(),{x:bar.getBounds().x,y:bar.getBounds().y,pinned});
     openUpdates();await new Promise(resolve=>updates.webContents.isLoading()?updates.webContents.once('did-finish-load',resolve):resolve());
-    const fixtureUpdate={phase:'idle',installed:{version:'2.1.0',components:{gateway:'2.1.0',monitor:'1.1.0'}},currentComponents:{gateway:'2.1.0',monitor:'1.1.0'},selected:{version:'2.2.0',components:{gateway:'2.2.0',monitor:'1.1.0'},notes:{gateway:['<img src=x onerror=alert(1)>'],monitor:['업데이트 UI 확인']},publishedAt:now},history:[],localHistory:[],downloaded:false};
+    const fixtureUpdate={phase:'idle',installed:{version:'2.1.0',components:{gateway:'2.1.0',monitor:'1.1.0'}},currentComponents:{gateway:'2.1.0',monitor:'1.1.0'},selected:{version:'2.2.0',components:{gateway:'2.2.0',monitor:'1.1.0'},notes:{gateway:['<img src=x onerror=alert(1)>'],monitor:['업데이트 UI 확인']},publishedAt:now,size:164201607},history:[],localHistory:[],downloaded:false};
     updates.webContents.send('update-state',fixtureUpdate);bar.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,80));
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#notes li').textContent"),'<img src=x onerror=alert(1)>');
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#notes img')"),null);
     assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#updates').hidden"),false);
     fixtureUpdate.selected.notes.gateway=['Gateway 최신 릴리스 정보'];updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,40));
-    assert.match(await updates.webContents.executeJavaScript("document.querySelector('#installed').textContent"),/현재 Gateway 2\.1\.0 · 현재 Monitor 1\.1\.0/);
+    assert.match(await updates.webContents.executeJavaScript("document.querySelector('#installed').textContent"),/Gateway 2\.1\.0 · Monitor 1\.1\.0/);
+    assert.match(await updates.webContents.executeJavaScript("document.querySelector('#release-meta').textContent"),/ZIP 157 MB/);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#changelog-disclosure').open"),false);
+    assert.equal(updates.getBounds().width,470);assert.equal(updates.getBounds().height,500);
     fs.writeFileSync(path.join(out,'update-window.png'),await captureReady(updates));
     fixtureUpdate.result={status:'rollback_failed',message:'Automatic rollback incomplete.',backups:['C:/Temp/sample-project.backup']};updates.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,40));
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#last-result').textContent"),/수동 복구 필요/);
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery').hidden"),false);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery-details').open"),true);
     assert.match(await updates.webContents.executeJavaScript("document.querySelector('#recovery-action').textContent"),/수동으로 복구/);
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery-paths li').textContent"),'C:/Temp/sample-project.backup');
+    openUpdates('history');await new Promise(r=>setTimeout(r,40));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#github-disclosure').open && document.querySelector('#local-disclosure').open"),true);
     fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted'],stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
   }catch(error){console.error(error);app.exit(1);}
 }
