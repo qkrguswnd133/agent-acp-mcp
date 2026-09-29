@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import {home,runCommand,safeChildEnv} from './process.js';
+import {home,runCommand,safeChildEnv,type LaunchCommand} from './process.js';
 
 /** Scope rotated-token telemetry to the account AND organization reported by the CLI. */
 export function claudeUsageAccountKey(auth:unknown):string|undefined {
@@ -18,7 +18,7 @@ export function claudeUsageAccountKey(auth:unknown):string|undefined {
  * The CLI owns refresh-token rotation and its credential lock. Initialization
  * is NOT proof of renewal: ClaudeUsageReader rereads credentials and queries usage.
  */
-export async function refreshClaudeCredentials(command:string,expectedAccountKey?:string,run:typeof runCommand=runCommand):Promise<void> {
+export async function refreshClaudeCredentials(command:LaunchCommand,expectedAccountKey?:string,run:typeof runCommand=runCommand):Promise<void> {
   const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'agent-claude-auth-'));
   const env=safeChildEnv({DISABLE_AUTOUPDATER:'1',CLAUDE_CODE_SAFE_MODE:'1'});
   try {

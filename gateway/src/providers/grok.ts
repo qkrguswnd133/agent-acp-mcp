@@ -1,12 +1,10 @@
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
 import path from 'node:path';
 import {runGrok} from '../acp.js';
 import {getWeeklyUsage,getGrokAccountStatus} from '../billing.js';
 import {ensureHealth} from '../health.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
-import {executable,childEnv} from '../runtime.js';
-import {home} from '../process.js';
+import {childEnv,grokLaunch,resetGrokLaunch} from '../runtime.js';
+import {home,runCommand} from '../process.js';
 import {QuotaCache} from '../quota-cache.js';
 import {classifyProviderError, type LimitClassification} from '../limits.js';
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
@@ -74,7 +72,11 @@ export class GrokProvider implements ProviderAdapter{
  async cliStatus(){const status=await this.status(false);return status;}
  async update(){
   if(!providerEnabled('grok'))return {provider:'grok',updated:false,reason:'disabled'};
-  try{const {stdout,stderr}=await promisify(execFile)(executable,['update'],{env:childEnv,windowsHide:true,timeout:180000,maxBuffer:2*1024*1024});const health=await ensureHealth(true);return {provider:'grok',updated:health.healthy,stdout:stdout.trim(),stderr:stderr.trim(),health};}
+  try{
+   const r=await runCommand(await grokLaunch(),['update'],{env:childEnv,timeoutMs:180000});resetGrokLaunch();
+   if(r.code!==0)return {provider:'grok',updated:false,error:r.timedOut?'Grok update timed out':`Grok update exited with code ${r.code}`,stdout:r.stdout.trim(),stderr:r.stderr.trim()};
+   const health=await ensureHealth(true);return {provider:'grok',updated:health.healthy,stdout:r.stdout.trim(),stderr:r.stderr.trim(),health};
+  }
   catch(e){return {provider:'grok',updated:false,error:(e as Error).message};}
  }
 }

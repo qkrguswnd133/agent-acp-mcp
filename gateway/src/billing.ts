@@ -1,7 +1,8 @@
 import {spawn} from 'node:child_process';
 import {Readable,Writable} from 'node:stream';
 import {client,ndJsonStream} from '@agentclientprotocol/sdk';
-import {active,executable,childEnv,terminate,shuttingDown} from './runtime.js';
+import {active,childEnv,terminate,shuttingDown,grokLaunch} from './runtime.js';
+import {spawnPlan} from './process.js';
 import {readWeeklyUsage,type WeeklyUsage,type Unavailable} from './usage.js';
 import {accountStatus,type AccountStatus} from './account.js';
 let authenticatedAccount:AccountStatus|undefined;
@@ -23,7 +24,8 @@ export function normalizeBilling(value:any,now:number):WeeklyUsage {
 /** Official subscription billing request only: no session/new or model prompt. */
 export async function fetchBilling():Promise<unknown>{
   if(shuttingDown)throw Error('Billing unavailable during shutdown');
-  const p=spawn(executable,['agent','--no-leader','stdio'],{env:childEnv,windowsHide:true,stdio:['pipe','pipe','pipe']});active.add(p);
+  const invocation=spawnPlan(await grokLaunch(),['agent','--no-leader','stdio']);
+  const p=spawn(invocation.command,invocation.args,{env:childEnv,windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});active.add(p);
   p.stderr.on('data',()=>{});
   const app=client({name:'grok-billing-reader'});
   const conn=app.connect(ndJsonStream(Writable.toWeb(p.stdin) as WritableStream<Uint8Array>,Readable.toWeb(p.stdout) as ReadableStream<Uint8Array>));

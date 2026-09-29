@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {spawn,execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {spawn} from 'node:child_process';
 import {Readable,Writable} from 'node:stream';
 import {client,ndJsonStream,type ClientConnection} from '@agentclientprotocol/sdk';
-import {root,executable,childEnv,active,terminate,shuttingDown} from './runtime.js';
+import {root,childEnv,active,terminate,shuttingDown,grokLaunch,grokLaunchFingerprint,resetGrokLaunch} from './runtime.js';
+import {runCommand,spawnPlan,type LaunchCommand} from './process.js';
 import {readWeeklyUsage,getSessionUsage,weeklyDelta} from './usage.js';
 import {modelPolicy,effortPolicy} from './config.js';
 import {confirmSessionConfig} from './session-config.js';
@@ -53,12 +53,13 @@ let mcpTest:(()=>Promise<boolean>)|undefined;
 export function setMcpSelfTest(test:()=>Promise<boolean>){mcpTest=test;}
 export function cachedHealth(){return memory;}
 export function markUnhealthy(reason:string){if(memory){memory={...memory,healthy:false,reason};recheck=true;}}
-async function fingerprint(){const s=await fs.stat(executable);return `${s.size}:${s.mtimeMs}`;}
-async function probe(selection?:Selection,smoke=false){
+const fingerprint=grokLaunchFingerprint;
+async function probe(launch:LaunchCommand,selection?:Selection,smoke=false){
  if(shuttingDown)throw Error('Bridge is shutting down');
  const cwd=path.join(root,'work/health');await fs.mkdir(cwd,{recursive:true});
  const args=['agent','--no-leader',...(selection?['--model',selection.model,'--effort',selection.effort]:[]),'--agent-profile',path.join(root,'profiles/read.md'),'stdio'];
- const p=spawn(executable,args,{cwd,env:childEnv,windowsHide:true,stdio:['pipe','pipe','pipe']});active.add(p);p.stderr.on('data',()=>{});
+ const invocation=spawnPlan(launch,args,cwd);
+ const p=spawn(invocation.command,invocation.args,{cwd,env:childEnv,windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});active.add(p);p.stderr.on('data',()=>{});
  const app=client({name:'grok-compatibility-check'});
  let text='',conn:ClientConnection|undefined;
  app.onRequest('session/request_permission',async()=>({outcome:{outcome:'cancelled'}}));
@@ -80,7 +81,7 @@ async function probe(selection?:Selection,smoke=false){
       const before=await readWeeklyUsage();const startedAt=new Date().toISOString();
       const result=await conn.agent.request('session/prompt',{sessionId:s.sessionId,prompt:[{type:'text',text:'Read-only compatibility test. Do not use any tools. Reply exactly ACP_HEALTH_OK.'}]});
       const after=await readWeeklyUsage();
-      smokeResult={sessionId:s.sessionId,model:selection.model,effort:selection.effort,stopReason:result.stopReason,text,usage:await getSessionUsage(s.sessionId,executable,[],childEnv),weekly:after,weeklyDelta:weeklyDelta(before,after,startedAt)};
+      smokeResult={sessionId:s.sessionId,model:selection.model,effort:selection.effort,stopReason:result.stopReason,text,usage:await getSessionUsage(s.sessionId,launch,[],childEnv),weekly:after,weeklyDelta:weeklyDelta(before,after,startedAt)};
       if(result.stopReason!=='end_turn'||text.trim()!=='ACP_HEALTH_OK')throw Error('Read-only ACP smoke failed');
     }
   }
@@ -104,8 +105,12 @@ export async function ensureHealth(force=false):Promise<Health>{
   try{prior=JSON.parse(await fs.readFile(path.join(root,'state/health.json'),'utf8'));}catch{}
   const base:Health={healthy:false,version:'unavailable',fingerprint:fp,checkedAt:new Date().toISOString(),model:'unavailable',effort:'unavailable',notices:[]};
   try{
-    const {stdout}=await promisify(execFile)(executable,['version'],{env:childEnv,windowsHide:true,timeout:15000});base.version=stdout.trim();
-    const discovery=await probe();
+    resetGrokLaunch();
+    const launch=await grokLaunch();
+    const version=await runCommand(launch,['version'],{env:childEnv,timeoutMs:15000});
+    if(version.code!==0)throw Error(version.timedOut?'Grok version check timed out':`Grok version check failed with exit code ${version.code}`);
+    base.version=version.stdout.trim();
+    const discovery=await probe(launch);
     // Preserve verified authentication even if model/config validation later fails.
     base.protocolVersion=discovery.init.protocolVersion;base.auth='cached_token';base.subscriptionTier=String(discovery.auth._meta?.subscription_tier??'unavailable');
     const state=discovery.init._meta?.modelState as any;
@@ -114,7 +119,7 @@ export async function ensureHealth(force=false):Promise<Health>{
     if(prior&&prior.version!==base.version)base.notices.push(`Grok Build version changed: ${prior.version} -> ${base.version}. Compatibility smoke performed.`);
     if(prior&&(prior.model!==selected.model||prior.effort!==selected.effort))base.notices.push(`Model/effort changed: ${prior.model} / ${prior.effort} -> ${selected.model} / ${selected.effort}.`);
     const needsSmoke=!prior?.healthy||prior.fingerprint!==fp||prior.model!==selected.model||prior.effort!==selected.effort||retryAfterError;
-    const verified=await probe(selected,needsSmoke);
+    const verified=await probe(launch,selected,needsSmoke);
     base.protocolVersion=verified.init.protocolVersion;base.auth='cached_token';base.subscriptionTier=String(verified.auth._meta?.subscription_tier??'unavailable');
     base.smoke=verified.smoke??prior?.smoke;
     base.mcpSelfTest=mcpTest?await mcpTest():undefined;

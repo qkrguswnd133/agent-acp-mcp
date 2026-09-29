@@ -1,10 +1,8 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { runCommand, type LaunchCommand } from "./process.js";
 
-const execFileAsync = promisify(execFile);
 const BILLING_MESSAGE = "billing: fetched credits config";
 
 export type UsagePeriod = {
@@ -106,9 +104,10 @@ export async function readWeeklyUsage(logPath?: string): Promise<WeeklyUsage | U
 }
 
 /** Fetches and sanitizes the JSON usage response for one local Grok session. */
-export async function getSessionUsage(sessionId: string, executable: string, baseArgs: string[], env: NodeJS.ProcessEnv): Promise<SessionUsage | Unavailable> {
+export async function getSessionUsage(sessionId: string, executable: LaunchCommand, baseArgs: string[], env: NodeJS.ProcessEnv): Promise<SessionUsage | Unavailable> {
   try {
-    const result = await execFileAsync(executable, [...baseArgs, "usage", sessionId], { env, timeout: 20_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true });
+    const result = await runCommand(executable, [...baseArgs, "usage", sessionId], { env, timeoutMs: 20_000 });
+    if (result.code !== 0 || result.stdout.length > 2 * 1024 * 1024) return unavailable();
     const parsed = parseJsonOutput(result.stdout);
     const session = parsed?.session as Record<string, unknown> | undefined;
     if (!session) return unavailable();

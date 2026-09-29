@@ -10,7 +10,7 @@ export class TestTerminal {
  private stopReason:string|undefined;
  constructor(command:string,args:string[],cwd:string,deadline:number,signal:AbortSignal,activity:()=>void,env=safeChildEnv(),limit=1024*1024){
   this.record={command,args,cwd,source:'acp_terminal',status:'running',exitCode:null,signal:null,output:'',truncated:false,startedAt:new Date().toISOString()};
-  const invocation=commandInvocation(command,args);
+  const invocation=commandInvocation(command,args,cwd);
   // cmd /s removes the outer quotes; preserve quoted batch paths containing spaces.
   if(process.platform==='win32'&&/\.(cmd|bat)$/i.test(command))invocation.args[3]='"'+invocation.args[3]+'"';
   this.child=spawn(invocation.command,invocation.args,{cwd,env,windowsHide:true,windowsVerbatimArguments:process.platform==='win32'&&/\.(cmd|bat)$/i.test(command),stdio:['ignore','pipe','pipe']});

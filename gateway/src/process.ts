@@ -86,18 +86,46 @@ export async function findExecutableInChildDirs(base:string,filename:string):Pro
 }
 
 export interface CommandResult {code:number|null;signal:NodeJS.Signals|null;stdout:string;stderr:string;timedOut:boolean;}
-export function commandInvocation(command:string,args:string[]):{command:string;args:string[]}{
+export function commandInvocation(command:string,args:string[],cwd?:string):{command:string;args:string[]}{
+  assertBatchCwdSupported(command,cwd);
   if(process.platform==='win32'&&/\.(cmd|bat)$/i.test(command)){
     return {command:process.env.ComSpec??'C:/Windows/System32/cmd.exe',args:['/d','/s','/c',windowsCmdLine([command,...args])]};
   }
   return {command,args};
 }
 
-export async function runCommand(command:string,args:string[],options:{cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void}={}):Promise<CommandResult>{
-  const invocation=commandInvocation(command,args);
-  const batch=process.platform==='win32'&&/\.(cmd|bat)$/i.test(command);
+/** A launcher that is either an executable path or an executable plus fixed
+ * leading arguments, e.g. a genuine Node runtime and a package's JS entry. */
+export interface LaunchDescriptor {command:string;argsPrefix?:readonly string[];source?:string;}
+export type LaunchCommand=string|LaunchDescriptor;
+export function launchInvocation(launch:LaunchCommand,args:readonly string[]):{command:string;args:string[]}{
+  return typeof launch==='string'?{command:launch,args:[...args]}:{command:launch.command,args:[...(launch.argsPrefix??[]),...args]};
+}
+export function isBatchCommand(command:string,platform:NodeJS.Platform=process.platform){return platform==='win32'&&/\.(cmd|bat)$/i.test(command);}
+/** UNC shares (\\server\share, \\wsl.localhost, \\wsl$), device paths and their forward-slash forms. */
+export function isUncPath(value:string){return /^[\\/]{2}[^\\/]/.test(value);}
+/** cmd.exe cannot use a UNC current directory: it silently falls back to
+ * C:\Windows, so a batch launcher would run somewhere the caller never chose. */
+export function assertBatchCwdSupported(command:string,cwd:string|undefined,platform:NodeJS.Platform=process.platform){
+  const effective=cwd??process.cwd();
+  if(isBatchCommand(command,platform)&&isUncPath(effective))
+    throw Error(`Refusing to run Windows batch launcher ${command} with UNC working directory ${effective}: cmd.exe does not support UNC current directories. Configure a native executable instead.`);
+}
+
+/** Spawn-ready argv for a launcher. Every direct spawn of a provider CLI goes
+ * through here so a batch launcher with a UNC cwd is refused before spawn. */
+export function spawnPlan(launch:LaunchCommand,args:readonly string[],cwd?:string):{command:string;args:string[];windowsVerbatimArguments:boolean}{
+  const resolved=launchInvocation(launch,args);
+  const invocation=commandInvocation(resolved.command,resolved.args,cwd);
+  const batch=isBatchCommand(resolved.command);
+  // cmd /s removes the outer quotes; preserve quoted batch paths containing spaces.
   if(batch)invocation.args[3]='"'+invocation.args[3]+'"';
-  const p=spawn(invocation.command,invocation.args,{cwd:options.cwd,env:options.env??safeChildEnv(),windowsHide:true,windowsVerbatimArguments:batch,stdio:['pipe','pipe','pipe']});
+  return {...invocation,windowsVerbatimArguments:batch};
+}
+
+export async function runCommand(launch:LaunchCommand,args:string[],options:{cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void}={}):Promise<CommandResult>{
+  const invocation=spawnPlan(launch,args,options.cwd);
+  const p=spawn(invocation.command,invocation.args,{cwd:options.cwd,env:options.env??safeChildEnv(),windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});
   options.onSpawn?.(p);
   let stdout='',stderr='',timedOut=false;
   p.stdout?.on('data',d=>{stdout+=String(d);options.onActivity?.({type:'stdout',at:new Date().toISOString()});});

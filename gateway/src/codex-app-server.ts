@@ -1,14 +1,14 @@
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
-import {commandInvocation,safeChildEnv,terminateProcess} from './process.js';
+import {safeChildEnv,spawnPlan,terminateProcess,type LaunchCommand} from './process.js';
 
-export async function readCodexRateLimits(executable:string):Promise<any>{return readCodexState(executable,false);}
-export async function readCodexStatus(executable:string):Promise<any>{return readCodexState(executable,true);}
-async function readCodexState(executable:string,includeAccount:boolean):Promise<any>{
-  const invocation=commandInvocation(executable,['app-server']);
-  const batch=process.platform==='win32'&&/\.(cmd|bat)$/i.test(executable);if(batch)invocation.args[3]='"'+invocation.args[3]+'"';
-  const p=spawn(invocation.command,invocation.args,{env:safeChildEnv(),windowsHide:true,windowsVerbatimArguments:batch,stdio:['pipe','pipe','pipe']});
+export async function readCodexRateLimits(executable:LaunchCommand):Promise<any>{return readCodexState(executable,false);}
+export async function readCodexStatus(executable:LaunchCommand):Promise<any>{return readCodexState(executable,true);}
+async function readCodexState(executable:LaunchCommand,includeAccount:boolean):Promise<any>{
+  const invocation=spawnPlan(executable,['app-server']);
+  const p=spawn(invocation.command,invocation.args,{env:safeChildEnv(),windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});
   p.stderr.on('data',()=>{}); // diagnostics may contain account details
+  p.on('error',e=>{for(const item of pending.values())item.reject(e);pending.clear();});
   const rl=readline.createInterface({input:p.stdout});
   let id=0;const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>();
   rl.on('line',line=>{try{const msg=JSON.parse(line);if(typeof msg.id==='number'&&pending.has(msg.id)){const item=pending.get(msg.id)!;pending.delete(msg.id);if(msg.error)item.reject(Error(String(msg.error.message??JSON.stringify(msg.error))));else item.resolve(msg.result);}}catch{}});

@@ -4,7 +4,7 @@ import {spawn,execFile, type ChildProcess, type ChildProcessWithoutNullStreams} 
 import {Readable,Writable} from 'node:stream';
 import fs from 'node:fs/promises';
 import {TestTerminal} from './test-terminal.js';
-import {resolveExecutable} from './process.js';
+import {resolveExecutable,spawnPlan,type LaunchCommand} from './process.js';
 import {permissionResponse} from './permission-response.js';
 import {workspaceConflict,workspaceConflictMessage} from './workspace-lock.js';
 import path from 'node:path';
@@ -13,7 +13,7 @@ import {Policy,canonical,within} from './policy.js';
 import {getSessionUsage,weeklyDelta} from './usage.js';
 import {getWeeklyUsage,forDelta} from './billing.js';
 import {LifecycleController, type LifecycleErrorKind} from './lifecycle.js';
-import {root,executable,childEnv,active,terminate,shutdown} from './runtime.js';
+import {root,childEnv,active,terminate,shutdown,grokLaunch} from './runtime.js';
 export {root,executable,childEnv,terminate,shutdown} from './runtime.js';
 import {ensureHealth,markUnhealthy,selectModel} from './health.js';
 import {resolveProviderSettings} from './model-settings.js';
@@ -31,6 +31,7 @@ export interface RunGrokDependencies {
   getWeeklyUsage?: typeof getWeeklyUsage;
   getSessionUsage?: typeof getSessionUsage;
   spawn?: typeof spawn;
+  launch?: () => Promise<LaunchCommand>;
   terminate?: typeof terminate;
   stateRoot?: string;
 }
@@ -63,7 +64,8 @@ function unavailableBilling(){return {status:'unavailable' as const,fresh:false 
 
 export async function runGrok(kind:string,input:RunInput,signal?:AbortSignal,hooks?:RunHooks,deps:RunGrokDependencies={}) {
   const healthCheck=deps.ensureHealth??ensureHealth,weeklyUsage=deps.getWeeklyUsage??getWeeklyUsage,sessionUsage=deps.getSessionUsage??getSessionUsage;
-  const spawnChild=deps.spawn??spawn,terminateChild=deps.terminate??terminate,stateRoot=deps.stateRoot??path.join(root,'state');
+  const spawnChild=deps.spawn??spawn,terminateChild=deps.terminate??terminate,stateRoot=deps.stateRoot??path.join(root,'state'),resolveLaunch=deps.launch??grokLaunch;
+  let launch:LaunchCommand|undefined;
   const earlyStopped=(kind:LifecycleErrorKind='cancelled',model='unavailable',effort='unavailable')=>({text:'',stopReason:'cancelled',error:kind==='deadline_exceeded'?'Task runtime deadline exceeded':'Cancelled',errorKind:kind,sessionId:'unavailable',model,effort,phase:'preflight',startedAt:new Date().toISOString(),lastActivityAt:null,exitCode:null,exitSignal:null,partialWork:{messageChunks:0,toolCalls:0,fsReads:0,fsWrites:0,terminalOperations:0},childCleanedUp:true});
   // Do not probe health or spawn a child for a queued task that has already stopped.
   if(signal?.aborted) return earlyStopped();
@@ -137,7 +139,9 @@ export async function runGrok(kind:string,input:RunInput,signal?:AbortSignal,hoo
     if(lifecycle.reason)throw stoppedError(lifecycle.reason);
     phase='spawn';
     const args=['agent','--no-leader','--model',model,'--effort',effort,'--agent-profile',path.join(root,'profiles',writable?'implement.md':'read.md'),'stdio'];
-    p = spawnChild(executable,args,{cwd,env:childEnv,windowsHide:true,stdio:['pipe','pipe','pipe']});active.add(p);
+    launch=await whileActive(resolveLaunch(),lifecycle);
+    const invocation=spawnPlan(launch,args,cwd);
+    p = spawnChild(invocation.command,invocation.args,{cwd,env:childEnv,windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});active.add(p);
     p.stderr.on('data',()=>{}); // Raw child diagnostics can contain account details.
     p.on('error',event=>{if(!intentionalShutdown)conn?.close(event);});
     p.on('exit',(code,childSignal)=>{exitCode=code;exitSignal=childSignal;processExit={code,signal:childSignal,phase,at:new Date().toISOString(),intentionalShutdown,promptCompleted};if(!promptCompleted&&!intentionalShutdown&&!lifecycle.reason)unexpectedProcessExit=true;if(lifecycle.reason)lifecycle.complete();});
@@ -242,7 +246,7 @@ export async function runGrok(kind:string,input:RunInput,signal?:AbortSignal,hoo
   }
   // Telemetry is observational. Its failure must not discard a partial ACP
   // answer, session identifier, or the original provider error.
-  const usage=sessionId?await sessionUsage(sessionId,executable,[],childEnv).catch(()=>'unavailable' as const):'unavailable';const after=await weeklyUsage(true).catch(()=>unavailableBilling());
+  const usage=sessionId&&launch?await sessionUsage(sessionId,launch,[],childEnv).catch(()=>'unavailable' as const):'unavailable';const after=await weeklyUsage(true).catch(()=>unavailableBilling());
   const result={text:resultText,stopReason,error:error??null,errorKind:errorKind??null,limitKind:limitClassification?.limitKind??null,resetsAt:limitClassification?.resetsAt??null,retryAfter:limitClassification?.retryAfter??null,sessionId:sessionId??'unavailable',model:verified?model:'unavailable',effort:verified?effort:'unavailable',requestedModel:requested.model,requestedEffort:requested.effort,requestedModelSource:requested.modelSource,requestedEffortSource:requested.effortSource,healthNotices:runNotices,healthCheckedAt:health.checkedAt,configVerified:verified,authentication:authenticated?'cached_token':'unavailable',apiKeyUsed:false,agentVersion,permissionsDenied:denied,permissionDenials,commandExecutions:[...taskTerminals].map(terminal=>terminal.record),parentVerification:{status:blockedCommands.length?'required':'not_reported',commands:blockedCommands,requiresWorkspaceReview:writable&&blockedCommands.length>0,note:'Listed blocked commands were not executed. Other observed commands are recorded in commandExecutions. Parent must review blocked commands before running them; absence of blocked commands does not prove tests passed.'},clientOperations,partialWork,startedAt,lastActivityAt,phase,failurePhase,endedPhase,exitCode,exitSignal,exitCodeMeaning:'acp_process_exit_not_command_or_task_result',processExit:processExit as ProcessExit|null,processWarnings:exitCode!==null&&exitCode!==0?['ACP process exited nonzero; inspect processExit phase. Task completion and command exits are reported separately.']:[],implementationProgress:{...progress},usage,weekly:after,weeklyBefore:before,weeklyDelta:weeklyDelta(forDelta(before),forDelta(after),startedAt),childCleanedUp};
   if(sessionId)await fs.writeFile(path.join(stateRoot,sessionId+'.usage.json'),JSON.stringify(result,null,2)).catch(()=>{});return result;
 }

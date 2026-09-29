@@ -2,7 +2,8 @@ import path from 'node:path';
 import {accountStatus} from '../account.js';
 import {claudeModelMetadata} from '../claude-model.js';
 import {randomUUID} from 'node:crypto';
-import {home,resolveExecutable,runCommand,safeChildEnv} from '../process.js';
+import {home,runCommand,safeChildEnv,type LaunchCommand} from '../process.js';
+import {resolveClaudeLaunch} from '../claude-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
 import {resolveProviderSettings} from '../model-settings.js';
 import {buildPrompt} from '../prompt.js';
@@ -14,11 +15,9 @@ import {claudeUsageAccountKey,refreshClaudeCredentials} from '../claude-auth-ref
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
 const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'claude-quota.json'));
-let cachedExecutable:string|undefined;
-async function exe(){return cachedExecutable??=await resolveExecutable(process.env.CLAUDE_CLI,['claude'],[
- path.join(home,'.local','bin',process.platform==='win32'?'claude.exe':'claude'),
- path.join(home,'AppData','Local','Programs','Claude','claude.exe')
-]);}
+let cachedExecutable:LaunchCommand|undefined;
+// One resolved launcher serves status, auth refresh, run and update alike.
+async function exe(){return cachedExecutable??=await resolveClaudeLaunch({explicit:process.env.CLAUDE_CLI});}
 function parseJson(stdout:string):any{try{return JSON.parse(stdout.trim());}catch{return undefined;}}
 function resultText(parsed:any,stdout:string){return String(parsed?.result??parsed?.response??parsed?.message??stdout).trim();}
 function resultError(parsed:any,stdout:string){const value=parsed?.result??parsed?.error??parsed?.message??parsed?.errors??stdout;return typeof value==='string'?value.trim():JSON.stringify(value);}
@@ -44,11 +43,14 @@ function structuredErrorEvidence(parsed:any, message:string|undefined):unknown{
 export class ClaudeProvider implements ProviderAdapter{
  readonly name='claude' as const;
  async status():Promise<ProviderStatus>{
-  const enabled=providerEnabled('claude'),command=enabled?await exe():undefined;
+  const enabled=providerEnabled('claude');let command:LaunchCommand|undefined,launchError:string|undefined;
+  if(enabled)try{command=await exe();}catch(error){launchError=error instanceof Error?error.message:String(error);}
   if(!enabled)return {provider:'claude',enabled:false,available:false,authenticated:'unknown',version:'unavailable',modelPolicy:modelPolicy('claude'),effortPolicy:effortPolicy('claude'),quota:{state:'unknown',source:'disabled'}};
-  if(!command)return {provider:'claude',enabled:true,available:false,authenticated:false,version:'unavailable',modelPolicy:modelPolicy('claude'),effortPolicy:effortPolicy('claude'),quota:{state:'unknown',source:'cli_not_found'},reason:'Claude CLI not found'};
+  if(!command)return {provider:'claude',enabled:true,available:false,authenticated:false,version:'unavailable',modelPolicy:modelPolicy('claude'),effortPolicy:effortPolicy('claude'),quota:{state:'unknown',source:launchError?'cli_launch_unusable':'cli_not_found'},reason:launchError??'Claude CLI not found'};
   const env=safeChildEnv({DISABLE_AUTOUPDATER:'1'});
-  const [version,auth]=await Promise.all([runCommand(command,['--version'],{env,timeoutMs:10000}),runCommand(command,['auth','status'],{env,timeoutMs:10000})]);
+  let version:Awaited<ReturnType<typeof runCommand>>,auth:Awaited<ReturnType<typeof runCommand>>;
+  try{[version,auth]=await Promise.all([runCommand(command,['--version'],{env,timeoutMs:10000}),runCommand(command,['auth','status'],{env,timeoutMs:10000})]);}
+  catch(error){return {provider:'claude',enabled:true,available:false,authenticated:'unknown',version:'unavailable',modelPolicy:modelPolicy('claude'),effortPolicy:effortPolicy('claude'),quota:{state:'unknown',source:'cli_launch_failed'},reason:error instanceof Error?error.message:String(error)};}
   const authParsed=parseJson(auth.stdout);const authenticated:boolean|'unknown'=auth.code===0?(authParsed?.loggedIn===true||authParsed?.authenticated===true?true:authParsed?.loggedIn===false||authParsed?.authenticated===false?false:'unknown'):false;
   const method=String(authParsed?.authMethod??authParsed?.auth_method??authParsed?.subscriptionType??authParsed?.subscription_type??'').toLowerCase();
   const subscriptionAuth=method?(!/console|api[_ -]?key/.test(method)):authenticated?'unknown':false;
@@ -104,6 +106,6 @@ export class ClaudeProvider implements ProviderAdapter{
   return {provider:'claude',text:resultText(parsed,r.stdout),error:null,errorKind:null,...metadata,usage:directUsage??transcriptUsage??'unavailable',...(directUsage!==undefined?{usageSource:'cli_result',usageScope:'cli_result'}:transcriptUsage!==undefined?{usageSource:transcriptUsageSource,usageScope:transcriptUsageScope,observedUsage}:{}),rawResultType:parsed?.type??'unavailable'};
  }
  async cliStatus(){return this.status();}
- async update(){const command=await exe();if(!command)return {provider:'claude',updated:false,error:'Claude CLI not found'};const r=await runCommand(command,['update'],{env:safeChildEnv({DISABLE_AUTOUPDATER:'1'}),timeoutMs:180000});cachedExecutable=undefined;return {provider:'claude',updated:r.code===0,stdout:r.stdout.trim(),stderr:r.stderr.trim(),status:await this.status()};}
+ async update(){let command:LaunchCommand|undefined;try{command=await exe();}catch(error){return {provider:'claude',updated:false,error:error instanceof Error?error.message:String(error)};}if(!command)return {provider:'claude',updated:false,error:'Claude CLI not found'};const r=await runCommand(command,['update'],{env:safeChildEnv({DISABLE_AUTOUPDATER:'1'}),timeoutMs:180000});cachedExecutable=undefined;return {provider:'claude',updated:r.code===0,stdout:r.stdout.trim(),stderr:r.stderr.trim(),status:await this.status()};}
 }
 import {providerChildEnv} from '../process.js';

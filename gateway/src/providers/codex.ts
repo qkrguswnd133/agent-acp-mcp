@@ -1,5 +1,6 @@
 import path from 'node:path';
-import {home,resolveExecutable,runCommand,safeChildEnv,findExecutableInChildDirs} from '../process.js';
+import {home,resolveExecutable,runCommand,safeChildEnv,findExecutableInChildDirs,type LaunchCommand} from '../process.js';
+import {resolveNpmLaunch,type OfficialNpmPackage} from '../npm-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
 import {resolveProviderSettings} from '../model-settings.js';
 import {buildPrompt} from '../prompt.js';
@@ -11,12 +12,14 @@ import {observedExitCode,observedOutput} from '../command-telemetry.js';
 import type {CommandExecution} from '../command-telemetry.js';
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
-let cachedExecutable:string|undefined;let statusCache:{at:number,value:ProviderStatus}|undefined;let observedRuntimeBlock=false;
+let cachedExecutable:LaunchCommand|undefined;let statusCache:{at:number,value:ProviderStatus}|undefined;let observedRuntimeBlock=false;
 const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'codex-quota.json'));
+export const codexNpmPackage:OfficialNpmPackage={name:'@openai/codex',binNames:['codex'],label:'Codex',defaultMinimumNode:16};
+// One resolved launcher serves status, app-server telemetry and run alike.
 async function exe(){
  if(cachedExecutable)return cachedExecutable;
  const common=[path.join(home,'AppData','Local','Programs','OpenAI','Codex','bin','codex.exe'),path.join(home,'.local','bin',process.platform==='win32'?'codex.exe':'codex')];
- const direct=await resolveExecutable(process.env.CODEX_CLI??process.env.CODEX_CLI_PATH,['codex'],common);if(direct)return cachedExecutable=direct;
+ const direct=await resolveExecutable(process.env.CODEX_CLI??process.env.CODEX_CLI_PATH,['codex'],common);if(direct)return cachedExecutable=await resolveNpmLaunch(direct,codexNpmPackage);
  if(process.platform==='win32'){
    const local=process.env.LOCALAPPDATA??path.join(home,'AppData','Local');
    const runtime=await findExecutableInChildDirs(path.join(local,'OpenAI','Codex','bin'),'codex.exe');if(runtime)return cachedExecutable=runtime;
@@ -99,10 +102,13 @@ export class CodexProvider implements ProviderAdapter{
   const refreshAfterRuntimeBlock=observedRuntimeBlock&&!runtimeBlock;
   if(refreshAfterRuntimeBlock||limitNewerThanCachedStatus){observedRuntimeBlock=false;statusCache=undefined;}
   if(!force&&!refreshAfterRuntimeBlock&&!limitNewerThanCachedStatus&&statusCache&&Date.now()-statusCache.at<60_000&&statusCache.value.quota.source!=='runtime_limit_error')return statusCache.value;
-  const enabled=providerEnabled('codex'),command=enabled?await exe():undefined;
+  const enabled=providerEnabled('codex');let command:LaunchCommand|undefined,launchError:string|undefined;
+  if(enabled)try{command=await exe();}catch(error){launchError=error instanceof Error?error.message:String(error);}
   if(!enabled)return {provider:'codex',enabled:false,available:false,authenticated:'unknown',version:'unavailable',modelPolicy:modelPolicy('codex'),effortPolicy:effortPolicy('codex'),quota:{state:'unknown',source:'disabled'}};
-  if(!command)return {provider:'codex',enabled:true,available:false,authenticated:false,version:'unavailable',modelPolicy:modelPolicy('codex'),effortPolicy:effortPolicy('codex'),quota:{state:'unknown',source:'cli_not_found'},reason:'Codex CLI not found'};
-  const env=safeChildEnv();const [version,auth]=await Promise.all([runCommand(command,['--version'],{env,timeoutMs:10000}),runCommand(command,['login','status'],{env,timeoutMs:10000})]);
+  if(!command)return {provider:'codex',enabled:true,available:false,authenticated:false,version:'unavailable',modelPolicy:modelPolicy('codex'),effortPolicy:effortPolicy('codex'),quota:{state:'unknown',source:launchError?'cli_launch_unusable':'cli_not_found'},reason:launchError??'Codex CLI not found'};
+  const env=safeChildEnv();let version:Awaited<ReturnType<typeof runCommand>>,auth:Awaited<ReturnType<typeof runCommand>>;
+  try{[version,auth]=await Promise.all([runCommand(command,['--version'],{env,timeoutMs:10000}),runCommand(command,['login','status'],{env,timeoutMs:10000})]);}
+  catch(error){return {provider:'codex',enabled:true,available:false,authenticated:'unknown',version:'unavailable',modelPolicy:modelPolicy('codex'),effortPolicy:effortPolicy('codex'),quota:{state:'unknown',source:'cli_launch_failed'},reason:error instanceof Error?error.message:String(error)};}
   let q:QuotaStatus={state:'unknown',source:'codex_app_server_unavailable'},observedAccount:any;
   try{const live=await readCodexStatus(command);if(live.limits)q=quotaFromRateLimits(live.limits);observedAccount=live.account;}catch{/* Account/quota telemetry cannot replace authentication status. */}
   const authText=`${auth.stdout}\n${auth.stderr}`;const authenticated=auth.code===0;const subscriptionAuth=authenticated?!/api\s*key/i.test(authText):false;

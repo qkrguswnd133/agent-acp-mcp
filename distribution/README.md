@@ -13,6 +13,14 @@ node --version
 
 설치 프로그램은 MCP 설정 예제를 게이트웨이의 `configuration` 폴더에 생성합니다. 실제 Codex/Claude 설정과 개인의 전역 지침 파일은 자동으로 수정하지 않습니다. 해당 클라이언트의 설정에 필요한 항목만 병합하세요. 릴리스의 `examples/` 및 `instructions/` 템플릿은 시작점이고 `gateway/`의 Markdown 파일에 동작 설명이 있습니다. provider CLI와 인증은 각 사용자가 별도로 준비해야 합니다.
 
+### Claude·Grok·Codex와 WSL 작업 폴더
+
+Windows Gateway에서 WSL 파일을 사용할 때는 `\\wsl.localhost\<배포판>\...` 같은 UNC 작업 경로를 전달합니다. 실행 환경은 각 provider의 Windows CLI이며, 작업 경로는 세션 기록과 프로젝트 집계에도 사용됩니다.
+
+Gateway 2.2.2부터 지원되는 공식 Claude·Grok·Codex npm 패키지의 진입점을 확인해 `.cmd` 래퍼 없이 실행합니다. 패키지에 포함된 `.exe`는 직접 실행하고, JavaScript 진입점은 지원되는 Node.js로 실행합니다. 기존 네이티브 설치와 `CLAUDE_CLI`, `GROK_CLI`, `CODEX_CLI` 설정도 사용할 수 있으며 사용자 홈 이름을 고정할 필요가 없습니다.
+
+직접 실행할 진입점을 확인할 수 없는 사용자 정의 `.cmd`/`.bat`는 UNC 작업 경로에서 실행 전에 중단됩니다. 해당 provider의 네이티브 실행 파일을 CLI 환경변수로 지정하거나 공식 npm 설치를 확인하세요. Gateway가 CLI를 자동 설치하거나 권한 모드를 완화하지는 않습니다. 이 처리는 Windows CLI의 작업 경로를 보존하는 것이며, Linux 전용 도구를 Windows에서 실행 가능하게 바꾸지는 않습니다. UNC 경로에서 테스트용 배치 파일을 실행하는 경우에도 같은 제한이 적용됩니다.
+
 ## 수동 업데이트
 
 **v2.2.0 / Monitor 1.1.0 사용자:** Electron의 `app.asar` 압축 해제 오류 때문에 앱 내 업데이트가 설치 준비 중 멈출 수 있습니다. 이번 v2.2.1 ZIP의 `Update.ps1`을 한 번 실행하세요. Monitor 1.1.1에서 해당 오류를 수정했습니다.
