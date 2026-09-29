@@ -50,6 +50,6 @@ test('privacy scan reports filenames without exposing matched credential text',a
   await fs.writeFile(path.join(directory,'unsafe.md'),token);
   await assert.rejects(scanFirstParty([directory]),error=>error.message.includes('unsafe.md: credential token')&&!error.message.includes(token));
   await fs.rm(path.join(directory,'unsafe.md'));
-  await fs.writeFile(path.join(directory,'company.md'),'https://intranet.example.internal/project');
+  await fs.writeFile(path.join(directory,'company.md'),'https://intranet.example.'+'internal/project');
   await assert.rejects(scanFirstParty([directory]),/company.md: private network domain/);
 }));
