@@ -19,7 +19,7 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid root release version.
 $tag = 'v'+$version
 $archive = 'Agent-ACP-MCP-Windows-'+$version+'.zip'
 $repoName = 'qkrguswnd133/agent-acp-mcp'
-$assets = @($archive,'update-manifest.json','update-manifest.sig',$archive+'.sha256')
+$assets = @($archive,'update-manifest.json','update-manifest.sig',($archive + '.sha256'))
 $output = Join-Path $repository ('build\release\'+$tag)
 if (-not $NodeExecutable) { $NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source }
 if (-not $GhExecutable) { $GhExecutable = (Get-Command gh.exe -ErrorAction Stop).Source }
