@@ -34,6 +34,9 @@ if(process.argv[2]==='--dispatch'){
   };
   // This dispatcher is plain Node, not Electron. The app's production finder
   // excludes its own executable (Electron), so inject our verified test runtime.
+  // The running fixture may have checked real GitHub before this dispatcher.
+  // Its network cooldown does not apply to the isolated, in-memory release feed.
+  await fs.rm(path.join(root,'data/updates/rate-limit.json'),{force:true});
   const service=createUpdater({stateDir:path.join(root,'data'),monitorDirectory:path.join(root,'monitor'),gatewayDirectory:path.join(root,'gateway'),fetcher,keyFile:path.join(repository,'monitor/update/trusted-key.pem'),appVersion:manifest.components.monitor,nodeFinder:async()=>process.execPath});
   await service.load();await service.check(true);assert.equal(service.getState().selected?.version,manifest.version);
   await service.download();assert.equal(service.getState().downloaded,true,service.getState().error);

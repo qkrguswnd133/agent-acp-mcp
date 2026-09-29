@@ -33,13 +33,30 @@ function VerifyAssets([string]$Directory,[string]$Head) {
     AssertCommand 'Release signature or checksum verification failed.'
 }
 function GetRelease {
+    # GitHub's tag lookup can return 404 for an authenticated draft. The
+    # authenticated list endpoint includes drafts and supports pagination.
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $response = & $GhExecutable api ('repos/'+$repoName+'/releases/tags/'+$tag) 2>$null
+        $response = @(& $GhExecutable api --paginate --slurp ('repos/'+$repoName+'/releases?per_page=100') 2>$null)
     } finally { $ErrorActionPreference = $previousPreference }
-    if ($LASTEXITCODE -ne 0) { return $null }
-    return ($response | Out-String | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot list GitHub releases to verify this tag.' }
+    $json = ($response -join "`n").Trim()
+    if (-not $json.StartsWith('[') -or -not $json.EndsWith(']')) { throw 'GitHub release list response is invalid.' }
+    try { $pages = ConvertFrom-Json -InputObject $json }
+    catch { throw 'Cannot parse GitHub release list.' }
+    $records = New-Object System.Collections.ArrayList
+    function VisitReleaseNode($Node,$List) {
+        if ($null -eq $Node) { return }
+        if ($Node -is [array]) { foreach ($child in $Node) { VisitReleaseNode $child $List }; return }
+        if ($Node -is [pscustomobject] -and $Node.PSObject.Properties.Name -contains 'tag_name') { [void]$List.Add($Node); return }
+        throw 'GitHub release list has an unexpected shape.'
+    }
+    VisitReleaseNode $pages $records
+    $matching = @($records | Where-Object { [string]$_.tag_name -eq $tag })
+    if ($matching.Count -gt 1) { throw 'GitHub returned duplicate releases for this tag.' }
+    if ($matching.Count -eq 1) { return $matching[0] }
+    return $null
 }
 function AssertReleaseAssets($Release) {
     $names = @($Release.assets | ForEach-Object { [string]$_.name } | Sort-Object)

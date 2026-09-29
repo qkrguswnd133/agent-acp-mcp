@@ -37,3 +37,17 @@ test('publisher assembles exactly four correctly named release assets',()=>{
   assert.equal(result.status,0,result.stderr||result.stdout);
   assert.match(result.stdout,/ASSET_NAMES_OK/);
 });
+
+test('publisher finds an authenticated draft in paginated release list',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'agent-release-list-test-'));
+  try {
+    const mock=path.join(root,'gh.cmd');
+    await fs.writeFile(mock,'@echo off\r\n> "%~dp0args.txt" echo %~1^|%~2^|%~3^|%~4\r\nif "%GH_MOCK_FAIL%"=="1" exit /b 9\r\nif not "%~2"=="--paginate" exit /b 9\r\necho [[{"tag_name":"v2.1.0","draft":false}],[{"tag_name":"v2.2.0","draft":true,"id":398833296}]]\r\n');
+    const publisher=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..','distribution','Publish-Release.ps1');
+    const command=`$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null; $ast=[System.Management.Automation.Language.Parser]::ParseFile('${publisher.replaceAll("'","''")}',[ref]$tokens,[ref]$errors); if($errors.Count){throw 'publisher syntax error'}; $functions=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'GetRelease'},$true)); if($functions.Count -ne 1){throw 'GetRelease function missing'}; Invoke-Expression $functions[0].Extent.Text; $GhExecutable='${mock.replaceAll("'","''")}'; $repoName='qkrguswnd133/agent-acp-mcp'; $tag='v2.2.0'; $release=GetRelease; if($null -eq $release -or -not $release.draft -or $release.id -ne 398833296){throw 'draft release not found'}; $tag='v9.9.9'; if($null -ne (GetRelease)){throw 'unexpected tag matched'}; $env:GH_MOCK_FAIL='1'; try { $null=GetRelease; throw 'API failure was accepted' } catch { if($_.Exception.Message -ne 'Cannot list GitHub releases to verify this tag.'){throw} }; Remove-Item Env:GH_MOCK_FAIL; Write-Output 'DRAFT_LIST_LOOKUP_OK'`;
+    const result=runPowerShell(command);
+    assert.equal(result.status,0,result.stderr||result.stdout);
+    assert.match(result.stdout,/DRAFT_LIST_LOOKUP_OK/);
+    assert.match((await fs.readFile(path.join(root,'args.txt'),'utf8')).trim(),/^api\|--paginate\|--slurp\|repos\/qkrguswnd133\/agent-acp-mcp\/releases\?per_page/);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
