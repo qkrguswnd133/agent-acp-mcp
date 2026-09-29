@@ -78,7 +78,7 @@ try {
   original.once('exit',(code,signal)=>{originalExitedAt=Date.now();void fs.appendFile(eventFile,JSON.stringify({event:'original-monitor-exit',code,signal,at:new Date().toISOString()})+'\n').catch(()=>{});});
   original.once('error',error=>{void fs.appendFile(eventFile,JSON.stringify({event:'monitor-spawn-error',message:error.message})+'\n').catch(()=>{});});
   await waitFor(async()=>!!await read(path.join(data,'latest-status.json')),120000,'initial monitor status');
-  await waitFor(async()=>{const log=await events(eventFile);return log.find(item=>item.event==='update-button-click');},120000,'actual update button click');
+  await waitFor(async()=>{const log=await events(eventFile);return log.find(item=>item.event==='bar-update-click');},120000,'actual update button click');
   const pendingFile=path.join(data,'updates','pending-install.json');
   const operation=await waitFor(async()=>{
     const pending=await read(pendingFile);if(pending?.operationId)return pending;
@@ -111,10 +111,11 @@ try {
   assert.equal(windowState?.pinned,false,'Window pin preference was lost');
   assert.ok(Number.isFinite(windowState.x)&&Number.isFinite(windowState.y),'Window position was lost');
   const log=await events(eventFile);
-  assert.ok(log.some(item=>item.event==='bar-update-click')&&log.some(item=>item.event==='update-button-click'),'Update was not clicked through Electron renderer');
+  assert.ok(log.some(item=>item.event==='bar-update-click'),'Update was not clicked through Electron renderer');
+  assert.equal(log.filter(item=>item.event==='install-returned'&&item.started).length,1,'Concurrent update requests launched duplicate installers');
   assert.ok(log.some(item=>item.event==='update-state'&&item.selected===manifest.version),'Signed release was not selected in Electron');
   success=true;
-  console.log(JSON.stringify({passed:true,version:manifest.version,uiButtonClicked:true,externalInstallerSurvivedLauncherExit:true,settingsPreserved:true,receipts:true,monitorRestarted:restarted,fixtureRoot:root}));
+  console.log(JSON.stringify({passed:true,version:manifest.version,uiButtonClicked:true,entrypoint:'bar-download-icon',externalInstallerSurvivedLauncherExit:true,settingsPreserved:true,receipts:true,monitorRestarted:restarted,fixtureRoot:root}));
 }finally{
   await client?.close().catch(()=>{});
   const pids=await monitorPids(exe).catch(()=>[]);

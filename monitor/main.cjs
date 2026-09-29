@@ -2,6 +2,8 @@ const {app,BrowserWindow,ipcMain,screen,Tray,Menu,nativeImage,nativeTheme}=requi
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{spawn,execFile}=require('node:child_process'),readline=require('node:readline');
 const {barBounds,detailBounds,contains}=require('./geometry.cjs');
 const {createUpdater,resolveGatewayRoot}=require('./update/service.cjs');
+const {updateAction}=require('./update/action.cjs');
+const {createUpdateFlow}=require('./ui/update-flow.js');
 const appVersion=app.getVersion();
 const smoke=process.argv.includes('--smoke');
 const verifyLive=process.argv.includes('--verify-live');
@@ -15,7 +17,29 @@ let bar,panel,updates,tray,backend,pending=new Map(),sequence=0,selected='grok',
 const monitorDirectory=path.dirname(process.execPath);
 const gatewayRoot=resolveGatewayRoot(monitorDirectory);
 const updater=createUpdater({stateDir,monitorDirectory,gatewayDirectory:fs.existsSync(gatewayRoot)?gatewayRoot:undefined,appVersion});
-updater.onChange(value=>{for(const win of [bar,updates])if(win&&!win.isDestroyed())win.webContents.send('update-state',value);});
+let barProgressOpen=false,completionTimer,collapseTimer,barProgressHeight=52,barWidth=460,updateRun;
+const updateUiState=value=>{const action=updateAction(value);return {...value,updateAction:{...action,active:action.active||!!updateRun,canStart:action.canStart&&!updateRun},barProgressOpen};};
+function publishUpdate(value){
+  barWidth=updateAction(value).available?484:460;
+  if(['downloading','preparing','installing'].includes(value.phase)){clearTimeout(completionTimer);barProgressOpen=true;}
+  if(barProgressOpen){clearTimeout(collapseTimer);collapseTimer=undefined;barProgressHeight=96;if(bar&&!bar.isDestroyed())reposition();}
+  else if(barProgressHeight!==52&&!collapseTimer){collapseTimer=setTimeout(()=>{collapseTimer=undefined;barProgressHeight=52;if(bar&&!bar.isDestroyed())reposition();},180);}
+  else if(bar&&!bar.isDestroyed())reposition();
+  for(const win of [bar,updates])if(win&&!win.isDestroyed())win.webContents.send('update-state',updateUiState(value));
+}
+updater.onChange(publishUpdate);
+const sharedUpdateFlow=createUpdateFlow({updateDownload:()=>updater.download(),updateState:()=>updater.getState(),updateInstall:()=>installUpdate(),updateCancel:()=>updater.cancel()});
+function checkUpdates(force=false){return updateRun?Promise.resolve(updater.getState()):updater.check(force);}
+function runUpdate(){if(!updateRun){updateRun=sharedUpdateFlow.run().finally(()=>{updateRun=undefined;publishUpdate(updater.getState());});}return updateRun;}
+async function installUpdate(){
+  if(installing||updater.getState().pending)return {started:false,reason:'설치가 이미 진행 중입니다.'};
+  installing=true;clearInterval(refreshTimer);refreshTimer=undefined;
+  let result;
+  try{await stopBackend();result=await updater.install();}
+  catch{result={started:false,reason:'설치 준비 요청에 실패했습니다.'};}
+  if(!result.started){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}
+  return result;
+}
 let state={snapshot:null,refreshing:false,error:null,lastAttempt:null};
 let stoppedBackend;
 function stopBackend(){
@@ -36,7 +60,7 @@ function savePosition(){if(!bar||bar.isDestroyed())return;const {x,y}=bar.getBou
 function broadcast(){for(const win of [bar,panel])if(win&&!win.isDestroyed())win.webContents.send('state',{...state,pinned});}
 function areaFor(bounds){return screen.getDisplayMatching(bounds).workArea;}
 function popupBounds(bounds){return detailBounds(bounds,areaFor(bounds),bounds.width/2,selected==='claude'?536:452);}
-function reposition(){if(!bar||bar.isDestroyed())return;const bounds=bar.getBounds();const clamped=barBounds(bounds,areaFor(bounds));if(bounds.x!==clamped.x||bounds.y!==clamped.y)bar.setBounds(clamped);if(panel?.isVisible())panel.setBounds(popupBounds(clamped));savePosition();}
+function reposition(){if(!bar||bar.isDestroyed())return;const bounds=bar.getBounds();const clamped=barBounds(bounds,areaFor(bounds),barWidth,barProgressHeight);if(bounds.x!==clamped.x||bounds.y!==clamped.y||bounds.height!==clamped.height||bounds.width!==clamped.width)bar.setBounds(clamped);if(panel?.isVisible())panel.setBounds(popupBounds(clamped));savePosition();}
 function closePanel(){panel?.hide();hideAt=0;bar?.webContents.send('provider',null);}
 function hoverStep(point,now=Date.now()){
   if(!panel.isVisible())return;
@@ -51,7 +75,7 @@ function openUpdates(section){if(!updates||updates.isDestroyed()){updates=new Br
 function menu(){Menu.buildFromTemplate([
   {label:bar.isVisible()?'상태 바 숨기기':'상태 바 표시',click:()=>{if(bar.isVisible()){closePanel();bar.hide();}else show();}},
   {label:'지금 새로고침',click:()=>refresh()},
-  {label:'업데이트 확인',click:()=>{openUpdates();void updater.check(true);}},
+  {label:'업데이트 확인',click:()=>{openUpdates();void checkUpdates(true);}},
   {label:'업데이트 이력',click:()=>openUpdates('history')},
   {label:'정보 · 버전',click:()=>openUpdates()},
   {label:'위치 초기화',click:()=>{closePanel();bar.setBounds(barBounds(undefined,screen.getPrimaryDisplay().workArea));savePosition();show();}},
@@ -81,7 +105,7 @@ async function captureReady(win){
   }
 }
 function trusted(event){return [bar,panel,updates].some(w=>w&&!w.isDestroyed()&&w.webContents===event.sender);}
-function updateTrusted(event){return updates&&!updates.isDestroyed()&&event.sender===updates.webContents;}
+function updateTrusted(event){return [bar,updates].some(win=>win&&!win.isDestroyed()&&event.sender===win.webContents);}
 ipcMain.handle('state',event=>trusted(event)?{...state,selected,pinned}:null);
 ipcMain.on('toggle-pin',event=>{if(bar&&!bar.isDestroyed()&&event.sender===bar.webContents)togglePin();});
 ipcMain.on('open-detail',(event,...args)=>{if(trusted(event))openPanel(...args);});
@@ -89,11 +113,13 @@ ipcMain.on('close-detail',event=>{if(trusted(event))closePanel();});
 ipcMain.on('refresh',event=>{if(trusted(event))void refresh();});
 ipcMain.on('menu',event=>{if(trusted(event))menu();});
 ipcMain.on('open-updates',event=>{if(trusted(event))openUpdates();});
-ipcMain.handle('update-state',event=>trusted(event)?updater.getState():null);
-ipcMain.handle('update-check',event=>updateTrusted(event)?updater.check(true):null);
-ipcMain.handle('update-download',event=>updateTrusted(event)?updater.download():null);
+ipcMain.handle('update-state',event=>trusted(event)?updateUiState(updater.getState()):null);
+ipcMain.on('dismiss-update-progress',event=>{if(!bar||bar.isDestroyed()||event.sender!==bar.webContents||updateAction(updater.getState()).active)return;barProgressOpen=false;clearTimeout(completionTimer);publishUpdate(updater.getState());});
+ipcMain.handle('update-check',event=>updateTrusted(event)?checkUpdates(true):null);
+ipcMain.handle('update-run',event=>updateTrusted(event)?runUpdate():null);
+ipcMain.handle('update-download',event=>updateTrusted(event)?(updateRun?updater.getState():updater.download()):null);
 ipcMain.on('update-cancel',event=>{if(updateTrusted(event))updater.cancel();});
-ipcMain.handle('update-install',async event=>{if(!updateTrusted(event))return null;if(updater.getState().pending)return {started:false,reason:'설치가 이미 진행 중입니다.'};installing=true;clearInterval(refreshTimer);refreshTimer=undefined;await stopBackend();const result=await updater.install();if(!result.started){installing=false;void refresh();refreshTimer=setInterval(()=>void refresh(),60000);}return result;});
+ipcMain.handle('update-install',event=>updateTrusted(event)?(updateRun?{started:false,reason:'업데이트가 이미 진행 중입니다.'}:installUpdate()):null);
 if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
   app.on('second-instance',(_event,argv)=>argv.includes('--quit')?app.quit():show());
   app.whenReady().then(async()=>{
@@ -107,7 +133,7 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
     const icon=nativeImage.createFromPath(path.join(__dirname,'assets','tray.png'));tray=new Tray(icon);tray.setToolTip('Agent Monitor · 사용량 모니터');tray.on('click',()=>bar.isVisible()?(closePanel(),bar.hide()):show());tray.on('right-click',menu);
     await Promise.all([bar,panel].map(win=>win.webContents.isLoading()?new Promise(resolve=>win.webContents.once('did-finish-load',resolve)):Promise.resolve()));
     show();
-    if(!smoke&&!verifyLive){await updater.load();installing=!!updater.getState().pending;void updater.check();releaseTimer=setInterval(()=>void updater.check(),6*60*60*1000);updateTimer=setInterval(async()=>{try{const pending=updater.getState().pending;await updater.pollResult();const current=updater.getState();if(pending&&!current.pending&&!(current.result?.operationId===pending.operationId&&current.result.status==='success')){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}}catch{}},2000);}
+    if(!smoke&&!verifyLive){await updater.load();installing=!!updater.getState().pending;const recentResult=updater.getState().result;if(recentResult?.status==='success'&&Date.now()-Date.parse(recentResult.finishedAt)<60000){barProgressOpen=true;publishUpdate(updater.getState());completionTimer=setTimeout(()=>{barProgressOpen=false;publishUpdate(updater.getState());},3500);}void checkUpdates();releaseTimer=setInterval(()=>void checkUpdates(),6*60*60*1000);updateTimer=setInterval(async()=>{try{const pending=updater.getState().pending;await updater.pollResult();const current=updater.getState();if(pending&&!current.pending&&!(current.result?.operationId===pending.operationId&&current.result.status==='success')){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}}catch{}},2000);}
     hoverTimer=setInterval(()=>hoverStep(screen.getCursorScreenPoint()),80);
     if(smoke){clearInterval(hoverTimer);await runSmoke();}
     else if(verifyLive){
@@ -121,7 +147,7 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
     }else if(!installing){void refresh();refreshTimer=setInterval(()=>void refresh(),60000);}
   }).catch(error=>{console.error(error);app.exit(1);});
 }
-app.on('before-quit',event=>{if(quitting)return;event.preventDefault();quitting=true;clearInterval(refreshTimer);clearInterval(updateTimer);clearInterval(releaseTimer);clearInterval(hoverTimer);clearTimeout(moveTimer);savePosition();failPending('앱 종료');tray?.destroy();void stopBackend().finally(()=>app.quit());});
+app.on('before-quit',event=>{if(quitting)return;event.preventDefault();quitting=true;clearInterval(refreshTimer);clearInterval(updateTimer);clearInterval(releaseTimer);clearInterval(hoverTimer);clearTimeout(moveTimer);clearTimeout(completionTimer);clearTimeout(collapseTimer);savePosition();failPending('앱 종료');tray?.destroy();void stopBackend().finally(()=>app.quit());});
 async function runSmoke(){
   const assert=require('node:assert/strict');const out=process.env.AGENT_MONITOR_SMOKE_DIR||path.join(__dirname,'work');fs.mkdirSync(out,{recursive:true});const forcedDpi=Number(process.argv.find(arg=>arg.startsWith('--force-device-scale-factor='))?.split('=')[1]);
   try{
@@ -172,8 +198,8 @@ async function runSmoke(){
     const bounds=bar.getBounds();bar.setPosition(bounds.x+25,bounds.y+25);reposition();assert.deepEqual(loadPosition(),{x:bar.getBounds().x,y:bar.getBounds().y,pinned});
     openUpdates();await new Promise(resolve=>updates.webContents.isLoading()?updates.webContents.once('did-finish-load',resolve):resolve());
     const fixtureUpdate={phase:'idle',installed:{version:'2.1.0',components:{gateway:'2.1.0',monitor:'1.0.9'}},currentComponents:{gateway:'2.1.0',monitor:'1.1.0'},selected:{version:'2.2.0',components:{gateway:'2.2.0',monitor:'1.1.0'},notes:{gateway:['<img src=x onerror=alert(1)>'],monitor:['업데이트 UI 확인']},publishedAt:now,size:164201607},history:[],localHistory:[],downloaded:false,checkedAt:now};
-    const sendUpdate=async()=>{updates.webContents.send('update-state',fixtureUpdate);await new Promise(resolve=>setTimeout(resolve,65));};
-    updates.webContents.send('update-state',fixtureUpdate);bar.webContents.send('update-state',fixtureUpdate);await new Promise(r=>setTimeout(r,80));
+    const sendUpdate=async()=>{publishUpdate(fixtureUpdate);await new Promise(resolve=>setTimeout(resolve,220));};
+    updates.webContents.send('update-state',fixtureUpdate);bar.webContents.send('update-state',updateUiState(fixtureUpdate));await new Promise(r=>setTimeout(r,80));
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#notes li').textContent"),'<img src=x onerror=alert(1)>');
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#notes img')"),null);
     assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#updates').hidden"),false);
@@ -203,7 +229,14 @@ async function runSmoke(){
     fixtureUpdate.installed.version='2.2.0';await sendUpdate();assert.match(await updates.webContents.executeJavaScript("document.querySelector('#status').textContent"),/최신 버전/);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#update').disabled"),true);fixtureUpdate.installed.version='2.1.0';
     fixtureUpdate.error='GitHub 응답 확인 실패';await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#error-panel').hidden"),false);assert.match(await updates.webContents.executeJavaScript("document.querySelector('#error-panel').textContent"),/GitHub/);fs.writeFileSync(path.join(out,'update-error.png'),await captureReady(updates));fixtureUpdate.error=null;
     fixtureUpdate.phase='downloading';fixtureUpdate.progress={received:52428800,total:164201607};await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#progress').hidden"),false);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#cancel').hidden"),false);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#update').disabled"),true);
+    assert.equal(bar.getBounds().height,96);
+    assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#update-progress').hidden"),false);
+    assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#update-cancel').hidden"),false);
+    assert.match(await bar.webContents.executeJavaScript("document.querySelector('#update-percent').textContent"),/\d+%/);
+    fs.writeFileSync(path.join(out,'bar-update-progress.png'),await captureReady(bar));
     fixtureUpdate.phase='preparing';fixtureUpdate.progress=null;await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#cancel').hidden"),false);assert.match(await updates.webContents.executeJavaScript("document.querySelector('#status').textContent"),/설치 준비/);
+    assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#update-meter').hasAttribute('value')"),false);
+    fs.writeFileSync(path.join(out,'bar-update-preparing.png'),await captureReady(bar));
     fixtureUpdate.phase='installing';await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#cancel').hidden"),true);fixtureUpdate.phase='idle';
     fixtureUpdate.blocked='서명된 릴리스를 확인할 수 없습니다.';await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#update').disabled"),true);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#error-panel').hidden"),false);fixtureUpdate.blocked=null;
     fixtureUpdate.result={status:'success',message:'Installed components updated.',backups:['C:/Temp/sample-project.backup']};await sendUpdate();assert.match(await updates.webContents.executeJavaScript("document.querySelector('#last-result').textContent"),/완료/);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery-details').open"),false);

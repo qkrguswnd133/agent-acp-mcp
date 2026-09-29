@@ -1,10 +1,14 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:"><link rel="stylesheet" href="style.css"><title>Agent Monitor</title></head><body class="bar-body">
-<nav class="bar" aria-label="Agent 사용량">
+<div class="bar-shell" id="bar-shell"><nav class="bar" aria-label="Agent 사용량">
   <div class="grip" title="드래그하여 위치 이동"><span class="dots">⠿</span></div>
   <button class="agent" data-agent="grok" aria-label="Grok 상세"><i class="dot"></i><span>Grok</span><span class="quota-values"><b class="quota-number">—</b></span></button>
   <button class="agent" data-agent="claude" aria-label="Claude 상세"><i class="dot"></i><span>Claude</span><span class="quota-values"><b class="quota-number">—</b></span></button>
   <button class="agent" data-agent="codex" aria-label="Codex 상세"><i class="dot"></i><span>Codex</span><span class="quota-values"><b class="quota-number">—</b></span></button>
   <button class="pin" id="pin" title="항상 위에 표시" aria-label="항상 위에 표시" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2h-6v6h-2v-6H5v-2l4-4z"/></svg></button>
-  <button class="update-indicator" id="updates" title="업데이트" aria-label="업데이트" hidden>●</button>
+  <button class="update-indicator" id="updates" title="업데이트 다운로드 및 설치" aria-label="업데이트 다운로드 및 설치" aria-controls="update-progress" aria-expanded="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg></button>
   <button class="more" id="menu" title="표시 · 위치 · 종료" aria-label="앱 메뉴">···</button>
-</nav><script src="bar.js"></script></body></html>
+</nav>
+<section id="update-progress" class="update-progress" aria-label="업데이트 진행 상태" hidden>
+  <div class="update-progress-row"><span id="update-stage" role="status" aria-live="polite">업데이트 준비 중</span><span id="update-percent" aria-hidden="true" hidden></span><button id="update-cancel" type="button" hidden>취소</button><button id="update-close" type="button" title="업데이트 상태 닫기" aria-label="업데이트 상태 닫기" hidden>×</button></div>
+  <progress id="update-meter" max="100" aria-label="업데이트 다운로드 진행률" hidden></progress>
+</section></div><script src="update-flow.js"></script><script src="bar.js"></script></body></html>

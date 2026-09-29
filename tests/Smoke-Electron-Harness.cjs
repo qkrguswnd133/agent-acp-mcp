@@ -42,7 +42,8 @@
               const ready=await this.webContents.executeJavaScript("!!(document.querySelector('#updates') && !document.querySelector('#updates').hidden && window.monitor)");
               if(!ready)return;
               barClicked=true;clearInterval(timer);record('bar-update-click');
-              await this.webContents.executeJavaScript("document.querySelector('#updates').click()");
+              // A second IPC caller must share the in-flight run, not install twice.
+              await this.webContents.executeJavaScript("document.querySelector('#updates').click();void window.monitor.updateRun()");
             }else{
               if(updateClicked){clearInterval(timer);return;}
               const ready=await this.webContents.executeJavaScript("!!(document.querySelector('#update') && !document.querySelector('#update').disabled && (document.querySelector('#latest-release')||document.querySelector('#release'))?.textContent?.includes("+JSON.stringify(manifest.version)+"))");
