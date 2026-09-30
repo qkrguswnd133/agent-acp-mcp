@@ -5,7 +5,7 @@ import {regularFiles} from './release-lib.mjs';
 
 const monitor=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..','monitor');
 const directories=new Set(['assets','backend','ui','update','node_modules','release','scripts','test','work']);
-const files=new Set(['main.cjs','preload.cjs','geometry.cjs','package.json','package-lock.json']);
+const files=new Set(['main.cjs','preload.cjs','geometry.cjs','login-item.cjs','package.json','package-lock.json']);
 for(const entry of await fs.readdir(monitor,{withFileTypes:true})) {
   if(entry.isSymbolicLink()) throw new Error(`Link at monitor source root: ${entry.name}`);
   if(entry.isDirectory()) {

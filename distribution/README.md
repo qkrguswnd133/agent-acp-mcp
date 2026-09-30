@@ -27,6 +27,16 @@ Gateway는 사용자 CLI 설정을 분리하면서 Windows 샌드박스 구현�
 
 구현 작업은 기본 `workspace-write`이며 MCP 서버 env의 `CODEX_IMPLEMENT_SANDBOX="danger-full-access"`로 전체 파일 시스템 접근을 허용할 수 있습니다. 이 경우 `allowed_paths`는 OS가 강제하는 경계가 아니라 작업 지침입니다. `read-only` 값도 지원합니다. 읽기 도구는 이 설정과 무관하게 `read-only`를 사용합니다. 승인·명령 정책 우회 옵션은 추가하지 않습니다. CLI 0.159.2에서는 `--ignore-user-config`로 `windows.sandbox`가 빠지면 `workspace-write`를 전달해도 파일 수정이 읽기 전용으로 거절되는 사례를 재현했습니다. 별도 정책·회사 관리 설정에 의한 거절은 이 설정으로 해제되지 않습니다.
 
+### Codex 실행 모델·effort 기록
+
+Codex 결과는 CLI JSON의 실행 정보를 우선 사용하고, 값이 없으면 해당 `thread_id`와 작업 경로·실행 시간이 일치하는 공식 세션 JSONL의 `turn_context`에서 보완합니다. `modelSource`와 `effortSource`는 `cli_json`, `session_jsonl`, `unavailable` 중 하나입니다. 실행 기록에 나타난 값이며 서버 내부 라우팅까지 확인한 의미는 아닙니다. 요청한 모델이나 기본값을 실제 실행값으로 대신 반환하지 않습니다.
+
+이를 위해 Codex 호출은 `--ephemeral` 없이 실행되어 `%CODEX_HOME%\sessions`(미설정 시 `%USERPROFILE%\.codex\sessions`)에 CLI의 표준 세션 기록이 남습니다. 기록에는 대화·도구 내용이 포함될 수 있습니다. Gateway는 반환된 세션 ID에 해당하는 파일에서 모델·effort 메타데이터만 보완하며, 기록 조회 실패가 작업 결과를 바꾸지는 않습니다. 과거 ephemeral 호출의 누락 값은 소급 복원할 수 없습니다.
+
+### Monitor 자동 실행
+
+설치된 Monitor의 상단 `···` 또는 트레이 오른쪽 클릭 메뉴에서 **Windows 로그인 시 자동 실행**을 켜고 끌 수 있습니다. 기본으로 등록하지 않으며 사용자가 켤 때만 현재 실행 파일과 사용자 지정 데이터 경로를 등록합니다. Windows 시작 앱에서 비활성화했다면 메뉴에도 꺼짐으로 표시합니다. 개발 실행과 테스트에서는 실제 자동 실행을 등록하지 않습니다.
+
 ## 수동 업데이트
 
 **v2.2.0 / Monitor 1.1.0 사용자:** Electron의 `app.asar` 압축 해제 오류 때문에 앱 내 업데이트가 설치 준비 중 멈출 수 있습니다. 이번 v2.2.1 ZIP의 `Update.ps1`을 한 번 실행하세요. Monitor 1.1.1에서 해당 오류를 수정했습니다.

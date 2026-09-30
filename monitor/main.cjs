@@ -1,9 +1,10 @@
-const {app,BrowserWindow,ipcMain,screen,Tray,Menu,nativeImage,nativeTheme}=require('electron');
+const {app,BrowserWindow,ipcMain,screen,Tray,Menu,nativeImage,nativeTheme,dialog}=require('electron');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{spawn,execFile}=require('node:child_process'),readline=require('node:readline');
 const {barBounds,detailBounds,contains}=require('./geometry.cjs');
 const {createUpdater,resolveGatewayRoot}=require('./update/service.cjs');
 const {updateAction}=require('./update/action.cjs');
 const {createUpdateFlow}=require('./ui/update-flow.js');
+const {createLoginItem}=require('./login-item.cjs');
 const appVersion=app.getVersion();
 const smoke=process.argv.includes('--smoke');
 const verifyLive=process.argv.includes('--verify-live');
@@ -13,6 +14,16 @@ const configuredDataDir=dataArg!==undefined?dataArg.slice('--data-dir='.length):
 if(configuredDataDir!==undefined&&(!configuredDataDir||!path.isAbsolute(configuredDataDir)))throw Error('Monitor data directory must be an absolute path.');
 const stateDir=smoke||verifyLive?path.join(os.tmpdir(),`agent-monitor-check-${process.pid}`):configuredDataDir?path.resolve(configuredDataDir):path.join(app.getPath('appData'),'Agent Monitor');
 app.setPath('userData',stateDir);fs.mkdirSync(stateDir,{recursive:true});
+// Smoke checks use an in-memory login API so the real Windows startup list is never touched.
+const fakeLogin=smoke?{entry:null,approved:true,calls:[],get(options){const match=this.entry&&this.entry.path===options.path&&this.entry.args.join(' ')===options.args.join(' ');return {openAtLogin:!!match,executableWillLaunchAtLogin:!!this.entry&&this.approved,launchItems:[]};},set(settings){this.calls.push(settings);this.entry=settings.openAtLogin?{path:settings.path,args:settings.args}:null;if(settings.openAtLogin&&settings.enabled)this.approved=true;}}:undefined;
+const loginNotices=[];
+const loginItem=createLoginItem({
+  loginApi:fakeLogin??{get:options=>app.getLoginItemSettings(options),set:settings=>app.setLoginItemSettings(settings)},
+  platform:smoke?'win32':process.platform,packaged:smoke||app.isPackaged&&!verifyLive,
+  execPath:smoke?'C:\\Fixture\\Agent Monitor\\Agent Monitor.exe':process.execPath,
+  dataDir:smoke?'C:\\Fixture\\Agent Data':configuredDataDir!==undefined?path.resolve(configuredDataDir):undefined,
+  notify:message=>{loginNotices.push(message);if(!smoke)void dialog.showMessageBox({type:'error',title:'Agent Monitor',message:'Windows 로그인 시 자동 실행',detail:message}).catch(()=>{});}
+});
 let bar,panel,updates,tray,backend,pending=new Map(),sequence=0,selected='grok',hideAt=0,moveTimer,refreshTimer,updateTimer,releaseTimer,hoverTimer,quitting=false,installing=false;
 const monitorDirectory=path.dirname(process.execPath);
 const gatewayRoot=resolveGatewayRoot(monitorDirectory);
@@ -72,15 +83,17 @@ function show(){if(!bar||bar.isDestroyed())return;bar.showInactive();reposition(
 function updateWindowBackground(){if(updates&&!updates.isDestroyed())updates.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1c1c1e':'#f5f5f7');}
 nativeTheme.on('updated',updateWindowBackground);
 function openUpdates(section){if(!updates||updates.isDestroyed()){updates=new BrowserWindow({width:480,height:520,minWidth:460,minHeight:480,show:false,title:'소프트웨어 업데이트',backgroundColor:nativeTheme.shouldUseDarkColors?'#1c1c1e':'#f5f5f7',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});updates.setMenu(null);updates.webContents.setWindowOpenHandler(()=>({action:'deny'}));updates.webContents.on('will-navigate',event=>event.preventDefault());updates.loadFile(path.join(__dirname,'ui','update.html'));}updates.show();updates.focus();if(section==='history'){const scroll=()=>{if(!updates.isDestroyed())void updates.webContents.executeJavaScript("document.querySelector('#github-disclosure').open=true;document.querySelector('#local-disclosure').open=true;document.querySelector('#history-section').scrollIntoView({block:'start'})").catch(()=>{});};if(updates.webContents.isLoading())updates.webContents.once('did-finish-load',scroll);else scroll();}}
-function menu(){Menu.buildFromTemplate([
+function menuTemplate(){return [
   {label:bar.isVisible()?'상태 바 숨기기':'상태 바 표시',click:()=>{if(bar.isVisible()){closePanel();bar.hide();}else show();}},
   {label:'지금 새로고침',click:()=>refresh()},
   {label:'업데이트 확인',click:()=>{openUpdates();void checkUpdates(true);}},
   {label:'업데이트 이력',click:()=>openUpdates('history')},
   {label:'정보 · 버전',click:()=>openUpdates()},
   {label:'위치 초기화',click:()=>{closePanel();bar.setBounds(barBounds(undefined,screen.getPrimaryDisplay().workArea));savePosition();show();}},
+  {type:'separator'}, loginItem.menuItem(),
   {type:'separator'}, {label:'Agent Monitor 종료',click:()=>app.quit()}
-]).popup({window:bar});}
+];}
+function menu(){Menu.buildFromTemplate(menuTemplate()).popup({window:bar});}
 function failPending(message){for(const item of pending.values()){clearTimeout(item.timer);item.reject(Error(message));}pending.clear();}
 function startBackend(){
   if(backend&&!backend.killed)return;
@@ -196,6 +209,13 @@ async function runSmoke(){
     assert.equal(await bar.webContents.executeJavaScript("document.querySelector('[data-agent=grok] b').textContent"),'미제공');assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#used').textContent"),'미제공');assert.match(await panel.webContents.executeJavaScript("document.querySelector('#notice').textContent"),/제공되지/);
     const outside={x:-100000,y:-100000};hoverStep(outside,1000);const card=panel.getBounds();hoverStep({x:card.x+20,y:card.y+20},1200);assert.equal(panel.isVisible(),true);hoverStep(outside,1400);hoverStep(outside,1721);assert.equal(panel.isVisible(),false);
     const bounds=bar.getBounds();bar.setPosition(bounds.x+25,bounds.y+25);reposition();assert.deepEqual(loadPosition(),{x:bar.getBounds().x,y:bar.getBounds().y,pinned});
+    const loginEntry=()=>menuTemplate().find(item=>item.type==='checkbox'&&item.label.startsWith('Windows 로그인 시 자동 실행'));const savedWindow=fs.readFileSync(settingsFile,'utf8'),savedBounds=bar.getBounds();
+    assert.equal(fakeLogin.calls.length,0);assert.equal(loginEntry().checked,false);assert.equal(loginEntry().enabled,true);Menu.buildFromTemplate(menuTemplate());
+    loginEntry().click();assert.deepEqual(fakeLogin.calls,[{path:'C:\\Fixture\\Agent Monitor\\Agent Monitor.exe',args:['"--data-dir=C:\\Fixture\\Agent Data"'],openAtLogin:true,enabled:true}]);assert.equal(loginEntry().checked,true);
+    fakeLogin.approved=false;assert.equal(loginEntry().checked,false);assert.match(loginEntry().label,/Windows 시작 앱에서 꺼짐/);fakeLogin.approved=true;
+    loginEntry().click();assert.equal(fakeLogin.entry,null);assert.equal(loginEntry().checked,false);
+    const realSet=fakeLogin.set;fakeLogin.set=()=>{throw Error('fixture denied');};loginEntry().click();fakeLogin.set=realSet;assert.match(loginNotices.at(-1),/fixture denied/);assert.equal(loginEntry().checked,false);
+    assert.equal(fs.readFileSync(settingsFile,'utf8'),savedWindow);assert.deepEqual(bar.getBounds(),savedBounds);
     openUpdates();await new Promise(resolve=>updates.webContents.isLoading()?updates.webContents.once('did-finish-load',resolve):resolve());
     const fixtureUpdate={phase:'idle',installed:{version:'2.1.0',components:{gateway:'2.1.0',monitor:'1.0.9'}},currentComponents:{gateway:'2.1.0',monitor:'1.1.0'},selected:{version:'2.2.0',components:{gateway:'2.2.0',monitor:'1.1.0'},notes:{gateway:['<img src=x onerror=alert(1)>'],monitor:['업데이트 UI 확인']},publishedAt:now,size:164201607},history:[],localHistory:[],downloaded:false,checkedAt:now};
     const sendUpdate=async()=>{publishUpdate(fixtureUpdate);await new Promise(resolve=>setTimeout(resolve,220));};
@@ -249,7 +269,7 @@ async function runSmoke(){
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery-paths li').textContent"),'C:/Temp/sample-project.backup');
     fs.writeFileSync(path.join(out,'update-rollback-failed.png'),await captureReady(updates));
     openUpdates('history');await new Promise(r=>setTimeout(r,40));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#github-disclosure').open && document.querySelector('#local-disclosure').open"),true);
-    fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted','updater light/dark and states'],uiScaleEmulation:forcedDpi>1?{method:'Electron --force-device-scale-factor',factor:forcedDpi,observed:dpr}:{method:'Electron webContents.setZoomFactor',factors:scales,observed:dpr},stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
+    fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted','login item fake API','updater light/dark and states'],uiScaleEmulation:forcedDpi>1?{method:'Electron --force-device-scale-factor',factor:forcedDpi,observed:dpr}:{method:'Electron webContents.setZoomFactor',factors:scales,observed:dpr},stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
   }catch(error){console.error(error);app.exit(1);}
 }
 
