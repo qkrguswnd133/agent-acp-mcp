@@ -11,7 +11,9 @@ function createLoginItem({loginApi,platform,packaged,execPath,dataDir,notify=()=
   const options=()=>({path:execPath,args:rawArgs.map(quoteArg)});
   function read(){
     if(unavailable)return {available:false,enabled:false,registered:false,reason:unavailable};
-    let settings;try{settings=loginApi.get(options());}catch(error){return {available:true,enabled:false,registered:false,error:`자동 실행 상태를 확인하지 못했습니다: ${error?.message??error}`};}
+    // Electron 44 parses this lookup path as a command line. Quote spaces for
+    // lookup only; registration still receives the plain executable path.
+    let settings;try{settings=loginApi.get({...options(),path:quoteArg(execPath)});}catch(error){return {available:true,enabled:false,registered:false,error:`자동 실행 상태를 확인하지 못했습니다: ${error?.message??error}`};}
     const registered=settings?.openAtLogin===true;
     const matches=(Array.isArray(settings?.launchItems)?settings.launchItems:[]).filter(item=>samePath(item.path,execPath)&&(item.args??[]).map(unquote).join('\0')===rawArgs.join('\0'));
     const approved=matches.length?matches.some(item=>item.enabled!==false):settings?.executableWillLaunchAtLogin===true;

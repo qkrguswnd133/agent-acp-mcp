@@ -132,7 +132,13 @@ try {
     if ($code -eq 0) {
         $result.status='success';$result.message='Installed components updated.'
     } elseif ($output -match 'Automatic rollback was incomplete' -or @($result.backups).Count) { $result.status='rollback_failed';$result.message='Automatic rollback incomplete. Keep Agent Monitor closed; inspect the backup directories and restore the original installation before retrying.' }
-    elseif ($output -match 'in use|busy|did not acknowledge|Unfinished job|active child|maintenance|not exit|restarted') { $result.status='blocked';$result.message='Update blocked by an active component.' }
+    elseif ($output -match 'in use|busy|did not acknowledge|Unfinished job|active child|maintenance|not exit|restarted') {
+        $result.status='blocked';$result.message='Update blocked by an active component. Finish provider jobs and disconnect MCP before retrying.'
+        # Extract only bounded state and filename, never raw provider output.
+        if ($output -match 'Unfinished job \((queued|running|cancelling)\): ([a-zA-Z0-9-]{1,80}\.json)') {
+            $result.message="Update blocked by unfinished job: $($Matches[2]) ($($Matches[1])). Finish or cancel it through its parent before retrying."
+        }
+    }
     elseif ($output -match 'Original installation paths were preserved/restored') { $result.status='rolled_back';$result.message='Update failed; original installations restored.' }
     else { $result.status='failed';$result.message='Update failed before completion.' }
 } catch { $result.status='failed';$result.message='Update request or package validation failed.' }

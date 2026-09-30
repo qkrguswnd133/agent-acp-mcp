@@ -265,7 +265,41 @@ try {
         $r=Invoke-Runner $f
         Assert ($r.ExitCode -ne 0) 'Runner accepted an active job.'
         Assert ($r.Result.status -eq 'blocked') "Wrong runner status: $($r.Result.status)"
+        Assert ($r.Result.message.Contains('active.json') -and $r.Result.message.Contains('running')) 'Missing specific blocking job.'
         Assert-Old $f
+    }
+    Run 'Exited job owners do not block updates and their records are preserved' {
+        $f=New-Fixture 'exited-job-owner'
+        $script=PathOf $f.Base 'exited.js';Put $script 'process.exit(0);'
+        $exited=Start-Process -FilePath $NodeExecutable -ArgumentList @($script) -WindowStyle Hidden -PassThru
+        $exited.WaitForExit()
+        $job='{"job_id":"orphan","status":"cancelling","ownerPid":'+$exited.Id+'}'
+        Put (PathOf $f.Gateway 'state/jobs/orphan.json') $job
+        $r=Invoke-Runner $f
+        Assert ($r.ExitCode -eq 0) "Exited owner still blocked: $($r.Output)"
+        Assert ((Read (PathOf $f.Gateway 'state/jobs/orphan.json')) -eq $job) 'Orphan record was modified or removed.'
+    }
+    Run 'Live job owner continues to block updating' {
+        $f=New-Fixture 'live-job-owner'
+        Put (PathOf $f.Gateway 'state/jobs/live.json') ('{"job_id":"live","status":"running","ownerPid":'+$PID+'}')
+        $r=Invoke-Runner $f
+        Assert ($r.Result.status -eq 'blocked') 'Live owner was ignored.'
+        Assert-Old $f
+    }
+    Run 'Exited owner with a surviving child blocks updating' {
+        $f=New-Fixture 'orphan-child'
+        $childFile=PathOf $f.Base 'child-pid.txt';$script=PathOf $f.Base 'parent.js'
+        $source='const {spawn}=require("child_process");const fs=require("fs");const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore",windowsHide:true,detached:true});fs.writeFileSync(__CHILD__,String(c.pid));c.unref();'
+        Put $script ($source.Replace('__CHILD__',($childFile|ConvertTo-Json -Compress)))
+        $parent=Start-Process -FilePath $NodeExecutable -ArgumentList @($script) -WindowStyle Hidden -PassThru
+        $parent.WaitForExit();$child=Get-Process -Id ([int](Read $childFile))
+        try {
+            Put (PathOf $f.Gateway 'state/jobs/orphan-child.json') ('{"job_id":"orphan-child","status":"running","ownerPid":'+$parent.Id+'}')
+            $r=Invoke-Runner $f
+            Assert ($r.Result.status -eq 'blocked') 'Surviving child was ignored.'
+            Assert-Alive $child 'Surviving child was terminated.'
+            Assert-Old $f
+        } finally { Stop-FixtureProcess $child }
     }
     Run 'Runner reports restored transaction without backup remnants' {
         $f=New-Fixture 'runner-rollback'

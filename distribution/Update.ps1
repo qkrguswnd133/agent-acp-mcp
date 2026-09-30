@@ -88,6 +88,23 @@ function AssertNoActiveJobs([string]$Gateway) {
         try { $job=Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json; $status=[string]$job.status }
         catch { throw "Cannot verify job state: $($file.Name). Automatic shutdown is blocked." }
         if ($status -notin @('completed','failed','cancelled','interrupted')) {
+            # A crashed gateway can leave nonterminal records indefinitely.
+            # Preserve them; ignore only a verifiably absent owner with no
+            # surviving direct children. Missing/malformed ownership fails closed.
+            $ownerProperty=$job.PSObject.Properties['ownerPid']
+            $jobOwner=0
+            if ($status -in @('queued','running','cancelling') -and $ownerProperty -and
+                [int]::TryParse([string]$ownerProperty.Value,[ref]$jobOwner) -and $jobOwner -gt 0) {
+                $owners=@(Get-CimInstance Win32_Process -Filter "ProcessId = $jobOwner" -ErrorAction Stop)
+                if (-not $owners.Count) {
+                    $children=@(Get-CimInstance Win32_Process -Filter "ParentProcessId = $jobOwner" -ErrorAction Stop)
+                    if (-not $children.Count) {
+                        Write-Host "Preserving interrupted job record from exited Gateway PID ${jobOwner}: $($file.Name)"
+                        continue
+                    }
+                    throw "Unfinished job ($status): $($file.Name). Exited Gateway PID $jobOwner still has active child processes."
+                }
+            }
             throw "Unfinished job ($status): $($file.Name). Wait for completion or cancel it through the parent before updating."
         }
     }

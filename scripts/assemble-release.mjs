@@ -34,6 +34,7 @@ await scanFirstParty([
   path.join(repo,'monitor','main.cjs'),
   path.join(repo,'monitor','preload.cjs'),
   path.join(repo,'monitor','geometry.cjs'),
+  path.join(repo,'monitor','login-item.cjs'),
   path.join(repo,'monitor','scripts','Start-Standalone.ps1'),
   path.join(repo,'distribution','examples'),
   path.join(repo,'distribution','instructions'),

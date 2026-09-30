@@ -7,7 +7,7 @@ const exe='C:\\Users\\sample\\AppData\\Local\\Programs\\Agent Monitor\\Agent Mon
 function fakeApi({approved=true,failSet,failGet,ignoreSet}={}){
   const calls={get:[],set:[]};let entry=null;
   return {calls,get entry(){return entry;},set approved(value){approved=value;},api:{
-    get(options){calls.get.push(options);if(failGet)throw Error(failGet);const match=entry&&entry.path===options.path&&entry.args.join(' ')===options.args.join(' ');
+    get(options){calls.get.push(options);if(failGet)throw Error(failGet);const match=entry&&entry.path===options.path.replace(/^"(.*)"$/,'$1')&&entry.args.join(' ')===options.args.join(' ');
       return {openAtLogin:!!match,executableWillLaunchAtLogin:!!entry&&approved,launchItems:entry?[{name:'Agent Monitor',path:entry.path,args:entry.args.map(arg=>arg.replace(/^"(.*)"$/,'$1')),scope:'user',enabled:approved}]:[]};},
     set(settings){calls.set.push(settings);if(failSet)throw Error(failSet);if(ignoreSet)return;entry=settings.openAtLogin?{path:settings.path,args:settings.args}:null;if(settings.openAtLogin&&settings.enabled)approved=true;}
   }};
@@ -56,4 +56,15 @@ test('command-line quoting keeps spaces and trailing backslashes intact',()=>{
   assert.equal(quoteArg('--data-dir=C:\\Data'),'--data-dir=C:\\Data');
   assert.equal(quoteArg('--data-dir=C:\\My Data'),'"--data-dir=C:\\My Data"');
   assert.equal(quoteArg('--data-dir=D:\\'),'"--data-dir=D:\\\\"');
+});
+
+test('Electron 44 lookup quotes executable spaces without changing registration path',()=>{
+ let registered=false;const calls=[];
+ const item=createLoginItem({platform:'win32',packaged:true,execPath:exe,loginApi:{
+  set(value){assert.equal(value.path,exe);registered=value.openAtLogin;},
+  get(value){calls.push(value);const lookup=value.path===`"${exe}"`;return {openAtLogin:registered,executableWillLaunchAtLogin:registered&&lookup,launchItems:[]};}
+ }});
+ assert.equal(item.setEnabled(true).enabled,true);
+ assert.equal(calls[0].path,`"${exe}"`);
+ assert.equal(item.read().blocked,false);
 });

@@ -15,7 +15,7 @@ if(configuredDataDir!==undefined&&(!configuredDataDir||!path.isAbsolute(configur
 const stateDir=smoke||verifyLive?path.join(os.tmpdir(),`agent-monitor-check-${process.pid}`):configuredDataDir?path.resolve(configuredDataDir):path.join(app.getPath('appData'),'Agent Monitor');
 app.setPath('userData',stateDir);fs.mkdirSync(stateDir,{recursive:true});
 // Smoke checks use an in-memory login API so the real Windows startup list is never touched.
-const fakeLogin=smoke?{entry:null,approved:true,calls:[],get(options){const match=this.entry&&this.entry.path===options.path&&this.entry.args.join(' ')===options.args.join(' ');return {openAtLogin:!!match,executableWillLaunchAtLogin:!!this.entry&&this.approved,launchItems:[]};},set(settings){this.calls.push(settings);this.entry=settings.openAtLogin?{path:settings.path,args:settings.args}:null;if(settings.openAtLogin&&settings.enabled)this.approved=true;}}:undefined;
+const fakeLogin=smoke?{entry:null,approved:true,calls:[],get(options){const match=this.entry&&this.entry.path===options.path.replace(/^"(.*)"$/,'$1')&&this.entry.args.join(' ')===options.args.join(' ');return {openAtLogin:!!match,executableWillLaunchAtLogin:!!this.entry&&this.approved,launchItems:[]};},set(settings){this.calls.push(settings);this.entry=settings.openAtLogin?{path:settings.path,args:settings.args}:null;if(settings.openAtLogin&&settings.enabled)this.approved=true;}}:undefined;
 const loginNotices=[];
 const loginItem=createLoginItem({
   loginApi:fakeLogin??{get:options=>app.getLoginItemSettings(options),set:settings=>app.setLoginItemSettings(settings)},
