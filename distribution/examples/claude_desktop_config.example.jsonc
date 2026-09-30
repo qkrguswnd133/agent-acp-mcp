@@ -20,7 +20,9 @@
         "CLAUDE_EFFORT": "auto",
         "CODEX_MODEL": "auto",
         // Codex model/client choices: low, medium, high, xhigh, max, ultra (check model support).
-        "CODEX_EFFORT": "auto"
+        "CODEX_EFFORT": "auto",
+        "CODEX_WINDOWS_SANDBOX": "unelevated",
+        "CODEX_IMPLEMENT_SANDBOX": "workspace-write"
       }
     }
   }

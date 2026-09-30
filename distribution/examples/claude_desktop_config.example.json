@@ -15,7 +15,9 @@
         "CLAUDE_MODEL": "auto",
         "CLAUDE_EFFORT": "auto",
         "CODEX_MODEL": "auto",
-        "CODEX_EFFORT": "auto"
+        "CODEX_EFFORT": "auto",
+        "CODEX_WINDOWS_SANDBOX": "unelevated",
+        "CODEX_IMPLEMENT_SANDBOX": "workspace-write"
       }
     }
   }

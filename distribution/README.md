@@ -21,6 +21,12 @@ Gateway 2.2.2부터 지원되는 공식 Claude·Grok·Codex npm 패키지의 진
 
 직접 실행할 진입점을 확인할 수 없는 사용자 정의 `.cmd`/`.bat`는 UNC 작업 경로에서 실행 전에 중단됩니다. 해당 provider의 네이티브 실행 파일을 CLI 환경변수로 지정하거나 공식 npm 설치를 확인하세요. Gateway가 CLI를 자동 설치하거나 권한 모드를 완화하지는 않습니다. 이 처리는 Windows CLI의 작업 경로를 보존하는 것이며, Linux 전용 도구를 Windows에서 실행 가능하게 바꾸지는 않습니다. UNC 경로에서 테스트용 배치 파일을 실행하는 경우에도 같은 제한이 적용됩니다.
 
+### Windows Codex 작업 권한
+
+Gateway는 사용자 CLI 설정을 분리하면서 Windows 샌드박스 구현을 명시합니다. 기본 `CODEX_WINDOWS_SANDBOX="unelevated"`는 별도 관리자 설정 없이 사용할 수 있는 Windows 제한 토큰 샌드박스입니다. 이미 관리자 샌드박스 구성이 끝난 PC는 MCP 서버 env에서 `"elevated"`로 지정할 수 있습니다. 다른 값은 실행 전에 거절합니다.
+
+구현 작업은 기본 `workspace-write`이며 MCP 서버 env의 `CODEX_IMPLEMENT_SANDBOX="danger-full-access"`로 전체 파일 시스템 접근을 허용할 수 있습니다. 이 경우 `allowed_paths`는 OS가 강제하는 경계가 아니라 작업 지침입니다. `read-only` 값도 지원합니다. 읽기 도구는 이 설정과 무관하게 `read-only`를 사용합니다. 승인·명령 정책 우회 옵션은 추가하지 않습니다. CLI 0.159.2에서는 `--ignore-user-config`로 `windows.sandbox`가 빠지면 `workspace-write`를 전달해도 파일 수정이 읽기 전용으로 거절되는 사례를 재현했습니다. 별도 정책·회사 관리 설정에 의한 거절은 이 설정으로 해제되지 않습니다.
+
 ## 수동 업데이트
 
 **v2.2.0 / Monitor 1.1.0 사용자:** Electron의 `app.asar` 압축 해제 오류 때문에 앱 내 업데이트가 설치 준비 중 멈출 수 있습니다. 이번 v2.2.1 ZIP의 `Update.ps1`을 한 번 실행하세요. Monitor 1.1.1에서 해당 오류를 수정했습니다.

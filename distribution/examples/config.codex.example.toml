@@ -24,6 +24,11 @@ CODEX_MODEL = "auto"
 # Use only values supported by your selected model/client; auto omits the override.
 # These env settings affect delegated CLI sessions, not the parent host's effort.
 CODEX_EFFORT = "auto"
+# Native Windows sandbox implementation: unelevated (default), elevated (requires setup).
+CODEX_WINDOWS_SANDBOX = "unelevated"
+# Implementation only: workspace-write (default), danger-full-access, read-only.
+# Full access removes filesystem isolation; allowed_paths remains a task instruction.
+CODEX_IMPLEMENT_SANDBOX = "workspace-write"
 # Optional absolute paths when discovery fails:
 # GROK_CLI = "C:/Users/YOUR_NAME/.grok/bin/grok.exe"
 # CLAUDE_CLI = "C:/Users/YOUR_NAME/.local/bin/claude.exe"

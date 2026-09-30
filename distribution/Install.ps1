@@ -53,6 +53,7 @@ $providerEnv = [ordered]@{
     GROK_MODEL='auto'; GROK_EFFORT='xhigh'
     CLAUDE_MODEL='auto'; CLAUDE_EFFORT='auto'
     CODEX_MODEL='auto'; CODEX_EFFORT='auto'
+    CODEX_WINDOWS_SANDBOX='unelevated'; CODEX_IMPLEMENT_SANDBOX='workspace-write'
 }
 $grokPath = Join-Path $env:USERPROFILE '.grok\bin\grok.exe'
 if (Test-Path -LiteralPath $grokPath -PathType Leaf) { $providerEnv.GROK_CLI=$grokPath }

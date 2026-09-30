@@ -15,6 +15,19 @@ import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks
 let cachedExecutable:LaunchCommand|undefined;let statusCache:{at:number,value:ProviderStatus}|undefined;let observedRuntimeBlock=false;
 const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'codex-quota.json'));
 export const codexNpmPackage:OfficialNpmPackage={name:'@openai/codex',binNames:['codex'],label:'Codex',defaultMinimumNode:16};
+/** --ignore-user-config also removes windows.sandbox. Without an explicit
+ * Windows implementation, CLI 0.159.2 can downgrade workspace-write to read-only. */
+export function codexSandboxArgs(writable:boolean,platform:NodeJS.Platform=process.platform,env:NodeJS.ProcessEnv=process.env):string[]{
+ const mode=writable?(env.CODEX_IMPLEMENT_SANDBOX??'workspace-write'):'read-only';
+ if(!['workspace-write','danger-full-access','read-only'].includes(mode))throw Error('CODEX_IMPLEMENT_SANDBOX must be workspace-write, danger-full-access or read-only');
+ const args=['--sandbox',mode];
+ if(platform==='win32'&&mode!=='danger-full-access'){
+  const implementation=env.CODEX_WINDOWS_SANDBOX??'unelevated';
+  if(implementation!=='unelevated'&&implementation!=='elevated')throw Error('CODEX_WINDOWS_SANDBOX must be unelevated or elevated');
+  args.push('-c',`windows.sandbox="${implementation}"`);
+ }
+ return args;
+}
 // One resolved launcher serves status, app-server telemetry and run alike.
 async function exe(){
  if(cachedExecutable)return cachedExecutable;
@@ -120,7 +133,7 @@ export class CodexProvider implements ProviderAdapter{
  }
  async run(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
-  const args=['exec','--ephemeral','--ignore-user-config','--sandbox',writable?'workspace-write':'read-only','--json','-c','mcp_servers={}','-c','features.plugins=false'];if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
+  const args=['exec','--ephemeral','--ignore-user-config',...codexSandboxArgs(writable),'--json','-c','mcp_servers={}','-c','features.plugins=false'];if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
   const r=await runCommand(command,args,{cwd:input.cwd,env:providerChildEnv(),timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity});
   statusCache=undefined;const parsed=parseEvents(r.stdout);if(r.code!==0||parsed.error){
    const error=parsed.error??(r.stderr.trim()||`Codex exited with code ${r.code}`);
