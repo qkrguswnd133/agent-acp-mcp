@@ -1,25 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {selectModel} from '../src/health.js';
-const model=(modelId:string,levels=['xhigh','high','low'])=>({modelId,_meta:{agentType:'grok-build-plan',supportsReasoningEffort:true,reasoningEfforts:levels.map(id=>({id}))}});
-test('explicit per-call Grok selections never silently fall back',()=>{
- assert.throws(()=>selectModel([model('grok-5')],undefined,'grok-missing','high',{model:true}),/refusing fallback/);
- assert.throws(()=>selectModel([model('grok-5',['high'])],undefined,'grok-5','xhigh',{effort:true}),/refusing fallback/);
- assert.equal(selectModel([model('grok-5',['high'])],undefined,'auto','auto',{model:true,effort:true}).effort,'high');
+import {grokCatalog,claudeCatalog,codexCatalog} from '../src/model-catalog.js';
+import {resolveProviderSettings,validateCatalog} from '../src/model-settings.js';
+const model=(modelId:string,levels=['xhigh','high','low'])=>({modelId,_meta:{supportsReasoningEffort:true,reasoningEfforts:levels.map(id=>({id}))}});
+test('Grok model state preserves advertised choices without selecting newest or falling back',()=>{
+ const value=grokCatalog({availableModels:[model('grok-4.6'),model('grok-5',['high'])]},'fixture');
+ assert.deepEqual(value.models.map(m=>m.id),['grok-4.6','grok-5']);assert.equal(value.modelsAuthoritative,true);
+ const settings={model:'grok-missing',effort:'high',modelSource:'parent' as const,effortSource:'parent' as const,selection:{model:{value:'grok-missing',source:'parent' as const},effort:{value:'high',source:'parent' as const}}};
+ assert.throws(()=>validateCatalog('grok',settings,value),/UNSUPPORTED_MODEL_OR_EFFORT/);
+ assert.throws(()=>validateCatalog('grok',{...settings,model:'grok-5',effort:'xhigh'},value),/UNSUPPORTED_MODEL_OR_EFFORT/);
 });
-test('prefer configured grok-4.6 and xhigh even with newer model',()=>{
- assert.deepEqual(selectModel([model('grok-4.6'),model('grok-5')],undefined,'grok-4.6'),{model:'grok-4.6',effort:'xhigh',notices:[]});
+test('Grok filters models requiring API keys and associates config effort options only with current model',()=>{
+ const value=grokCatalog({availableModels:[{modelId:'coding'},{modelId:'other'},{modelId:'paid',_meta:{apiKeyRequired:true}}],currentModelId:'coding'},'fixture',[{id:'reasoning_effort',type:'select',options:[{value:'high'}]}]);
+ assert.deepEqual(value.models.map(m=>m.id),['coding','other']);assert.equal(value.models[0].effortsAuthoritative,true);assert.equal(value.models[1].effortsAuthoritative,false);
 });
-test('fallback selects newest advertised coding version and reports highest available effort',()=>{
- const result=selectModel([model('grok-4.5'),model('grok-5.2',['high','medium']),model('grok-5.10',['max','high'])],undefined,'grok-4.6');
- assert.equal(result.model,'grok-5.10');assert.equal(result.effort,'max');assert.equal(result.notices.length,2);
-});
-test('auto selects newest coding model and prefers ordinary model over same-version variants',()=>{
- const result=selectModel([model('grok-4.6'),model('grok-4.7-build-fast'),model('grok-4.7')],'grok-4.6','auto');
- assert.deepEqual(result,{model:'grok-4.7',effort:'xhigh',notices:[]});
-});
-test('do not pick models lacking coding or reasoning evidence or requiring API key',()=>{
- assert.throws(()=>selectModel([{modelId:'grok-6'}]));
- assert.throws(()=>selectModel([{...model('grok-5'),_meta:{...model('grok-5')._meta,apiKeyRequired:true}}]));
- assert.throws(()=>selectModel([model('grok-4.6',[])]));
+test('unavailable catalogs and partial effort lists never invent support',()=>{
+ assert.equal(grokCatalog(undefined,'fixture').modelsAuthoritative,false);
+ assert.equal(codexCatalog([],'fixture').status,'unavailable');
+ const c=claudeCatalog({models:[{value:'default'},{value:'opus',supportedEffortLevels:['high']}]},'fixture');
+ assert.equal(c.modelsAuthoritative,false);assert.equal(c.status,'partial');assert.deepEqual(c.models.map(m=>m.id),['opus']);assert.deepEqual(c.models[0].efforts,['high']);
 });

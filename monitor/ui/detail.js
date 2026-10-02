@@ -1,6 +1,6 @@
 let state={},selected='grok';
 const names={grok:'Grok',claude:'Claude',codex:'Codex'},colors={grok:'#b4a6f5',claude:'#dca888',codex:'#8ac9b4'};
-const $=id=>document.getElementById(id),known=value=>typeof value==='string'&&!['auto','unknown','unavailable',''].includes(value);
+const $=id=>document.getElementById(id);
 function timestamp(value){if(typeof value==='number')return value<1e11?value*1000:value;return Date.parse(value);}
 function formatTime(value){const time=timestamp(value);return Number.isFinite(time)?new Date(time).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'확인 불가';}
 function render(){const p=state.snapshot?.providers?.find(p=>p.provider===selected);const q=p?.quota??{};const valid=typeof q.usedPercent==='number'&&Number.isFinite(q.usedPercent);const stale=!!state.error||q.stale||state.snapshot?.generatedAt&&Date.now()-Date.parse(state.snapshot.generatedAt)>150000;
@@ -22,7 +22,7 @@ function render(){const p=state.snapshot?.providers?.find(p=>p.provider===select
     reset.textContent=`초기화 ${formatTime(window.resetsAt)}${expired?' · 마지막 확인값':''}`;row.append(label,values,reset);$('quota-windows').append(row);
   }
   const reset=timestamp(q.resetsAt);const mins=Number.isFinite(reset)?Math.ceil((reset-Date.now())/60000):0;const countdown=mins>0?mins>=60?`${Math.floor(mins/60)}시간 ${mins%60}분 후`:`${mins}분 후`:'';$('reset').textContent=`${formatTime(q.resetsAt)}${countdown?' · '+countdown:''}`;
-  $('model').textContent=known(p?.model)?`${p.model} · 최근 관측`:known(p?.modelPolicy)?`설정 ${p.modelPolicy} · 실행값 미확인`:'자동 선택 · 실행 후 확인';$('model').title=`${p?.modelSource??''} · ${formatTime(p?.observedAt)}`;$('effort').textContent=known(p?.effort)?`${p.effort} · 최근 관측`:known(p?.effortPolicy)?`설정 ${p.effortPolicy} · 실행값 미확인`:'자동 · 실행 후 확인';$('effort').title=`${p?.effortSource??''} · ${formatTime(p?.observedAt)}`;$('auth').textContent=p?`${p.authenticated===true?'로그인됨':p.authenticated===false?'로그인 필요':'확인 불가'} / ${p.version??'확인 불가'}`:'확인 중';
+  for(const axis of ['model','effort']){const value=describeSetting(p,axis,formatTime),node=$(axis);node.textContent=value.text;node.title=value.title;node.dataset.setting=value.state;node.tabIndex=value.title.trim()?0:-1;$(`${axis}-detail`).textContent=value.title;}$('auth').textContent=p?`${p.authenticated===true?'로그인됨':p.authenticated===false?'로그인 필요':'확인 불가'} / ${p.version??'확인 불가'}`:'확인 중';
   const accountStale=!!state.error||state.snapshot?.generatedAt&&Date.now()-Date.parse(state.snapshot.generatedAt)>150000||p?.account?.observedAt&&Date.now()-Date.parse(p.account.observedAt)>150000;
   const account=!accountStale&&p?.enabled!==false&&p?.available!==false&&p?.authenticated===true&&p.account?.status==='authenticated'?p.account:null;
   const identity=account?.email??account?.username??account?.displayName;

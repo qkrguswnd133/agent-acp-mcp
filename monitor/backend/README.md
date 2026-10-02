@@ -26,13 +26,14 @@ Replies are `{"id":1,"result":{...}}` or `{"id":1,"error":"status_unavailable"}`
 - `version`, `versionSource`; Grok version is explicitly `last_known_health`, never a new health check.
 - `model`, `effort`: last observed value or null. `modelSource`/`effortSource`: `last_known_health`, `last_known_job` or `unavailable`. Configured policy is separate in `modelPolicy`/`effortPolicy`; never show `auto` as an observed model/effort.
 - `observedAt`: provider metadata observation timestamp. Null means unavailable.
+- `lastRun`: `{jobId, at, selection, observation}` from the newest settled job result for this provider, or null when that result has no such metadata (older jobs). `selection.model|effort` is `{value, source:'parent'|'configured', reason}` and is never an actual value; `observation.model|effort` is `{value, source, verified}`. Either side or axis may be null.
 - `quota`: `state` (`available`, `exhausted`, `unknown`), `source`, numeric-or-null `usedPercent`/`remainingPercent`, ISO-or-null `resetsAt`/`retryAfter`/`observedAt`, nullable `limitKind`, boolean `stale`.
 - `reason`: generic safe reason or null. No raw upstream errors.
 - No `host`, `selfProvider`, or `callable`: this standalone monitor does not route provider requests.
 
 **Stale Grok values can remain numeric but must always display as last-known/stale**, never a current balance. Missing numeric values are null, not zero. Claude and Codex window labels in the bar come only from observed quota window records; missing windows are not invented.
 
-`jobs`: up to 20 newest gateway job summaries. Fields: `jobId`, stored `status`, `project` (cwd basename), `cwd`, `startedAt`, `lastActivityAt`, `finishedAt`; `providers` contains `provider`, observed `model`/`effort`, `sessionId`, numeric allowlisted `usage`, `status`, `errorKind`. Stored running status is not proof the owner process is still alive. No prompts, task instructions, partial responses, raw stdout or raw errors are returned.
+`jobs`: up to 20 newest gateway job summaries. Fields: `jobId`, stored `status`, `project` (cwd basename), `cwd`, `startedAt`, `lastActivityAt`, `finishedAt`; `providers` contains `provider`, observed `model`/`effort`, sanitized `selection`/`observation` (null when absent), `sessionId`, numeric allowlisted `usage`, `status`, `errorKind`. Stored running status is not proof the owner process is still alive. No prompts, task instructions, partial responses, raw stdout or raw errors are returned.
 
 ## Side effects
 

@@ -10,9 +10,11 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 4. 설치 프로그램이 만든 `gateway\configuration`의 예제를 사용하는 MCP 클라이언트 설정에 병합합니다. [설치 및 업데이트 설명](distribution/README.md)을 확인하세요.
 5. 사용하려는 Grok Build, Claude Code, Codex CLI를 각각 설치하고 자신의 subscription 계정으로 로그인합니다. 이 저장소와 릴리스에는 CLI 바이너리나 계정 정보가 들어 있지 않습니다.
 
-`agent_status`는 provider 상태를 확인하지만 일부 provider에서는 호환성 확인을 위해 모델 요청을 할 수 있습니다. 사용량 없는 로컬 패키지 검증은 릴리스에 포함된 `Verify-Package.mjs`를 사용합니다.
+`agent_status`와 `agent_models`는 CLI/프로토콜·인증·사용량·지원 정보를 확인하며 작업용 모델 프롬프트를 보내지 않습니다. 순수 로컬 패키지 검증은 릴리스에 포함된 `Verify-Package.mjs`를 사용합니다.
 
 ## 업데이트
+
+**2.3.0 모델 선택 규약 변경:** 모델·effort의 `auto`는 Parent가 작업별로 구체적인 값과 `selection_reason`을 선택해 전달하는 정책입니다. CLI 기본값으로 넘기지 않습니다. `agent_models`로 지원 정보와 고정/auto 정책을 먼저 확인하세요. 기존 고정 설정은 호출로 덮어쓰지 않습니다. MCP 재연결과 함께 [모델 선택 지침](gateway/MODEL-OVERRIDES.md) 및 [Parent 지침 템플릿](distribution/instructions/README.md)을 반영하세요. 개인 설정·지침은 자동으로 교체되지 않습니다.
 
 Monitor에서 새 릴리스를 확인하고 현재 설치된 구성요소를 함께 업데이트할 수 있습니다. Monitor는 Ed25519 서명, 다운로드한 ZIP의 SHA-256, ZIP 내부 파일별 체크섬을 검증한 뒤 업데이트를 실행합니다. 수동 업데이트는 새 ZIP을 별도 폴더에 압축 해제한 후 `Update.ps1`을 실행합니다. 실행 중인 작업을 마치고 MCP 연결을 닫아야 할 수 있습니다. 업데이트는 이전 실행 파일의 백업과 사용자 상태를 보존합니다.
 

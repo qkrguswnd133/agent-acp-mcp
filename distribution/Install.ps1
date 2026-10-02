@@ -50,7 +50,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'gateway') -Destination $Gateway
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'monitor') -Destination $MonitorDirectory -Recurse
 $providerEnv = [ordered]@{
     GROK_ENABLED='true'; CLAUDE_ENABLED='true'; CODEX_ENABLED='true'
-    GROK_MODEL='auto'; GROK_EFFORT='xhigh'
+    GROK_MODEL='auto'; GROK_EFFORT='auto'
     CLAUDE_MODEL='auto'; CLAUDE_EFFORT='auto'
     CODEX_MODEL='auto'; CODEX_EFFORT='auto'
     CODEX_WINDOWS_SANDBOX='unelevated'; CODEX_IMPLEMENT_SANDBOX='workspace-write'

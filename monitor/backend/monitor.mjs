@@ -32,12 +32,23 @@ export function sanitizeUsage(value){
   return Object.keys(result).length?result:null;
 }
 function observedSetting(value){return text(value)&&!['auto','unavailable','unknown'].includes(value)?value:null;}
+const secretLike=/(?:sk-ant-|sk-[a-z0-9]{12}|gh[opusr]_|Bearer\s+)/i;
+const sourceText=value=>typeof value==='string'&&/^[a-z0-9_.:-]{1,64}$/i.test(value)?value:null;
+const reasonText=value=>typeof value==='string'&&value.trim()&&value.length<=300&&!/[\x00-\x1f\x7f]/.test(value)&&!secretLike.test(value)?value.trim():null;
+function selectionAxis(v){return v&&typeof v==='object'&&text(v.value)&&!secretLike.test(v.value)&&['parent','configured'].includes(v.source)?{value:v.value,source:v.source,reason:reasonText(v.reason)}:null;}
+function observationAxis(v){const value=v&&typeof v==='object'?observedSetting(v.value):null;return value?{value,source:sourceText(v.source)??'unavailable',verified:v.verified===true}:null;}
+/** Parent/configured selection stays separate from observed runtime values; legacy results yield nulls. */
+export function runSettings(r){
+  const selection={model:selectionAxis(r?.selection?.model),effort:selectionAxis(r?.selection?.effort)};
+  const observation={model:observationAxis(r?.observation?.model),effort:observationAxis(r?.observation?.effort)};
+  return {selection:selection.model||selection.effort?selection:null,observation:observation.model||observation.effort?observation:null};
+}
 export function sanitizeJob(job){
   if(!job||typeof job!=='object'||!text(job.job_id)||!text(job.cwd))return null;
   const results=Array.isArray(job.result?.results)?job.result.results:[];
-  const providers=results.filter(r=>PROVIDERS.includes(r?.provider)).map(r=>({provider:r.provider,model:observedSetting(r.model),effort:observedSetting(r.effort),sessionId:text(r.sessionId),usage:sanitizeUsage(r.usage),status:r.error?'failed':'completed',errorKind:text(r.errorKind)}));
+  const providers=results.filter(r=>PROVIDERS.includes(r?.provider)).map(r=>({provider:r.provider,model:observedSetting(r.model),effort:observedSetting(r.effort),...runSettings(r),sessionId:text(r.sessionId),usage:sanitizeUsage(r.usage),status:r.error?'failed':'completed',errorKind:text(r.errorKind)}));
   const active=job.activity;
-  if(PROVIDERS.includes(active?.provider)&&!providers.some(p=>p.provider===active.provider))providers.push({provider:active.provider,model:observedSetting(active.model),effort:observedSetting(active.effort),sessionId:text(active.sessionId),usage:sanitizeUsage(active.usage),status:text(job.status),errorKind:null});
+  if(PROVIDERS.includes(active?.provider)&&!providers.some(p=>p.provider===active.provider))providers.push({provider:active.provider,model:observedSetting(active.model),effort:observedSetting(active.effort),...runSettings(active),sessionId:text(active.sessionId),usage:sanitizeUsage(active.usage),status:text(job.status),errorKind:null});
   const candidate=text(job.worktree?.originalCwd);
   const originalCwd=candidate&&(path.win32.isAbsolute(candidate)||path.posix.isAbsolute(candidate))?candidate:null;
   const isolated=!!originalCwd&&originalCwd!==job.cwd;
@@ -71,7 +82,7 @@ export function normalizeAccount(value,authenticated){
   const source=typeof value.source==='string'&&/^[a-z0-9_.-]{1,64}$/i.test(value.source)?value.source:null;
   return {status:'authenticated',email:accountText(value.email),username:accountText(value.username),displayName:accountText(value.displayName),organization:accountText(value.organization),source,observedAt:timestamp(value.observedAt)};
 }
-function emptyProvider(provider,env){return {provider,enabled:enabled(provider,env),available:'unknown',authenticated:'unknown',subscriptionAuth:'unknown',account:normalizeAccount(),version:null,versionSource:'unavailable',model:null,effort:null,modelSource:'unavailable',effortSource:'unavailable',modelPolicy:env[`${provider.toUpperCase()}_MODEL`]??'auto',effortPolicy:env[`${provider.toUpperCase()}_EFFORT`]??(provider==='grok'?'xhigh':'auto'),observedAt:null,quota:normalizeQuota(),reason:null};}
+function emptyProvider(provider,env){return {provider,enabled:enabled(provider,env),available:'unknown',authenticated:'unknown',subscriptionAuth:'unknown',account:normalizeAccount(),version:null,versionSource:'unavailable',model:null,effort:null,modelSource:'unavailable',effortSource:'unavailable',modelPolicy:env[`${provider.toUpperCase()}_MODEL`]??'auto',effortPolicy:env[`${provider.toUpperCase()}_EFFORT`]??'auto',observedAt:null,quota:normalizeQuota(),reason:null};}
 
 export function createMonitor({gatewayRoot,home=os.homedir(),env=process.env,adapters={},getWeeklyUsage,getGrokAccountStatus,now=Date.now}={}){
   const stateRoot=env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp');
@@ -109,6 +120,9 @@ export function createMonitor({gatewayRoot,home=os.homedir(),env=process.env,ada
         if(latest.effort){p.effort=latest.effort;p.effortSource='last_known_job';}
         p.observedAt=latest.at;
       }
+      // Newest settled (or metadata-bearing) run decides; an older run's selection never stands in for a newer legacy run.
+      const run=jobs.flatMap(job=>job.providers.map(r=>({...r,jobId:job.jobId,at:job.finishedAt??job.lastActivityAt??job.startedAt}))).find(r=>r.provider===p.provider&&(r.selection||r.observation||!['running','queued','cancelling'].includes(r.status)));
+      p.lastRun=run&&(run.selection||run.observation)?{jobId:run.jobId,at:run.at,selection:run.selection,observation:run.observation}:null;
     }
     return {generatedAt:new Date(now()).toISOString(),providers,jobs};
   })().finally(()=>{inFlight=undefined;});}};

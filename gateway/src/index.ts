@@ -10,6 +10,7 @@ import {setMcpSelfTest} from './health.js';
 import {JobManager} from './jobs.js';
 import {detectHost} from './host.js';
 import {AgentRouter} from './router.js';
+import {ModelSelectionError} from './model-settings.js';
 import {GrokProvider} from './providers/grok.js';
 import {ClaudeProvider} from './providers/claude.js';
 import {CodexProvider} from './providers/codex.js';
@@ -20,6 +21,7 @@ const jobs=new JobManager(path.join(root,'state/jobs'),(kind,input,signal,hooks)
   const host=(input as any).__host;if(!host)throw Error('HOST_UNKNOWN: job was created without MCP client identity');
   return router.run(kind as AgentKind,input,host,signal,hooks);
 });
+jobs.setPreflight(input=>router.preflight(input,(input as any).__host));
 let inFlight=0;
 let maintenance:MaintenanceGate;
 function tracked<T extends (...args:any[])=>Promise<any>>(handler:T):T {
@@ -27,26 +29,28 @@ function tracked<T extends (...args:any[])=>Promise<any>>(handler:T):T {
 }
 
 const provider=z.string().min(1).max(100).default('auto').describe('Use "auto" for a random non-empty subset of callable providers (host eligibility follows ALLOW_SELF_PROVIDER / allow_self_provider), or an explicit comma-separated list such as "grok,claude".');
-const model=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}$/).describe('Provider model ID or supported alias; auto uses provider automatic/default selection.');
-const effort=z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe('Provider-supported effort, e.g. low/medium/high/xhigh; support is model-dependent. auto uses provider default policy.');
-const providerSettings=z.object({model:model.optional(),effort:effort.optional()}).strict();
+const model=z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}$/).describe('Concrete parent-selected provider model ID or advertised alias. auto is not a per-call selection; use agent_models to inspect catalog and configured policy.');
+const effort=z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe('Concrete parent-selected effort supported by the selected model. auto requires a parent decision; it never delegates selection to the CLI.');
+const selectionReason=z.string().trim().min(1).max(4000).describe('Why the parent selected the model/effort for this task. Required when filling any auto field.');
+const providerSettings=z.object({model:model.optional(),effort:effort.optional(),selection_reason:selectionReason.optional()}).strict();
 const base={
   task:z.string().min(1).max(100000),
   cwd:z.string().min(1).describe('Existing absolute working directory. For project usage attribution, pass the actual project root, not the gateway or a temporary directory. For isolated implementation, the scope is mapped into a managed worktree and original cwd is retained in metadata.'),
   provider,
-  model:model.optional().describe('Per-call model override for exactly one explicit provider; use provider_options for auto/multiple providers.'),
-  effort:effort.optional().describe('Per-call effort override for exactly one explicit provider; use provider_options for auto/multiple providers.'),
-  provider_options:z.object({grok:providerSettings.optional(),claude:providerSettings.optional(),codex:providerSettings.optional()}).strict().optional().describe('Provider-specific model/effort overrides. Does not change routing or force auto to select a provider. Cannot combine with top-level model/effort.'),
+  model:model.optional().describe('Concrete model selection for exactly one explicit provider; fixed configuration cannot be overridden; use provider_options for auto/multiple providers.'),
+  effort:effort.optional().describe('Concrete effort selection for exactly one explicit provider; fixed configuration cannot be overridden; use provider_options for auto/multiple providers.'),
+  selection_reason:selectionReason.optional(),
+  provider_options:z.object({grok:providerSettings.optional(),claude:providerSettings.optional(),codex:providerSettings.optional()}).strict().optional().describe('Provider-specific concrete model/effort selections and reasons. Prevalidated for all eligible auto retry candidates. Does not change routing or force auto to select a provider. Cannot combine with top-level model/effort/selection_reason.'),
   allow_self_provider:z.boolean().optional().describe('Optional per-call override of the MCP server env ALLOW_SELF_PROVIDER (default false). Applies to auto and explicit routing. True includes the host in the eligible pool; auto selection is still random. False overrides a true environment default. Auth, quota, locks and nested-delegation protection still apply.'),
   context:z.string().max(100000).optional(),
   session_id:z.string().uuid().optional().describe('Grok-only continuation; use only with provider="grok". Keep cwd/tool unchanged; allowed_paths may be reordered or narrowed, never expanded. Supply the current narrowed scope again on later resumes.'),
   max_runtime_minutes:z.number().int().min(1).max(1440).default(120)
 };
 const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringify(value)}]});
-const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e)}),isError:true});
+const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.2.4'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.3.0'});
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
@@ -77,6 +81,10 @@ function createServer(){
  server.registerTool('agent_job_cancel',{
    description:'Cancel a background multi-agent job. Partial edits are preserved.',inputSchema:z.object({job_id:z.string().uuid()}),annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
  },async({job_id})=>{try{return reply(await jobs.cancel(job_id));}catch(e){return errorReply(e);}});
+ server.registerTool('agent_models',{
+   description:'Discover model/effort choices and configured policies through official local CLI protocols using subscription sessions, without a model prompt. Cached for five minutes; refresh forces discovery. Missing or partial catalogs explicitly leave support unverified. Auto fields require a concrete parent selection plus selection_reason; fixed fields reject conflicts. Provider routing auto is separate and is not accepted here.',
+   inputSchema:z.object({provider:z.string().default('grok,claude,codex').describe('Explicit comma-separated provider names.'),refresh:z.boolean().optional()}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },tracked(async({provider,refresh})=>{try{return reply(await router.models(provider,refresh??false));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_status',{
    description:'Show detected MCP host plus Grok/Claude/Codex enabled, availability, authentication, subscription-auth, quota and callable state. Quota includes limitKind, actual resetsAt (null if unknown), and retryAfter for rechecking. Host is detected from MCP clientInfo; no static host setting is used.',
    inputSchema:z.object({refresh:z.boolean().optional(),allow_self_provider:z.boolean().optional()}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
@@ -100,11 +108,11 @@ process.stdin.on('end',()=>{void closeBridge();});
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.2.4'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.3.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.2.4',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.3.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

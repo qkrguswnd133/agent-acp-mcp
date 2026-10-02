@@ -1,11 +1,14 @@
 import path from 'node:path';
+import {spawnPlan} from '../process.js';
+import {readClaudeModels} from '../claude-model-catalog.js';
 import {accountStatus} from '../account.js';
 import {claudeModelMetadata} from '../claude-model.js';
 import {randomUUID} from 'node:crypto';
 import {home,runCommand,safeChildEnv,type LaunchCommand} from '../process.js';
 import {resolveClaudeLaunch} from '../claude-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
-import {resolveProviderSettings} from '../model-settings.js';
+import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from '../model-settings.js';
+import {CatalogCache,claudeCatalog,unavailableCatalog} from '../model-catalog.js';
 import {buildPrompt} from '../prompt.js';
 import {QuotaCache} from '../quota-cache.js';
 import {readClaudeSessionTelemetry,reportedEffort} from '../claude-session.js';
@@ -15,6 +18,7 @@ import {claudeUsageAccountKey,refreshClaudeCredentials} from '../claude-auth-ref
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
 const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'claude-quota.json'));
+const modelCache=new CatalogCache();
 let cachedExecutable:LaunchCommand|undefined;
 // One resolved launcher serves status, auth refresh, run and update alike.
 async function exe(){return cachedExecutable??=await resolveClaudeLaunch({explicit:process.env.CLAUDE_CLI});}
@@ -66,7 +70,28 @@ export class ClaudeProvider implements ProviderAdapter{
   if(latestQuota?.state==='exhausted')currentQuota={...currentQuota,...latestQuota};
   return {provider:'claude',enabled:true,available:version.code===0,authenticated,subscriptionAuth,account:accountStatus(authenticated,{email:authParsed?.email,organization:authParsed?.orgName},'claude_auth_status'),version:(version.stdout||version.stderr).trim()||'unavailable',modelPolicy:modelPolicy('claude'),effortPolicy:effortPolicy('claude'),quota:currentQuota,reason:version.code===0?undefined:'Claude CLI version check failed'};
  }
+ async models(force=false){
+  if(!providerEnabled('claude'))return unavailableCatalog('claude','Provider disabled.');
+  const command=await exe().catch(()=>undefined);if(!command)return unavailableCatalog('claude','CLI unavailable.');
+  return modelCache.get(JSON.stringify(command),async()=>{
+   let version='unavailable';
+   try{const result=await runCommand(command,['--version'],{env:safeChildEnv({DISABLE_AUTOUPDATER:'1'}),timeoutMs:10000});version=(result.stdout||result.stderr).trim()||'unavailable';if(result.code!==0)throw Error('CLI version check failed');return claudeCatalog(await readClaudeModels(command),version);}
+   catch(error){return unavailableCatalog('claude',`Catalog discovery failed: ${error instanceof Error?error.message:String(error)}; model/effort support remains unverified.`,version);}
+  },force);
+ }
  async run(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
+  let settings:ReturnType<typeof resolveProviderSettings>|undefined;
+  try{
+   settings=resolveProviderSettings('claude',input);
+   if(signal?.aborted)return withSelection({provider:'claude',text:'',error:'Cancelled',errorKind:'cancelled'},settings.selection);
+   const command=await exe();if(!command)throw Error('CLI unavailable');spawnPlan(command,[],input.cwd);
+   validateCatalog('claude',settings,await this.models());
+   const result=await this.execute(kind,input,signal,hooks);
+   if(result.error&&/unknown model|unsupported model|invalid model|invalid.*effort|unsupported.*effort|effort.*not supported/i.test(result.error)&&result.errorKind==='task_error')result.errorKind='UNSUPPORTED_MODEL_OR_EFFORT';
+   return withSelection(result,settings.selection);
+  }catch(error){return selectionFailure('claude',error,settings?.selection);}
+ }
+ private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Claude CLI not found');const writable=kind==='agent_implement';
   // Keep official session JSONL persistence: usage collectors attribute projects from its cwd.
   const generatedSessionId=randomUUID();

@@ -1,3 +1,4 @@
+import {selectedInput} from './selection-fixture.js';
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -232,12 +233,12 @@ test('Codex provider status, app-server and run use the official package bin wit
     const status=await provider.status(true);
     assert.equal(status.available,true,status.reason);assert.equal(status.version,'codex-cli 9.9.9');assert.equal(status.authenticated,true);
     assert.equal(status.quota.source,'codex_app_server');assert.equal(status.quota.usedPercent,10);
-    const result=await provider.run('agent_ask',{task:'fixture',cwd});
+    const result=await provider.run('agent_ask',selectedInput({task:'fixture',cwd}));
     assert.equal(result.error,null);assert.equal(result.text,'codex launch answer');assert.equal(result.sessionId,'codex-launch');
     const seen=await records(log);
-    assert.deepEqual(seen.map(r=>r.args[0]).sort(),['--version','app-server','exec','login'].sort());
+    assert.deepEqual(seen.map(r=>r.args[0]).sort(),['--version','--version','app-server','app-server','exec','login'].sort());
     const exec=seen.find(r=>r.args[0]==='exec');
-    assert.deepEqual(exec.args,['exec','--ignore-user-config','--sandbox','read-only','-c','windows.sandbox="unelevated"','--json','-c','mcp_servers={}','-c','features.plugins=false','-']);
+    assert.deepEqual(exec.args,['exec','--ignore-user-config','--sandbox','read-only','-c','windows.sandbox="unelevated"','--json','-c','mcp_servers={}','-c','features.plugins=false','--model','fixture-model','-c','model_reasoning_effort="high"','-']);
     same(exec.cwd,cwd);
     // The app-server reader accepts the same descriptor directly.
     const launch=await resolveNpmLaunch(fixture.shim,codexNpmPackage,withNode);
@@ -251,7 +252,7 @@ test('Codex cancellation through an npm Node descriptor stops the whole process 
   const log=path.join(fixture.packageRoot,'bin','records.jsonl');
   try{await withEnv({CODEX_CLI:fixture.shim,CODEX_CLI_PATH:undefined,CODEX_ENABLED:'true',CODEX_MODEL:'auto',CODEX_EFFORT:'auto',AGENT_MCP_STATE_DIR:state},async()=>{
     const {CodexProvider}=await loadCodex();const controller=new AbortController();
-    const running=new CodexProvider().run('agent_ask',{task:'HANG_FIXTURE',cwd:state},controller.signal);
+    const running=new CodexProvider().run('agent_ask',selectedInput({task:'HANG_FIXTURE',cwd:state}, 'codex'),controller.signal);
     const grandchild=await waitFor(async()=>(await records(log)).find(r=>r.grandchild)?.grandchild as number|undefined);
     assert.equal(alive(grandchild),true);
     controller.abort('cancelled');
@@ -268,7 +269,7 @@ test('Codex custom batch wrapper is refused for a UNC task cwd before spawn',win
   await fs.writeFile(wrapper,`@echo off\r\necho ran>>"${marker}"\r\n`);
   try{await withEnv({CODEX_CLI:wrapper,CODEX_CLI_PATH:undefined,CODEX_ENABLED:'true',AGENT_MCP_STATE_DIR:state},async()=>{
     const {CodexProvider}=await loadCodex();
-    await assert.rejects(new CodexProvider().run('agent_implement',{task:'fixture',cwd:uncCwd}),/UNC working directory/);
+    const result=await new CodexProvider().run('agent_implement',selectedInput({task:'fixture',cwd:uncCwd}, 'codex'));assert.match(result.error??'',/UNC working directory/);assert.ok(result.selection);
     await assert.rejects(fs.stat(marker),{code:'ENOENT'});
   });}finally{for(const dir of [directory,state])await fs.rm(dir,{recursive:true,force:true});}
 });
@@ -286,7 +287,7 @@ test('Grok ACP and session usage run through the official npm bin with exact cwd
   const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'agent grok cwd & ^ '));
   const log=path.join(fixture.packageRoot,'bin','records.jsonl');
   try{
-    const result=await runGrok('grok_ask',{cwd,task:'fixture'},undefined,undefined,grokDependencies(path.join(fixture.root,'state'),()=>resolveGrokLaunch(fixture.shim,withNode)));
+    const result=await runGrok('grok_ask',selectedInput({cwd,task:'fixture'}, 'grok'),undefined,undefined,grokDependencies(path.join(fixture.root,'state'),()=>resolveGrokLaunch(fixture.shim,withNode)));
     assert.equal(result.error,null);assert.equal(result.text,'launch fixture answer');
     assert.equal('childCleanedUp' in result&&result.childCleanedUp,true);
     assert.deepEqual('usage' in result&&result.usage,{status:'available',sessionId:'launch-session',inputTokens:5,outputTokens:2,reasoningTokens:1,totalTokens:8});
@@ -305,7 +306,7 @@ test('Grok ACP cancellation through the npm Node bootstrap cleans up the native 
   const log=path.join(fixture.packageRoot,'bin','records.jsonl');
   try{
     const controller=new AbortController();
-    const result=await runGrok('grok_ask',{cwd,task:'HANG_FIXTURE'},controller.signal,{onActivity:event=>{if(event.updateType==='agent_message_chunk')controller.abort('cancelled');}},grokDependencies(path.join(fixture.root,'state'),()=>resolveGrokLaunch(fixture.shim,withNode)));
+    const result=await runGrok('grok_ask',selectedInput({cwd,task:'HANG_FIXTURE'}, 'grok'),controller.signal,{onActivity:event=>{if(event.updateType==='agent_message_chunk')controller.abort('cancelled');}},grokDependencies(path.join(fixture.root,'state'),()=>resolveGrokLaunch(fixture.shim,withNode)));
     assert.equal(result.errorKind,'cancelled');assert.equal(result.childCleanedUp,true);
     const acp=(await records(log)).find(r=>r.args[0]==='agent');
     await waitFor(async()=>alive(acp.pid)?undefined:true,5000);
@@ -320,7 +321,7 @@ test('Grok custom batch wrapper still runs ACP and usage from a local cwd',windo
   const log=path.join(fixture.packageRoot,'bin','records.jsonl');
   try{
     assert.equal(await resolveGrokLaunch(wrapper,noNode),wrapper);
-    const result=await runGrok('grok_ask',{cwd,task:'fixture'},undefined,undefined,grokDependencies(path.join(fixture.root,'state'),async()=>wrapper));
+    const result=await runGrok('grok_ask',selectedInput({cwd,task:'fixture'}, 'grok'),undefined,undefined,grokDependencies(path.join(fixture.root,'state'),async()=>wrapper));
     assert.equal(result.error,null);assert.equal(result.text,'launch fixture answer');
     const acp=(await records(log)).find(r=>r.args[0]==='agent');
     assert.deepEqual(acp.args.filter((a:string)=>!a.endsWith('.md')),['agent','--no-leader','--model','fixture-model','--effort','xhigh','--agent-profile','stdio']);

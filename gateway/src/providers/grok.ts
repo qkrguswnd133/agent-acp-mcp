@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {unavailableCatalog} from '../model-catalog.js';
 import {runGrok} from '../acp.js';
 import {getWeeklyUsage,getGrokAccountStatus} from '../billing.js';
 import {ensureHealth} from '../health.js';
@@ -51,6 +52,7 @@ export function classifyGrokRunFailure(value:Pick<ProviderRunResult,'error'|'err
 
 export class GrokProvider implements ProviderAdapter{
  readonly name='grok' as const;
+ async models(force=false){if(!providerEnabled('grok'))return unavailableCatalog('grok','Provider disabled.');const health=await ensureHealth(force);return health.modelCatalog??unavailableCatalog('grok',health.reason??'ACP model catalog unavailable.',health.version);}
  async status(force=false):Promise<ProviderStatus>{
   const enabled=providerEnabled('grok');const [health,cached]=enabled?await Promise.all([ensureHealth(force),quota.get('grok')]):[undefined,undefined];let weekly=health?.auth==='cached_token'?await getWeeklyUsage(force):undefined;
   // A separate process can record a runtime limit while billing still serves
@@ -59,7 +61,7 @@ export class GrokProvider implements ProviderAdapter{
   const snapshotAt=weekly?.status==='available'?Date.parse(weekly.timestamp):0;
   if(!force&&health?.auth==='cached_token'&&await quota.needsRefresh('grok',Number.isFinite(snapshotAt)?snapshotAt:0))weekly=await getWeeklyUsage(true);
   const live=!enabled?{state:'unknown' as const,source:'disabled'}:weekly?quotaFromWeekly(weekly):{state:'unknown' as const,source:'health_unavailable'};
-  return {provider:'grok',enabled,available:!!health?.healthy,authenticated:health?.auth==='cached_token',subscriptionAuth:health?.auth==='cached_token',...(enabled&&health?.auth==='cached_token'?{account:await getGrokAccountStatus(false)}:{}),version:health?.version??'unavailable',modelPolicy:modelPolicy('grok'),effortPolicy:effortPolicy('grok'),resolvedModel:health?.model,resolvedEffort:health?.effort,quota:overlayGrokQuota(live,cached),reason:health?.reason};
+  return {provider:'grok',enabled,available:!!health?.healthy,authenticated:health?.auth==='cached_token',subscriptionAuth:health?.auth==='cached_token',...(enabled&&health?.auth==='cached_token'?{account:await getGrokAccountStatus(false)}:{}),version:health?.version??'unavailable',modelPolicy:modelPolicy('grok'),effortPolicy:effortPolicy('grok'),modelCatalog:health?.modelCatalog,quota:overlayGrokQuota(live,cached),reason:health?.reason};
  }
  async run(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const observedAt=Date.now();const value=await runGrok(kindMap[kind],input,signal,hooks);const classification=classifyGrokRunFailure(value);
@@ -67,7 +69,7 @@ export class GrokProvider implements ProviderAdapter{
   // session id, and usage) when state persistence is unavailable.
   if(value.error&&classification.limitKind){await quota.markLimited('grok',classification,'Grok ACP reported a provider limit.').catch(()=>{});}
   else if(!value.error)await quota.markAvailable('grok','runtime_success',observedAt).catch(()=>{});
-  return {provider:'grok',...value,errorKind:value.error?classification.errorKind:value.errorKind};
+  return {...value,errorKind:value.error&&['MODEL_SELECTION_REQUIRED','FIXED_SETTING_CONFLICT','SELECTION_REASON_REQUIRED','UNSUPPORTED_MODEL_OR_EFFORT'].includes(value.errorKind??'')?value.errorKind:value.error?classification.errorKind:value.errorKind};
  }
  async cliStatus(){const status=await this.status(false);return status;}
  async update(){

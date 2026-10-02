@@ -110,7 +110,7 @@ export async function getSessionUsage(sessionId: string, executable: LaunchComma
     if (result.code !== 0 || result.stdout.length > 2 * 1024 * 1024) return unavailable();
     const parsed = parseJsonOutput(result.stdout);
     const session = parsed?.session as Record<string, unknown> | undefined;
-    if (!session) return unavailable();
+    if (!session || (typeof session.sessionId==='string'&&session.sessionId!==sessionId) || (typeof session.id==='string'&&session.id!==sessionId)) return unavailable();
     return { status: "available", sessionId, inputTokens: finiteNumber(session.inputTokens) ? session.inputTokens : unavailable(), outputTokens: finiteNumber(session.outputTokens) ? session.outputTokens : unavailable(), reasoningTokens: finiteNumber(session.reasoningTokens) ? session.reasoningTokens : unavailable(), totalTokens: finiteNumber(session.totalTokens) ? session.totalTokens : unavailable(), ...(typeof session.primaryModelId === "string" ? { primaryModelId: session.primaryModelId } : {}), ...(finiteNumber(session.costUsdTicks) ? { costUsdTicks: session.costUsdTicks } : {}) };
   } catch {
     return unavailable();

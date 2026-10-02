@@ -50,6 +50,13 @@ try {
       await client.connect(transport);
       const listing=await client.listTools();
       assert(listing.tools.some(tool=>tool.name==='agent_implement'));
+      assert(listing.tools.some(tool=>tool.name==='agent_models'));
+      assert(listing.tools.find(tool=>tool.name==='agent_ask').inputSchema.properties.selection_reason);
+      const modelResponse=await client.callTool({name:'agent_models',arguments:{}});
+      assert(!modelResponse.isError);
+      const models=JSON.parse(modelResponse.content.find(item=>item.type==='text').text);
+      assert.equal(models.discoveryOnly,true);
+      for(const item of Object.values(models.providers))assert.equal(item.catalog.status,'unavailable');
       const response=await client.callTool({name:'agent_status',arguments:{}});
       assert(!response.isError);
       const value=JSON.parse(response.content.find(item=>item.type==='text').text);

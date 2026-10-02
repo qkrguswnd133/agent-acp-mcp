@@ -22,81 +22,39 @@ async function argsAt(file:string):Promise<string[]>{return JSON.parse(await fs.
 function flag(args:string[],name:string){const at=args.indexOf(name);return at<0?undefined:args[at+1];}
 const input=(provider:'claude'|'codex',settings:Partial<RunInput>={}):RunInput=>({task:'fixture',cwd:process.cwd(),provider,...settings});
 
-test('Claude per-run model and effort override environment without changing observed model metadata',async()=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-claude-overrides-'));
- const cli=await fakeCli(root,'claude',JSON.stringify({type:'result',result:'done',modelUsage:{'claude-snapshot-20260928':{inputTokens:1}}}));
- try{await withEnv({CLAUDE_CLI:cli.command,CLAUDE_MODEL:'env-model',CLAUDE_EFFORT:'high',AGENT_MCP_STATE_DIR:root,CLAUDE_CONFIG_DIR:root},async()=>{
-  const {ClaudeProvider}=await import(`../src/providers/claude.js?fixture=${Math.random()}`);
-  const provider=new ClaudeProvider();
-  const overridden=await provider.run('agent_ask',input('claude',{model:'sonnet',effort:'low'}));
-  let args=await argsAt(cli.argsFile);
-  assert.equal(flag(args,'--model'),'sonnet');assert.equal(flag(args,'--effort'),'low');
-  assert.equal(overridden.requestedModel,'sonnet');assert.equal(overridden.requestedEffort,'low');
-  assert.equal(overridden.requestedModelSource,'call');assert.equal(overridden.requestedEffortSource,'call');
-  assert.equal(overridden.model,'claude-snapshot-20260928');assert.equal(overridden.modelSource,'cli_result');
-  assert.equal(overridden.error,null);
-
-  const configured=await provider.run('agent_ask',input('claude'));
-  args=await argsAt(cli.argsFile);
-  assert.equal(flag(args,'--model'),'env-model');assert.equal(flag(args,'--effort'),'high');
-  assert.equal(configured.requestedModelSource,'environment');assert.equal(configured.requestedEffortSource,'environment');
-
-  const automatic=await provider.run('agent_ask',input('claude',{provider_options:{claude:{model:'auto',effort:'auto'}}}));
-  args=await argsAt(cli.argsFile);
-  assert.equal(flag(args,'--model'),undefined);assert.equal(flag(args,'--effort'),undefined);
-  assert.equal(automatic.requestedModel,'auto');assert.equal(automatic.requestedEffort,'auto');
-  assert.equal(automatic.requestedModelSource,'call');assert.equal(automatic.requestedEffortSource,'call');
- });}finally{await fs.rm(root,{recursive:true,force:true});}
-});
-
-test('Claude unsupported model failure retains requested selection and unavailable actual telemetry',async()=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-claude-unsupported-'));
- const cli=await fakeCli(root,'claude',JSON.stringify({type:'result',is_error:true,result:'unknown model identifier'}),1);
- try{await withEnv({CLAUDE_CLI:cli.command,CLAUDE_MODEL:'env-model',CLAUDE_EFFORT:'high',AGENT_MCP_STATE_DIR:root,CLAUDE_CONFIG_DIR:root},async()=>{
-  const {ClaudeProvider}=await import(`../src/providers/claude.js?fixture=${Math.random()}`);
-  const result=await new ClaudeProvider().run('agent_ask',input('claude',{model:'unsupported-model',effort:'low'}));
-  assert.equal(result.error,'unknown model identifier');assert.equal(result.requestedModel,'unsupported-model');assert.equal(result.requestedEffort,'low');
-  assert.equal(result.requestedModelSource,'call');assert.equal(result.requestedEffortSource,'call');
-  assert.equal(result.model,'unavailable');assert.equal(result.effort,'unavailable');
- });}finally{await fs.rm(root,{recursive:true,force:true});}
-});
-
-test('Codex per-run model and effort override environment, while auto omits CLI settings',async()=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-codex-overrides-'));
- const cli=await fakeCli(root,'codex',JSON.stringify({type:'turn.completed',model:'codex-snapshot',reasoning_effort:'low'}));
- try{await withEnv({CODEX_CLI:cli.command,CODEX_MODEL:'env-model',CODEX_EFFORT:'high',AGENT_MCP_STATE_DIR:root},async()=>{
-  const {CodexProvider}=await import(`../src/providers/codex.js?fixture=${Math.random()}`);
-  const provider=new CodexProvider();
-  const overridden=await provider.run('agent_ask',input('codex',{model:'o4',effort:'low'}));
-  let args=await argsAt(cli.argsFile);
-  assert.equal(flag(args,'--model'),'o4');assert.equal(args.find(value=>value.startsWith('model_reasoning_effort=')),'model_reasoning_effort="low"');
-  assert.equal(overridden.requestedModel,'o4');assert.equal(overridden.requestedEffort,'low');
-  assert.equal(overridden.requestedModelSource,'call');assert.equal(overridden.requestedEffortSource,'call');
-  assert.equal(overridden.model,'codex-snapshot');assert.equal(overridden.effort,'low');
-
-  const configured=await provider.run('agent_ask',input('codex'));
-  args=await argsAt(cli.argsFile);
-  assert.equal(flag(args,'--model'),'env-model');assert.equal(args.find(value=>value.startsWith('model_reasoning_effort=')),'model_reasoning_effort="high"');
-  assert.equal(configured.requestedModelSource,'environment');assert.equal(configured.requestedEffortSource,'environment');
-
-  const automatic=await provider.run('agent_ask',input('codex',{provider_options:{codex:{model:'auto',effort:'auto'}}}));
-  args=await argsAt(cli.argsFile);
-  assert.equal(flag(args,'--model'),undefined);assert.equal(args.some(value=>value.startsWith('model_reasoning_effort=')),false);
-  assert.equal(automatic.requestedModel,'auto');assert.equal(automatic.requestedEffort,'auto');
-  assert.equal(automatic.requestedModelSource,'call');assert.equal(automatic.requestedEffortSource,'call');
- });}finally{await fs.rm(root,{recursive:true,force:true});}
-});
-
-test('Codex unsupported model failure keeps partial work and does not claim an actual setting',async()=>{
- const root=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-codex-unsupported-'));
- const events=[{type:'item.completed',item:{type:'agent_message',text:'Partial work'}},{type:'turn.failed',error:{message:'unknown model identifier'}}].map(value=>JSON.stringify(value)).join('\n');
- const cli=await fakeCli(root,'codex',events,1);
- try{await withEnv({CODEX_CLI:cli.command,CODEX_MODEL:'env-model',CODEX_EFFORT:'high',AGENT_MCP_STATE_DIR:root},async()=>{
-  const {CodexProvider}=await import(`../src/providers/codex.js?fixture=${Math.random()}`);
-  const result=await new CodexProvider().run('agent_ask',input('codex',{model:'unsupported-model',effort:'low'}));
-  assert.equal(result.error,'unknown model identifier');assert.equal(result.text,'Partial work');
-  assert.equal(result.requestedModel,'unsupported-model');assert.equal(result.requestedEffort,'low');
-  assert.equal(result.requestedModelSource,'call');assert.equal(result.requestedEffortSource,'call');
-  assert.equal(result.model,'unavailable');assert.equal(result.effort,'unavailable');
- });}finally{await fs.rm(root,{recursive:true,force:true});}
-});
+for(const name of ['claude','codex'] as const){
+ test(`${name} direct adapter enforces parent selection and retains observed telemetry`,async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),`agent-${name}-selection-`));
+  const output=name==='claude'?JSON.stringify({type:'result',result:'done',modelUsage:{'observed-snapshot':{inputTokens:1}},effort:'low'}):JSON.stringify({type:'turn.completed',model:'observed-snapshot',reasoning_effort:'low'});
+  const cli=await fakeCli(root,name,output);
+  const prefix=name.toUpperCase();
+  try{await withEnv({[`${prefix}_CLI`]:cli.command,[`${prefix}_MODEL`]:'auto',[`${prefix}_EFFORT`]:'auto',AGENT_MCP_STATE_DIR:root,CLAUDE_CONFIG_DIR:root,CODEX_HOME:root},async()=>{
+   const module=await import(`../src/providers/${name}.js?fixture=${Math.random()}`);const provider=name==='claude'?new module.ClaudeProvider():new module.CodexProvider();
+   const missing=await provider.run('agent_ask',input(name));assert.equal(missing.errorKind,'MODEL_SELECTION_REQUIRED');
+   await assert.rejects(fs.stat(cli.argsFile));
+   const noReason=await provider.run('agent_ask',input(name,{model:'chosen',effort:'low'}));assert.equal(noReason.errorKind,'SELECTION_REASON_REQUIRED');
+   const result=await provider.run('agent_ask',input(name,{model:'chosen',effort:'low',selection_reason:'bounded task'}));
+   const args=await argsAt(cli.argsFile);assert.equal(flag(args,'--model'),'chosen');
+   assert.equal(name==='claude'?flag(args,'--effort'):args.find(v=>v.startsWith('model_reasoning_effort=')),name==='claude'?'low':'model_reasoning_effort="low"');
+   assert.equal(result.error,null);assert.equal(result.model,'observed-snapshot');assert.equal(result.effort,'low');
+   assert.deepEqual(result.selection,{model:{value:'chosen',source:'parent',reason:'bounded task'},effort:{value:'low',source:'parent',reason:'bounded task'}});
+   assert.equal(result.observation.model.verified,true);assert.equal(result.observation.model.value,'observed-snapshot');
+   process.env[`${prefix}_MODEL`]='fixed';process.env[`${prefix}_EFFORT`]='high';
+   const fixed=await provider.run('agent_ask',input(name));assert.equal(fixed.selection.model.source,'configured');assert.equal(flag(await argsAt(cli.argsFile),'--model'),'fixed');
+   const conflict=await provider.run('agent_ask',input(name,{model:'other'}));assert.equal(conflict.errorKind,'FIXED_SETTING_CONFLICT');assert.equal(conflict.model,'unavailable');
+   const automatic=await provider.run('agent_ask',input(name,{model:'auto',effort:'auto'}));assert.equal(automatic.errorKind,'FIXED_SETTING_CONFLICT');
+  });}finally{await fs.rm(root,{recursive:true,force:true});}
+ });
+ test(`${name} CLI model rejection retains selection, partial results and unknown observation`,async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),`agent-${name}-reject-`));
+  const output=name==='claude'?JSON.stringify({type:'result',is_error:true,result:'unknown model identifier',usage:{input_tokens:3}}):[{type:'item.completed',item:{type:'agent_message',text:'Partial work'}},{type:'turn.failed',error:{message:'unknown model identifier'},usage:{input_tokens:3}}].map(v=>JSON.stringify(v)).join('\n');
+  const cli=await fakeCli(root,name,output,1),prefix=name.toUpperCase();
+  try{await withEnv({[`${prefix}_CLI`]:cli.command,[`${prefix}_MODEL`]:'auto',[`${prefix}_EFFORT`]:'auto',AGENT_MCP_STATE_DIR:root,CLAUDE_CONFIG_DIR:root,CODEX_HOME:root},async()=>{
+   const module=await import(`../src/providers/${name}.js?fixture=${Math.random()}`);const provider=name==='claude'?new module.ClaudeProvider():new module.CodexProvider();
+   const result=await provider.run('agent_ask',input(name,{model:'unsupported-model',effort:'low',selection_reason:'explicit test'}));
+   assert.equal(result.error,'unknown model identifier');assert.equal(result.errorKind,'UNSUPPORTED_MODEL_OR_EFFORT');assert.equal(result.selection.model.value,'unsupported-model');
+   assert.equal(result.observation.model.verified,false);assert.equal(result.model,'unavailable');assert.equal(result.effort,'unavailable');assert.deepEqual(result.usage,{input_tokens:3});
+   if(name==='codex')assert.equal(result.text,'Partial work');
+  });}finally{await fs.rm(root,{recursive:true,force:true});}
+ });
+}

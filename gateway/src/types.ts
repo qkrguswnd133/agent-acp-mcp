@@ -10,7 +10,8 @@ export interface RunInput {
   allow_self_provider?: boolean;
   model?: string;
   effort?: string;
-  provider_options?: Partial<Record<ProviderName,{model?:string;effort?:string}>>;
+  selection_reason?: string;
+  provider_options?: Partial<Record<ProviderName,{model?:string;effort?:string;selection_reason?:string}>>;
   context?: string;
   completion_criteria?: string;
   allowed_paths?: string[];
@@ -53,11 +54,14 @@ export interface ProviderStatus {
   effortPolicy: string;
   resolvedModel?: string;
   resolvedEffort?: string;
+  modelCatalog?: import('./model-catalog.js').ModelCatalog;
   quota: QuotaStatus;
   reason?: string;
 }
 
 export interface ProviderRunResult {
+  selection?: import('./model-settings.js').RunSelection;
+  observation?: {model:SettingObservation;effort:SettingObservation};
   provider: ProviderName;
   text: string;
   error?: string | null;
@@ -84,7 +88,9 @@ export interface ProviderAdapter {
   run(kind: AgentKind, input: RunInput, signal?: AbortSignal, hooks?: RunHooks): Promise<ProviderRunResult>;
   cliStatus(): Promise<ProviderStatus>;
   update(): Promise<unknown>;
+  models?(force?:boolean): Promise<import('./model-catalog.js').ModelCatalog>;
 }
+export interface SettingObservation {value:string;source:string;verified:boolean}
 
 export interface SkippedProvider {
   provider: ProviderName;

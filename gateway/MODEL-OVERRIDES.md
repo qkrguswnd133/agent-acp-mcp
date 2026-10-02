@@ -1,53 +1,59 @@
-# 호출별 모델·effort 지정
+# 작업에 따른 Parent 모델·effort 선택
 
-사용자가 원하는 모델·effort를 요청하면 parent가 작업 설명에만 쓰지 말고 MCP 호출 인자로 전달합니다. 설정 파일의 *_MODEL / *_EFFORT를 auto로 유지해도 호출값이 우선합니다. `agent_ask`, `agent_review`, `agent_investigate`, `agent_implement`에 공통 적용됩니다.
+## auto와 고정 설정
 
-우선순위는 **호출에서 지정한 필드 → 해당 provider 환경설정 → 기존 기본 정책**입니다. 모델만 지정하면 effort는 환경설정을 따릅니다. 환경변수나 다른 진행 중 작업의 설정을 변경하지 않습니다.
+2.3.0부터 Grok·Claude·Codex의 `*_MODEL` / `*_EFFORT`는 각 필드의 선택 정책입니다.
 
-## provider 하나를 명시한 경우
+- `auto`: Parent가 작업 성격, 난이도, 도구 요구와 실제 지원 목록을 확인해 구체적인 값을 선택하고 MCP 인자로 전달합니다.
+- 고정값: 설정값을 그대로 실행합니다. Parent가 다른 값을 전달하면 오류로 거절합니다. 바꾸려면 사용자가 해당 설정을 변경하고 MCP를 재연결합니다.
+- 모델과 effort는 독립적입니다. 모델 auto + effort high이면 모델만 선택하고 high를 유지합니다.
+- `auto`를 CLI 기본값 또는 `~/.codex/config.toml`의 기본값으로 해석하지 않습니다. 선택되지 않은 auto는 작업 실행 전에 거절합니다.
+
+`provider="auto"`는 별개입니다. 적격 provider 중 무작위로 하나 이상의 provider를 선택하는 기존 라우팅 정책을 유지합니다.
+
+## 호출 순서
+
+1. `agent_status`로 실제 host·인증·quota·호출 가능 여부를 확인합니다.
+2. `agent_models`로 대상 provider의 설정 정책과 모델·effort 지원 목록을 확인합니다. `provider="grok,claude,codex"`처럼 목록을 지정할 수 있습니다. 결과의 출처·확인 시각·미확인 상태를 확인하세요.
+3. Parent가 auto 필드의 구체적인 값과 `selection_reason`을 작성합니다. 단순 조회에는 빠른 모델과 적은 추론, 일반 구현에는 적절한 모델과 중간 추론, 어려운 RCA·설계에는 높은 추론 역량을 고려하되 모든 작업에 최고값을 고정하지 않습니다.
+4. Gateway가 고정값 충돌과 지원 여부를 검증하고 실행합니다. 실패 시 원인을 Parent에게 반환하며 다른 모델로 조용히 재실행하지 않습니다.
+
+지원 목록이 없거나 일부만 확인되면 실제로 확인된 범위만 보고합니다. catalog 미확인을 미지원 확정으로 바꾸거나 CLI가 검증하지 않은 조합을 검증 완료로 표시하지 않습니다. CLI가 거절하면 원래 오류를 보존합니다.
+
+## 단일 provider
+
+다음은 Claude 목록에서 opus와 high 지원을 확인한 경우의 예입니다. 항상 현재 환경의 지원 목록을 먼저 확인합니다.
 
 ```json
 {
   "provider": "claude",
   "model": "opus",
   "effort": "high",
+  "selection_reason": "여러 모듈의 인증 흐름을 검토하는 작업이므로 높은 추론 수준을 선택했습니다.",
   "cwd": "C:/dev/my-project",
-  "task": "이 저장소의 변경을 읽기 전용으로 검토해줘"
+  "task": "인증 흐름의 변경을 읽기 전용으로 검토해줘"
 }
 ```
 
-`opus`는 별칭 예시입니다. 특정 버전이 필요하면 해당 CLI/계정에서 지원되는 정확한 모델 ID를 사용합니다. 별칭은 CLI가 실제 버전으로 해석할 수 있으므로 요청한 이름과 관측 모델명이 다를 수 있습니다.
+고정 필드는 생략하거나 동일한 값을 전달합니다. auto 필드가 하나라도 있으면 Parent가 선택 이유를 전달해야 합니다. 구체적인 모델을 task 본문에만 적는 것은 설정이 아닙니다.
 
-## auto 또는 여러 provider를 지정한 경우
+## 복수 provider와 provider auto
 
-```json
-{
-  "provider": "auto",
-  "provider_options": {
-    "claude": {"model": "opus", "effort": "high"},
-    "codex": {"effort": "high"},
-    "grok": {"effort": "high"}
-  },
-  "cwd": "C:/dev/my-project",
-  "task": "변경 사항을 검토해줘"
-}
-```
+`provider_options.<provider>`에 `model`, `effort`, `selection_reason`을 전달합니다. top-level model/effort/selection_reason과 혼용하지 않습니다. provider_options는 라우팅 대상을 강제하지 않습니다.
 
-provider_options는 모델·effort만 지정하며 provider 선택을 강제하지 않습니다. auto에서 Claude가 반드시 실행돼야 한다면 provider="claude"로 요청합니다. 명시 목록 바깥 provider의 옵션은 오류로 거절합니다. top-level model/effort는 단일 명시 provider에서만 지원하며 provider_options와 동시에 사용하지 않습니다.
+`provider="auto"`에서는 선택될 수 있는 provider마다 auto 필드를 준비하세요. 여러 provider가 선택되면 작업 실행 전에 선택 정보가 모두 검증되어야 합니다. 재시도 후보에도 같은 규칙이 적용됩니다. 명시 provider 목록 밖의 provider를 임의로 추가하지 않습니다.
 
-## auto의 의미
+## 선택값과 관측값
 
-- provider="auto": 호출할 provider를 적격 후보에서 무작위 선택합니다. self-provider 후보 포함 여부는 ALLOW_SELF_PROVIDER / allow_self_provider를 따릅니다.
-- model="auto", effort="auto": 호출에서 명시하면 환경설정의 고정값을 덮어씁니다. Claude/Codex는 해당 CLI 인자를 생략해 CLI/모델 기본 동작을 사용합니다.
-- Grok의 auto는 기존 Gateway 정책을 따릅니다. 모델은 광고된 subscription coding 모델에서 자동 선택하며 effort는 xhigh를 우선하고 미지원이면 지원되는 가장 높은 값을 선택하고 알립니다. CLI 기본값을 그대로 쓴다는 의미는 아닙니다.
+- `selection.model` / `selection.effort`: 전달한 값, `parent` 또는 `configured` 출처, 선택 이유.
+- `observation.model` / `observation.effort`: 실제 확인한 값, 확인 출처, `verified` 여부.
+- 기존 루트 `model` / `effort`: 관측된 값만 유지합니다. 확인 불가는 `unavailable`입니다.
+- 선택값과 실제 모델 ID가 다르면 둘 다 보존합니다. 별칭 해석 차이일 수도 있으므로 같은 값이라고 단정하지 않습니다.
+- 모니터는 실제값이 없으면 선택값과 `실제 확인 불가`를 함께 표시합니다. 선택값을 실행 확인값처럼 표시하지 않습니다.
+- 실패·취소에서도 확보된 선택 정보·세션·사용량·부분 결과를 보존합니다. 메타데이터 조회 실패는 본 작업 결과를 덮어쓰지 않습니다.
 
-## 확인과 실패 처리
+## 기존 호출에서 이전하기
 
-- requestedModel / requestedEffort: 실행에 요청한 값.
-- requestedModelSource / requestedEffortSource: call, environment, default.
-- model / effort: 기존 실행 metadata로 확인된 값. 확인 불가는 unavailable입니다. Claude 별칭과 실제 snapshot ID 차이는 기존 modelEvidence 등으로 확인합니다.
-- Grok은 실제 연결의 model discovery와 ACP session config를 확인합니다. 호출에서 명시한 non-auto 모델/effort가 광고되지 않으면 prompt를 보내지 않고 실패합니다. 사용자 override가 공유 health 캐시의 모델을 바꾸지 않습니다.
-- Claude/Codex는 지정한 CLI 인자를 그대로 전달합니다. CLI가 미지원 조합을 거절하면 그 오류와 부분 결과를 반환하며 Gateway가 다른 모델로 다시 실행하지 않습니다. CLI 내부의 실제 선택을 확인할 수 없으면 요청값을 실제값으로 추측하지 않습니다.
-- provider CLI 업데이트, API-key 전환 또는 중단된 구현 자동 재시도는 하지 않습니다.
+기존 `model=auto`, `effort=auto` 호출을 그대로 보내면 선택 필요 오류가 반환될 수 있습니다. Parent 지침과 MCP 연결을 새 규약으로 갱신하고 구체적인 선택값 및 이유를 전달하세요. 고정값을 호출 인자로 덮어쓰던 동작도 거절됩니다.
 
-MCP 재연결 후 새 입력 항목이 나타납니다. 환경설정을 바꿀 필요 없이 이번 호출만 지정할 수 있습니다. 실행 중인 작업을 재연결 때문에 강제 종료하지 마세요.
+새 설치 예제는 모델·effort 모두 auto입니다. 기존 개인 환경변수와 전역 지침은 설치나 업데이트로 자동 변경하지 않습니다. 예를 들어 기존 `GROK_EFFORT=xhigh`는 계속 고정값입니다.

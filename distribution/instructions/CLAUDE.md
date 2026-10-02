@@ -21,6 +21,7 @@ Expected tools:
 - `agent_ask`, `agent_investigate`, `agent_review`: analysis, debugging, and review.
 - `agent_implement`: bounded implementation.
 - `agent_status`: detected host, provider eligibility, authentication, and quota.
+- `agent_models`: current model/effort policies and supported selection evidence.
 - `agent_job_status`, `agent_job_cancel`: background progress and cancellation.
 - `agent_cli_status`, `agent_cli_update`: diagnostics and explicitly requested maintenance.
 
@@ -84,6 +85,12 @@ Default self-provider exclusion remains. When the user requests same-provider de
 
 
 
-## Per-call model and effort
-Honor explicit user model/effort choices through the MCP call. For one explicit provider use model/effort; for auto or multiple providers use provider_options keyed by provider. Call fields override environment defaults independently. Do not combine both forms or assign options to an unrequested explicit provider. provider_options does not force auto selection. Preserve requested versus observed metadata; unsupported selections must not silently change to another model. See ../gateway/MODEL-OVERRIDES.md.
+## Parent model and effort selection
 
+For Grok, Claude and Codex, interpret each configured model/effort policy independently. `auto` means the parent chooses a concrete value for THIS task; it never means inheriting config.toml or leaving the CLI to select a default. Fixed settings must remain fixed: omit that call field or pass the same value. Conflicting values are rejected.
+
+Before delegation, inspect `agent_status` for eligibility and `agent_models` for configured policies and the available model/effort catalog. Catalog absence is unknown, not proof of support or exhaustion. Choose based on task complexity, required tools, repository context and expected cost/latency. Small bounded work can use a fast model and lower effort; difficult RCA or architecture can warrant stronger reasoning. Do not assign the highest effort to every task and do not guess unsupported levels.
+
+For exactly one explicit provider, send concrete `model`, `effort` and a concise `selection_reason` for the auto fields. For multiple providers or provider="auto", send them in `provider_options.<provider>`. Prepare choices for every eligible auto-routing candidate, including possible read-only retry candidates. Do not mix top-level settings with provider_options. provider_options does not force provider selection. If selection is required or unsupported, use returned evidence to correct the selection before execution; never route around a fixed policy or silently change providers.
+
+Report selection and observation separately. `selection` records values, parent/configured source and reason; `observation` records actual values, evidence source and verification. When runtime effort is unavailable, report the chosen effort as selected, then explicitly state actual confirmation is unavailable. Never upgrade a requested setting to an observed fact. Preserve mismatch, partial result, usage and failure metadata. See gateway/MODEL-OVERRIDES.md.

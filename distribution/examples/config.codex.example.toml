@@ -14,14 +14,15 @@ GROK_ENABLED = "true"
 CLAUDE_ENABLED = "true"
 CODEX_ENABLED = "true"
 GROK_MODEL = "auto"
-GROK_EFFORT = "xhigh"
+GROK_EFFORT = "auto"
 CLAUDE_MODEL = "auto"
-# Claude CLI choices: auto (gateway default), low, medium, high, xhigh, max.
-# Actual support depends on model/CLI version. auto omits --effort.
+# auto means parent task-based selection; fixed values cannot be overridden by calls.
+# Claude example levels: low, medium, high, xhigh, max (check agent_models).
+# Actual support depends on model/CLI version. auto requires the parent to select and pass a supported effort.
 CLAUDE_EFFORT = "auto"
 CODEX_MODEL = "auto"
 # Codex choices advertised by models/clients: low, medium, high, xhigh, max, ultra.
-# Use only values supported by your selected model/client; auto omits the override.
+# Use only values supported by your selected model/client; auto requires a concrete parent selection and selection_reason.
 # These env settings affect delegated CLI sessions, not the parent host's effort.
 CODEX_EFFORT = "auto"
 # Native Windows sandbox implementation: unelevated (default), elevated (requires setup).

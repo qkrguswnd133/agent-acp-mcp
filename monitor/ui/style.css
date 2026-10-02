@@ -30,3 +30,6 @@
 .update-progress[data-mode=error] #update-stage{color:#ed858c}.update-progress[data-mode=success] #update-stage{color:#8ac9b4}
 @keyframes update-sweep{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.bar-body .bar-shell,.update-progress{transition:none}#update-meter:not([value])::-webkit-progress-bar{animation:none;background:#8ac9b4}}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.facts b[data-setting=selected]{color:#b9bfd0}
+.facts b[data-setting=mismatch]{color:#efc96e;white-space:normal}

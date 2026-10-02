@@ -1,3 +1,4 @@
+import {selectedInput} from './selection-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -46,12 +47,12 @@ test('Grok per-call model/effort is confirmed on ACP session without changing he
  const deps=fixtureDependencies(path.join(cwd,'state'));
  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
  try{
-  const result=await runGrok('grok_implement',{cwd,task:'fixture',model:'grok-5',effort:'high'},undefined,undefined,deps);
-  assert.equal(result.error,null);assert.equal(result.model,'grok-5');assert.equal(result.effort,'high');assert.ok('requestedModel' in result);if('requestedModel' in result){assert.equal(result.requestedModel,'grok-5');assert.equal(result.configVerified,true);}
-  const bad=await runGrok('grok_implement',{cwd,task:'fixture',provider_options:{grok:{model:'grok-missing',effort:'high'}}},undefined,undefined,deps);
-  assert.match(bad.error??'',/refusing fallback/);if('clientOperations' in bad)assert.equal(bad.clientOperations.writes,0);
-  const defaultRun=await runGrok('grok_implement',{cwd,task:'fixture'},undefined,undefined,deps);
-  assert.equal(defaultRun.model,'fixture-model');assert.equal(defaultRun.effort,'xhigh');
+  const result:any=await runGrok('grok_implement',selectedInput({cwd,task:'fixture',model:'grok-5',effort:'high'}, 'grok'),undefined,undefined,deps);
+  assert.equal(result.error,null);assert.equal(result.model,'unavailable');assert.equal(result.effort,'unavailable');assert.equal(result.observation.model.value,'grok-5');assert.equal(result.observation.model.verified,false);assert.equal(result.observation.model.source,'acp_session_config');assert.ok('requestedModel' in result);if('requestedModel' in result){assert.equal(result.requestedModel,'grok-5');assert.equal(result.configVerified,true);}
+  const bad:any=await runGrok('grok_implement',selectedInput({cwd,task:'fixture',provider_options:{grok:{model:'grok-missing',effort:'high'}}}, 'grok'),undefined,undefined,deps);
+  assert.match(bad.error??'',/UNSUPPORTED_MODEL_OR_EFFORT/);if('clientOperations' in bad)assert.equal(bad.clientOperations.writes,0);
+  const defaultRun:any=await runGrok('grok_implement',{cwd,task:'fixture'},undefined,undefined,deps);
+  assert.equal(defaultRun.errorKind,'MODEL_SELECTION_REQUIRED');
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
 });
 
@@ -62,7 +63,7 @@ test('ACP end_turn and nonzero cleanup exit remain distinct and successful write
  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
  const events:any[]=[];
  try{
-  const result=await runGrok('grok_implement',{cwd,task:'fixture',max_runtime_minutes:1},undefined,{onActivity:e=>events.push(e)},deps);
+  const result:any=await runGrok('grok_implement',selectedInput({cwd,task:'fixture',max_runtime_minutes:1}, 'grok'),undefined,{onActivity:e=>events.push(e)},deps);
   assert.equal(result.error,null);assert.equal(result.stopReason,'end_turn');assert.equal(result.exitCode,1);
   assert.ok('processExit' in result);if(!('processExit' in result))return;
   assert.equal(result.processExit?.phase,'cleanup');assert.equal(result.processExit?.promptCompleted,true);assert.equal(result.processExit?.intentionalShutdown,true);
@@ -76,7 +77,7 @@ test('ACP process exit before turn completion remains a task failure',async()=>{
  const server=fixtureServer.replace('promptId=message.id;', 'process.exit(7);');
  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
  try{
-  const result=await runGrok('grok_implement',{cwd,task:'fixture',max_runtime_minutes:1},undefined,undefined,deps);
+  const result:any=await runGrok('grok_implement',selectedInput({cwd,task:'fixture',max_runtime_minutes:1}, 'grok'),undefined,undefined,deps);
   assert.ok(result.error);assert.notEqual(result.stopReason,'end_turn');assert.equal(result.exitCode,7);
   assert.ok('processExit' in result);if('processExit' in result)assert.equal(result.processExit?.promptCompleted,false);
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
@@ -90,13 +91,13 @@ test('ACP continuation enforces narrowed write scope and persists it for later r
  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
  try{
   await fs.mkdir(stateRoot);await fs.writeFile(path.join(stateRoot,'fixture-session.json'),JSON.stringify({cwd:await fs.realpath(cwd),kind:'grok_implement',allowed:[await fs.realpath(cwd)]}));
-  const result=await runGrok('grok_implement',{cwd,task:'only edit target',session_id:'fixture-session',allowed_paths:[target],max_runtime_minutes:1},undefined,undefined,deps);
+  const result:any=await runGrok('grok_implement',selectedInput({cwd,task:'only edit target',session_id:'fixture-session',allowed_paths:[target],max_runtime_minutes:1}, 'grok'),undefined,undefined,deps);
   assert.equal(result.sessionId,'fixture-session');assert.equal(await fs.readFile(target,'utf8'),'fixture edit');
   const saved=JSON.parse(await fs.readFile(path.join(stateRoot,'fixture-session.json'),'utf8'));assert.deepEqual(saved.allowed,[target]);
-  const expanded=await runGrok('grok_implement',{cwd,task:'broader',session_id:'fixture-session',max_runtime_minutes:1},undefined,undefined,deps);
+  const expanded:any=await runGrok('grok_implement',selectedInput({cwd,task:'broader',session_id:'fixture-session',max_runtime_minutes:1}, 'grok'),undefined,undefined,deps);
   assert.match(expanded.error??'',/expands/);assert.ok('clientOperations' in expanded);if('clientOperations' in expanded)assert.equal(expanded.clientOperations.writes,0);
   await fs.writeFile(target,'preserved original');
-  const denied=await runGrok('grok_implement',{cwd,task:'no writes',session_id:'fixture-session',allowed_paths:[],max_runtime_minutes:1},undefined,undefined,deps);
+  const denied:any=await runGrok('grok_implement',selectedInput({cwd,task:'no writes',session_id:'fixture-session',allowed_paths:[],max_runtime_minutes:1}, 'grok'),undefined,undefined,deps);
   assert.equal(await fs.readFile(target,'utf8'),'preserved original');assert.deepEqual(JSON.parse(await fs.readFile(path.join(stateRoot,'fixture-session.json'),'utf8')).allowed,[]);
   assert.equal(denied.sessionId,'fixture-session');
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
@@ -107,16 +108,16 @@ test('Grok ACP allows parallel readers and retains each lock until cancellation'
  const controllers=[new AbortController(),new AbortController(),new AbortController()];
  let entered=0;const promises:ReturnType<typeof runGrok>[]=[];
  const deps={...fixtureDependencies(path.join(cwd,'state')),getWeeklyUsage:()=>{entered++;return new Promise<any>(()=>{});}};
- const start=(kind:string,index:number)=>{const p=runGrok(kind,{cwd,task:'fixture',max_runtime_minutes:1},controllers[index].signal,undefined,deps);promises.push(p);return p;};
+ const start=(kind:string,index:number)=>{const p=runGrok(kind,selectedInput({cwd,task:'fixture',max_runtime_minutes:1}, 'grok'),controllers[index].signal,undefined,deps);promises.push(p);return p;};
  const reached=async(n:number)=>{for(let i=0;i<200&&entered<n;i++)await new Promise(r=>setTimeout(r,5));assert.equal(entered,n);};
  try{
   start('grok_ask',0);await reached(1);start('grok_review',1);await reached(2);
-  await assert.rejects(()=>runGrok('grok_implement',{cwd,task:'blocked'},undefined,undefined,deps),/overlapping/);
+  await assert.rejects(()=>runGrok('grok_implement',selectedInput({cwd,task:'blocked'}, 'grok'),undefined,undefined,deps),/overlapping/);
   controllers[0].abort();await promises[0];
-  await assert.rejects(()=>runGrok('grok_implement',{cwd,task:'still blocked'},undefined,undefined,deps),/overlapping/);
+  await assert.rejects(()=>runGrok('grok_implement',selectedInput({cwd,task:'still blocked'}, 'grok'),undefined,undefined,deps),/overlapping/);
   controllers[1].abort();await promises[1];
   start('grok_implement',2);await reached(3);
-  await assert.rejects(()=>runGrok('grok_ask',{cwd,task:'blocked reader'},undefined,undefined,deps),/overlapping/);
+  await assert.rejects(()=>runGrok('grok_ask',selectedInput({cwd,task:'blocked reader'}, 'grok'),undefined,undefined,deps),/overlapping/);
  }finally{controllers.forEach(c=>c.abort());await Promise.allSettled(promises);await fs.rmdir(cwd);}
 });
 
@@ -132,7 +133,7 @@ test('ACP rejects a test command once and continues the turn with parent verific
  const deps=fixtureDependencies(path.join(cwd,'state'));
  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
  try{
-  const result=await runGrok('grok_review',{task:'fixture',cwd,max_runtime_minutes:1},undefined,undefined,deps);
+  const result:any=await runGrok('grok_review',selectedInput({task:'fixture',cwd,max_runtime_minutes:1}, 'grok'),undefined,undefined,deps);
   assert.equal(result.error,null);assert.equal(result.stopReason,'end_turn');assert.equal(result.text,'partial fixture answer');
   assert.ok('parentVerification' in result);if(!('parentVerification' in result))return;
   assert.equal(result.parentVerification.status,'required');assert.equal(result.parentVerification.requiresWorkspaceReview,false);
@@ -140,7 +141,7 @@ test('ACP rejects a test command once and continues the turn with parent verific
   assert.equal(result.parentVerification.commands[0].executionStatus,'not_executed');
   assert.equal(result.parentVerification.commands[0].cwd,cwd);
   assert.equal(result.permissionDenials[0].response,'reject_once');assert.equal(result.clientOperations.terminals,0);
-  assert.equal(result.effort,'xhigh');assert.notEqual(result.usage,'unavailable');
+  assert.equal(result.effort,'unavailable');assert.equal(result.selection.effort.value,'xhigh');assert.notEqual(result.usage,'unavailable');
   if(result.usage!=='unavailable')assert.equal(result.usage.totalTokens,21);
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
 });
@@ -158,7 +159,7 @@ test('implementation ACP terminal runs a local command and records real output a
  const deps=fixtureDependencies(path.join(cwd,'state'));
  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
  try{
-  const result=await runGrok('grok_implement',{task:'fixture',cwd,max_runtime_minutes:1},undefined,undefined,deps);
+  const result:any=await runGrok('grok_implement',selectedInput({task:'fixture',cwd,max_runtime_minutes:1}, 'grok'),undefined,undefined,deps);
   assert.equal(result.error,null);assert.ok('commandExecutions' in result);if(!('commandExecutions' in result))return;
   assert.equal(result.commandExecutions[0].exitCode,7);assert.match(result.commandExecutions[0].output,/TEST_EXECUTED/);assert.equal(result.commandExecutions[0].cwd,cwd);
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
@@ -167,9 +168,9 @@ test('implementation ACP terminal runs a local command and records real output a
 test('runGrok fixture preserves partial work and structured ACP rate failure',async()=>{
  const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'grok-acp-fixture-'));const stateRoot=path.join(cwd,'state');
  try{
-  const result=await runGrok('grok_implement',{task:'fixture task',cwd,max_runtime_minutes:1},undefined,undefined,fixtureDependencies(stateRoot));
+  const result:any=await runGrok('grok_implement',selectedInput({task:'fixture task',cwd,max_runtime_minutes:1}, 'grok'),undefined,undefined,fixtureDependencies(stateRoot));
   assert.equal(result.errorKind,'rate_limited');assert.equal(result.limitKind,'rate_limited');assert.equal(result.resetsAt,null);assert.ok(typeof result.retryAfter==='string');
-  assert.equal(result.text,'partial fixture answer');assert.equal(result.sessionId,'fixture-session');assert.equal(result.model,'fixture-model');assert.equal(result.childCleanedUp,true);
+  assert.equal(result.text,'partial fixture answer');assert.equal(result.sessionId,'fixture-session');assert.equal(result.model,'unavailable');assert.equal(result.selection.model.value,'fixture-model');assert.equal(result.childCleanedUp,true);
   assert.deepEqual(result.usage,{status:'available',sessionId:'fixture-session',inputTokens:11,outputTokens:7,reasoningTokens:3,totalTokens:21});
   assert.equal(await fs.readFile(path.join(cwd,'fixture-edit.txt'),'utf8'),'fixture edit');
   assert.ok(await fs.stat(path.join(stateRoot,'fixture-session.json')));
@@ -179,7 +180,7 @@ test('runGrok fixture preserves partial work and structured ACP rate failure',as
 test('runGrok fixture keeps the provider failure when both telemetry reads reject',async()=>{
  const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'grok-acp-telemetry-'));const stateRoot=path.join(cwd,'state');
  try{
-  const result=await runGrok('grok_implement',{task:'fixture task',cwd,max_runtime_minutes:1},undefined,undefined,fixtureDependencies(stateRoot,true));
+  const result:any=await runGrok('grok_implement',selectedInput({task:'fixture task',cwd,max_runtime_minutes:1}, 'grok'),undefined,undefined,fixtureDependencies(stateRoot,true));
   assert.equal(result.errorKind,'rate_limited');assert.equal(result.text,'partial fixture answer');assert.equal(result.sessionId,'fixture-session');assert.equal(result.usage,'unavailable');
   assert.equal((result.weekly as {status:string}).status,'unavailable');assert.equal(await fs.readFile(path.join(cwd,'fixture-edit.txt'),'utf8'),'fixture edit');
  }finally{await fs.rm(cwd,{recursive:true,force:true});}
@@ -242,3 +243,20 @@ test('Grok telemetry failures are unavailable snapshots instead of thrown task f
  assert.equal(usage,'unavailable');
 });
 
+
+test('Grok exact-session usage promotes runtime model while config-only effort remains unverified',async()=>{
+ const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'grok-observed-model-'));
+ const deps=fixtureDependencies(path.join(cwd,'state'));
+ deps.getSessionUsage=async()=>({status:'available',sessionId:'fixture-session',primaryModelId:'runtime-grok',inputTokens:1,outputTokens:1,reasoningTokens:1,totalTokens:3});
+ try{
+  const result=await runGrok('grok_implement',selectedInput({task:'fixture',cwd},'grok'),undefined,undefined,deps);
+  assert.equal(result.model,'runtime-grok');assert.equal(result.modelSource,'grok_session_usage');assert.deepEqual(result.observation?.model,{value:'runtime-grok',source:'grok_session_usage',verified:true});
+  assert.equal(result.effort,'unavailable');assert.equal(result.observation?.effort.verified,false);assert.equal(result.selection?.model.value,'fixture-model');
+  const server=fixtureServer.replace("if(message.method==='session/new')","if(message.method==='session/new'||message.method==='session/load')");
+  deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
+  const resumed=await runGrok('grok_implement',selectedInput({task:'fixture',cwd,session_id:'fixture-session'},'grok'),undefined,undefined,deps);
+  assert.equal(resumed.model,'unavailable');assert.equal(resumed.observation?.model.verified,false);
+  deps.getSessionUsage=async()=>({status:'available',sessionId:'wrong-session',primaryModelId:'wrong-model',inputTokens:1,outputTokens:1,reasoningTokens:1,totalTokens:3});
+  const wrong=await runGrok('grok_implement',selectedInput({task:'fixture',cwd},'grok'),undefined,undefined,deps);assert.equal(wrong.model,'unavailable');
+ }finally{await fs.rm(cwd,{recursive:true,force:true});}
+});

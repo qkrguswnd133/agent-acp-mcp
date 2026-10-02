@@ -43,16 +43,14 @@ test('modern requests can change identity without initialize and missing identit
     else assert.equal(status.providers[expected].blocked_reason,'self_provider');
   }
 });
-test('modern routing jobs retain their request identity after the tool call returns',async t=>{
+test('modern task preflight retains request identity and rejects blocked providers before job writes',async t=>{
   const b=await bridge(t),cwd=await fs.mkdtemp(path.join(os.tmpdir(),'host-routing-'));
   t.after(()=>fs.rm(cwd,{recursive:true,force:true}));
   const call=async(name:string,args:any)=>result(await b.send('tools/call',{name,arguments:args,_meta:meta('Claude Desktop')}));
   for(const tool of ['agent_ask','agent_review','agent_investigate','agent_implement']){
     const work=path.join(cwd,tool);await fs.mkdir(work);
     const started=await call(tool,{cwd:work,task:'No files may be changed. Verify self-provider is blocked.',provider:'claude',...(tool==='agent_implement'?{completion_criteria:'self provider blocked',workspace_mode:'current'}:{})});
-    assert.ok(started.job_id,JSON.stringify(started));
-    let job:any;
-    for(let i=0;i<100;i++){job=await call('agent_job_status',{job_id:started.job_id});if(['completed','failed','cancelled'].includes(job.status))break;await new Promise(resolve=>setTimeout(resolve,10));}
-    assert.equal(job.status,'failed');assert.match(job.error,/NO_CALLABLE_PROVIDER/);assert.match(job.error,/"host":"claude"/);assert.match(job.error,/self_provider/);
+    assert.equal(started.job_id,undefined);assert.match(started.error,/NO_CALLABLE_PROVIDER/);assert.match(started.error,/"host":"claude"/);assert.match(started.error,/self_provider/);
+    assert.deepEqual(await fs.readdir(work),[]);
   }
 });

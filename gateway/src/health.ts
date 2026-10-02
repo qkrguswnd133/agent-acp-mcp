@@ -5,44 +5,13 @@ import {Readable,Writable} from 'node:stream';
 import {client,ndJsonStream,type ClientConnection} from '@agentclientprotocol/sdk';
 import {root,childEnv,active,terminate,shuttingDown,grokLaunch,grokLaunchFingerprint,resetGrokLaunch} from './runtime.js';
 import {runCommand,spawnPlan,type LaunchCommand} from './process.js';
-import {readWeeklyUsage,getSessionUsage,weeklyDelta} from './usage.js';
 import {modelPolicy,effortPolicy} from './config.js';
-import {confirmSessionConfig} from './session-config.js';
+import {grokCatalog,catalogTtlMs,type ModelCatalog} from './model-catalog.js';
 
-export interface Selection { model:string;effort:string;notices:string[] }
-export function selectModel(models:any[],defaultModel?:string,preferredModel='auto',preferredEffort='xhigh',strict:{model?:boolean;effort?:boolean}={}):Selection {
-  const candidates=models.filter(m=>typeof m.modelId==='string' && /^grok-/i.test(m.modelId) && /build|cod/i.test(String(m._meta?.agentType??'')) && m._meta?.supportsToolUse!==false && m._meta?.apiKeyRequired!==true);
-  const requestedModel=preferredModel;
-  let chosen=preferredModel==='auto'?undefined:candidates.find(m=>m.modelId===requestedModel);
-  if(!chosen&&preferredModel!=='auto'&&strict.model)throw Error(`Requested Grok model ${preferredModel} is not advertised for subscription coding; refusing fallback`);
-  const notices:string[]=[];
-  if(!chosen){
-    // Select the highest advertised version among coding-capable subscription Grok models.
-    const version=(m:any)=>m.modelId.match(/grok-(\d+(?:\.\d+)*)/i)?.[1];
-    const versioned=candidates.filter(m=>version(m));
-    versioned.sort((a,b)=>{
-      const order=version(b).localeCompare(version(a),undefined,{numeric:true});
-      if(order)return order;
-      // Prefer the ordinary model over priced/special variants of the same version.
-      const plain=(m:any)=>m.modelId===`grok-${version(m)}`;
-      return Number(plain(b))-Number(plain(a)) || Number(b.modelId===defaultModel)-Number(a.modelId===defaultModel);
-    });
-    chosen=versioned[0]??candidates.find(m=>m.modelId===defaultModel);
-    if(!chosen)throw Error('No verified subscription coding model is advertised by ACP');
-    if(preferredModel!=='auto')notices.push(`Configured ${requestedModel} is unavailable; selected advertised coding model ${chosen.modelId}.`);
-  }
-  const levels=(chosen._meta?.reasoningEfforts??[]).map((v:any)=>v.id??v.value);
-  if(chosen._meta?.supportsReasoningEffort!==true)throw Error('Reasoning configuration is not advertised for selected model');
-  const requestedEffort=preferredEffort==='auto'?'xhigh':preferredEffort;
-  if(strict.effort&&preferredEffort!=='auto'&&!levels.includes(requestedEffort))throw Error(`Requested Grok effort ${preferredEffort} is not supported by ${chosen.modelId}; refusing fallback`);
-  const effort=levels.includes(requestedEffort)?requestedEffort:['ultracode','max','xhigh','high','medium','low','minimal','none'].find(v=>levels.includes(v));
-  if(!effort)throw Error('No recognized reasoning effort is advertised');
-  if(effort!==requestedEffort)notices.push(`Selected model does not support requested effort ${requestedEffort}; using its highest supported effort ${effort}.`);
-  return {model:chosen.modelId,effort,notices};
-}
 export interface Health {
   healthy:boolean;version:string;fingerprint:string;checkedAt:string;
   model:string;effort:string;notices:string[];reason?:string;protocolVersion?:number;
+  modelCatalog?:ModelCatalog;
   auth?:string;subscriptionTier?:string;mcpSelfTest?:boolean;smoke?:any;
 }
 let memory:Health|undefined;
@@ -54,38 +23,24 @@ export function setMcpSelfTest(test:()=>Promise<boolean>){mcpTest=test;}
 export function cachedHealth(){return memory;}
 export function markUnhealthy(reason:string){if(memory){memory={...memory,healthy:false,reason};recheck=true;}}
 const fingerprint=grokLaunchFingerprint;
-async function probe(launch:LaunchCommand,selection?:Selection,smoke=false){
+async function probe(launch:LaunchCommand){
  if(shuttingDown)throw Error('Bridge is shutting down');
  const cwd=path.join(root,'work/health');await fs.mkdir(cwd,{recursive:true});
- const args=['agent','--no-leader',...(selection?['--model',selection.model,'--effort',selection.effort]:[]),'--agent-profile',path.join(root,'profiles/read.md'),'stdio'];
+ const args=['agent','--no-leader','--agent-profile',path.join(root,'profiles/read.md'),'stdio'];
  const invocation=spawnPlan(launch,args,cwd);
  const p=spawn(invocation.command,invocation.args,{cwd,env:childEnv,windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});active.add(p);p.stderr.on('data',()=>{});
  const app=client({name:'grok-compatibility-check'});
- let text='',conn:ClientConnection|undefined;
+ let conn:ClientConnection|undefined;
  app.onRequest('session/request_permission',async()=>({outcome:{outcome:'cancelled'}}));
- app.onNotification('session/update',({params:{update}})=>{if(update.sessionUpdate==='agent_message_chunk'&&update.content.type==='text')text+=update.content.text;});
  conn=app.connect(ndJsonStream(Writable.toWeb(p.stdin) as WritableStream<Uint8Array>,Readable.toWeb(p.stdout) as ReadableStream<Uint8Array>));
  p.on('error',e=>conn?.close(e));
- const timer=setTimeout(()=>{conn?.close();void terminate(p);},smoke?90000:30000);
- let smokeResult:any;
+ const timer=setTimeout(()=>{conn?.close();void terminate(p);},30000);
  try{
   const init=await conn.agent.request('initialize',{protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false},clientInfo:{name:'grok-compatibility-check',version:'1.0.0'}});
   if(init.protocolVersion!==1||!init.authMethods?.some(m=>m.id==='cached_token'))throw Error('ACP v1/cached_token compatibility check failed');
   const auth=await conn.agent.request('authenticate',{methodId:'cached_token'});
   if(auth._meta?.auth_mode!=='Oidc'||auth._meta?.backend_billed===true)throw Error('Subscription OAuth login not confirmed');
-  if(selection){
-    const s=await conn.agent.request('session/new',{cwd,mcpServers:[],_meta:{yoloMode:false,autoMode:false}});
-    await confirmSessionConfig(s.configOptions??[],selection.model,selection.effort,
-      (configId,value)=>conn!.agent.request('session/set_config_option',{sessionId:s.sessionId,configId,value}));
-    if(smoke){
-      const before=await readWeeklyUsage();const startedAt=new Date().toISOString();
-      const result=await conn.agent.request('session/prompt',{sessionId:s.sessionId,prompt:[{type:'text',text:'Read-only compatibility test. Do not use any tools. Reply exactly ACP_HEALTH_OK.'}]});
-      const after=await readWeeklyUsage();
-      smokeResult={sessionId:s.sessionId,model:selection.model,effort:selection.effort,stopReason:result.stopReason,text,usage:await getSessionUsage(s.sessionId,launch,[],childEnv),weekly:after,weeklyDelta:weeklyDelta(before,after,startedAt)};
-      if(result.stopReason!=='end_turn'||text.trim()!=='ACP_HEALTH_OK')throw Error('Read-only ACP smoke failed');
-    }
-  }
-  return {init,auth,smoke:smokeResult};
+  return {init,auth};
  }finally{
   clearTimeout(timer);conn.close();p.stdin.end();
   await new Promise<void>(resolve=>{if(p.exitCode!==null||p.signalCode!==null)return resolve();const t=setTimeout(resolve,500);p.once('close',()=>{clearTimeout(t);resolve();});});
@@ -97,12 +52,11 @@ export async function ensureHealth(force=false):Promise<Health>{
  let fp:string;
  try{fp=await fingerprint();}catch(e){return {healthy:false,version:'unavailable',fingerprint:'unavailable',checkedAt:new Date().toISOString(),model:'unavailable',effort:'unavailable',notices:[],reason:(e as Error).message};}
  const policy=JSON.stringify([modelPolicy('grok'),effortPolicy('grok')]);
- if(!force&&!recheck&&memory?.fingerprint===fp&&memoryPolicy===policy)return memory;
+ if(!force&&!recheck&&memory?.fingerprint===fp&&memoryPolicy===policy&&Date.now()-Date.parse(memory.checkedAt)<catalogTtlMs)return memory;
  if(inFlight)return inFlight;
- const retryAfterError=recheck;recheck=false;
+ recheck=false;
  inFlight=(async()=>{
-  let prior:Health|undefined;
-  try{prior=JSON.parse(await fs.readFile(path.join(root,'state/health.json'),'utf8'));}catch{}
+  let prior:Health|undefined;try{prior=JSON.parse(await fs.readFile(path.join(root,'state/health.json'),'utf8'));}catch{}
   const base:Health={healthy:false,version:'unavailable',fingerprint:fp,checkedAt:new Date().toISOString(),model:'unavailable',effort:'unavailable',notices:[]};
   try{
     resetGrokLaunch();
@@ -114,14 +68,10 @@ export async function ensureHealth(force=false):Promise<Health>{
     // Preserve verified authentication even if model/config validation later fails.
     base.protocolVersion=discovery.init.protocolVersion;base.auth='cached_token';base.subscriptionTier=String(discovery.auth._meta?.subscription_tier??'unavailable');
     const state=discovery.init._meta?.modelState as any;
-    const selected=selectModel(state?.availableModels??[],state?.currentModelId,modelPolicy('grok'),effortPolicy('grok'));
-    Object.assign(base,selected);
-    if(prior&&prior.version!==base.version)base.notices.push(`Grok Build version changed: ${prior.version} -> ${base.version}. Compatibility smoke performed.`);
-    if(prior&&(prior.model!==selected.model||prior.effort!==selected.effort))base.notices.push(`Model/effort changed: ${prior.model} / ${prior.effort} -> ${selected.model} / ${selected.effort}.`);
-    const needsSmoke=!prior?.healthy||prior.fingerprint!==fp||prior.model!==selected.model||prior.effort!==selected.effort||retryAfterError;
-    const verified=await probe(launch,selected,needsSmoke);
-    base.protocolVersion=verified.init.protocolVersion;base.auth='cached_token';base.subscriptionTier=String(verified.auth._meta?.subscription_tier??'unavailable');
-    base.smoke=verified.smoke??prior?.smoke;
+    base.modelCatalog=grokCatalog(state,base.version);
+    if(prior&&prior.version!==base.version)base.notices.push(`Grok Build version changed: ${prior.version} -> ${base.version}. Read-only ACP initialize/authenticate and MCP discovery checks performed; no model/tool execution smoke test.`);
+    // Health/discovery must never choose a task model or spend a model turn.
+    base.notices.push('Model and effort are selected per task; health verifies protocol and subscription authentication only.');
     base.mcpSelfTest=mcpTest?await mcpTest():undefined;
     if(base.mcpSelfTest===false)throw Error('MCP discovery/self-test failed');
     base.healthy=true;

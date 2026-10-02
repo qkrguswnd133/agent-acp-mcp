@@ -27,7 +27,6 @@ export function modelPolicy(name:ProviderName):string {
 }
 
 export function effortPolicy(name:ProviderName):string {
-  if(name==='grok')return (process.env.GROK_EFFORT??'xhigh').trim()||'xhigh';
   return (process.env[`${name.toUpperCase()}_EFFORT`]??'auto').trim()||'auto';
 }
 

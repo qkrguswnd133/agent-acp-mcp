@@ -1,10 +1,12 @@
 import path from 'node:path';
+import {spawnPlan} from '../process.js';
 import {home,resolveExecutable,runCommand,safeChildEnv,findExecutableInChildDirs,type LaunchCommand} from '../process.js';
 import {resolveNpmLaunch,type OfficialNpmPackage} from '../npm-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
-import {resolveProviderSettings} from '../model-settings.js';
+import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from '../model-settings.js';
+import {CatalogCache,codexCatalog,unavailableCatalog} from '../model-catalog.js';
 import {buildPrompt} from '../prompt.js';
-import {readCodexStatus} from '../codex-app-server.js';
+import {readCodexStatus,readCodexModels} from '../codex-app-server.js';
 import {accountStatus} from '../account.js';
 import {readCodexSessionTelemetry,codexRuntimeMetadata} from '../codex-session.js';
 import {QuotaCache} from '../quota-cache.js';
@@ -13,6 +15,7 @@ import {observedExitCode,observedOutput} from '../command-telemetry.js';
 import type {CommandExecution} from '../command-telemetry.js';
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
+const modelCache=new CatalogCache();
 let cachedExecutable:LaunchCommand|undefined;let statusCache:{at:number,value:ProviderStatus}|undefined;let observedRuntimeBlock=false;
 const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'codex-quota.json'));
 export const codexNpmPackage:OfficialNpmPackage={name:'@openai/codex',binNames:['codex'],label:'Codex',defaultMinimumNode:16};
@@ -131,7 +134,28 @@ export class CodexProvider implements ProviderAdapter{
   const account=accountStatus(!authenticated?false:observedAccount?.account===null?false:observedAccount?.account?.type==='chatgpt'?true:'unknown',{email:observedAccount?.account?.email},'codex_app_server_account');
   const value={provider:'codex' as const,enabled:true,available:version.code===0,authenticated,subscriptionAuth,account,version:(version.stdout||version.stderr).trim()||'unavailable',modelPolicy:modelPolicy('codex'),effortPolicy:effortPolicy('codex'),quota:latestRuntimeBlock?latestRuntimeQuota:q,reason:version.code===0?undefined:'Codex CLI version check failed'};statusCache={at:Date.now(),value};return value;
  }
+ async models(force=false){
+  if(!providerEnabled('codex'))return unavailableCatalog('codex','Provider disabled.');
+  const command=await exe().catch(()=>undefined);if(!command)return unavailableCatalog('codex','CLI unavailable.');
+  return modelCache.get(JSON.stringify(command),async()=>{
+   let version='unavailable';
+   try{const result=await runCommand(command,['--version'],{env:safeChildEnv({DISABLE_AUTOUPDATER:'1'}),timeoutMs:10000});version=(result.stdout||result.stderr).trim()||'unavailable';if(result.code!==0)throw Error('CLI version check failed');return codexCatalog(await readCodexModels(command),version);}
+   catch(error){return unavailableCatalog('codex',`Catalog discovery failed: ${error instanceof Error?error.message:String(error)}; model/effort support remains unverified.`,version);}
+  },force);
+ }
  async run(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
+  let settings:ReturnType<typeof resolveProviderSettings>|undefined;
+  try{
+   settings=resolveProviderSettings('codex',input);
+   if(signal?.aborted)return withSelection({provider:'codex',text:'',error:'Cancelled',errorKind:'cancelled'},settings.selection);
+   const command=await exe();if(!command)throw Error('CLI unavailable');spawnPlan(command,[],input.cwd);
+   validateCatalog('codex',settings,await this.models());
+   const result=await this.execute(kind,input,signal,hooks);
+   if(result.error&&/unknown model|unsupported model|invalid model|invalid.*effort|unsupported.*effort|effort.*not supported/i.test(result.error)&&result.errorKind==='task_error')result.errorKind='UNSUPPORTED_MODEL_OR_EFFORT';
+   return withSelection(result,settings.selection);
+  }catch(error){return selectionFailure('codex',error,settings?.selection);}
+ }
+ private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
   const args=['exec','--ignore-user-config',...codexSandboxArgs(writable),'--json','-c','mcp_servers={}','-c','features.plugins=false'];if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
   const r=await runCommand(command,args,{cwd:input.cwd,env:providerChildEnv(),timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity});

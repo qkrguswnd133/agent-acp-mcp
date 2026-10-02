@@ -5,6 +5,7 @@
     "model": "opus",
     "effort": "high",
     "cwd": "C:/dev/my-project",
-    "task": "Review the changes without modifying files."
+    "task": "Review the changes without modifying files.",
+    "selection_reason": "Cross-module correctness review requires a capable model and high reasoning effort."
   }
 }

@@ -171,6 +171,14 @@ async function runSmoke(){
     state.snapshot.jobs=['grok','claude','codex'].map(provider=>({project:'sample-project',isolated:true,originalCwd:'C:/dev/sample-project',cwd:'C:/Temp/fixture/sample-project',status:'completed',providers:[{provider}]}));broadcast();
     for(const provider of ['grok','claude','codex']){openPanel(provider);await new Promise(r=>setTimeout(r,40));assert.equal(await panel.webContents.executeJavaScript("document.querySelector('.job-name').textContent"),'sample-project · 격리 작업');assert.match(await panel.webContents.executeJavaScript("document.querySelector('.job-name').title"),/C:\/dev\/sample-project[\s\S]*C:\/Temp\/fixture\/sample-project/);}
     fs.writeFileSync(path.join(out,'project-detail.png'),await captureReady(panel));closePanel();
+    state.snapshot.providers[0].lastRun={jobId:'fixture',at:now,selection:{model:{value:'grok-4.7',source:'parent',reason:'작업 규모에 맞춤'},effort:{value:'xhigh',source:'configured'}},observation:null};
+    state.snapshot.providers[1].lastRun={jobId:'fixture',at:now,selection:{model:{value:'claude-opus-5-5',source:'configured'}},observation:{model:{value:'claude-sonnet-5-5',source:'fixture',verified:true}}};broadcast();
+    const settingText=provider=>(openPanel(provider),new Promise(r=>setTimeout(r,40)).then(()=>panel.webContents.executeJavaScript("[document.querySelector('#model').textContent,document.querySelector('#effort').textContent,document.querySelector('#model-detail').textContent,document.querySelector('#model').dataset.setting]")));
+    let setting=await settingText('grok');assert.deepEqual(setting.slice(0,2),['grok-4.7 · Parent 선택 · 실제 확인 불가','xhigh · 고정 설정 · 실제 확인 불가']);assert.match(setting[2],/작업 규모에 맞춤/);
+    setting=await settingText('claude');assert.match(setting[0],/claude-sonnet-5-5 · 실제 확인 · 선택 claude-opus-5-5 \(고정 설정\)/);assert.equal(setting[3],'mismatch');
+    fs.writeFileSync(path.join(out,'selection-detail.png'),await captureReady(panel));
+    setting=await settingText('codex');assert.equal(setting[0],'자동 선택 · 실행 후 확인');
+    for(const p of state.snapshot.providers)delete p.lastRun;broadcast();closePanel();
 
     await bar.webContents.executeJavaScript("document.querySelector('[data-agent=grok]').dispatchEvent(new MouseEvent('mouseenter'))");
     await new Promise(r=>setTimeout(r,160));assert.equal(panel.isVisible(),true);assert.equal(selected,'grok');

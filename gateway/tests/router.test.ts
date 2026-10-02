@@ -1,3 +1,4 @@
+import {selectedInput} from './selection-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {AgentRouter,parseProviderSpec,randomNonEmptySubset} from '../src/router.js';
@@ -18,16 +19,16 @@ test('auto provider options do not force routing or leak another provider model'
  grok.run=async(_kind,input)=>{observed.push(input);return {provider:'grok',text:'ok'};};
  claude.run=async()=>{throw Error('Claude was not selected');};
  const r=new AgentRouter([grok,claude,adapter('codex')],{rng:()=>0});
- const result=await r.run('agent_ask',{cwd:process.cwd(),task:'fixture',provider:'auto',provider_options:{claude:{model:'opus',effort:'high'}}},host('codex'));
+ const result=await r.run('agent_ask',selectedInput({cwd:process.cwd(),task:'fixture',provider:'auto',provider_options:{claude:{model:'opus',effort:'high'}}}),host('codex'));
  assert.deepEqual(result.executed,['grok']);assert.equal(observed[0].model,undefined);
- await assert.rejects(()=>r.run('agent_ask',{cwd:process.cwd(),task:'fixture',provider:'auto',model:'opus'},host('codex')),/one explicit/);
+ await assert.rejects(()=>r.run('agent_ask',selectedInput({cwd:process.cwd(),task:'fixture',provider:'auto',model:'opus'}),host('codex')),/one explicit/);
 });
 test('persistent self-provider default applies when omitted and explicit false takes precedence',async()=>{
  const previous=process.env.ALLOW_SELF_PROVIDER;
  const router=new AgentRouter([adapter('grok'),adapter('claude'),adapter('codex')]);
  try{
   process.env.ALLOW_SELF_PROVIDER='true';
-  const result=await router.run('agent_ask',{cwd:process.cwd(),task:'fixture',provider:'codex'},host('codex'));
+  const result=await router.run('agent_ask',selectedInput({cwd:process.cwd(),task:'fixture',provider:'codex'}),host('codex'));
   assert.deepEqual(result.executed,['codex']);assert.equal(result.self_provider_policy_source,'environment_default');
   assert.equal((await router.status(host('codex'))).providers.codex.callable,true);
   assert.equal((await router.status(host('codex'),false,false)).providers.codex.callable,false);
@@ -43,7 +44,7 @@ test('self-provider opt-in applies to auto and explicit selection for each host'
   const router=new AgentRouter([adapter('grok'),adapter('claude'),adapter('codex')]);
   await assert.rejects(()=>router.plan(name,host(name)),/self_provider/);
   assert.deepEqual((await router.plan(name,host(name),false,true)).selected,[name]);
-  const result=await router.run('agent_ask',{task:'fixture',cwd:process.cwd(),provider:name,allow_self_provider:true},host(name));
+  const result=await router.run('agent_ask',selectedInput({task:'fixture',cwd:process.cwd(),provider:name,allow_self_provider:true}),host(name));
   assert.deepEqual(result.executed,[name]);assert.equal(result.selfProviderExecuted,true);
   assert.equal((await router.status(host(name))).providers[name].callable,false);
   assert.equal((await router.status(host(name),false,true)).providers[name].callable,true);
@@ -63,7 +64,7 @@ test('self-provider opt-in never bypasses eligibility or explicit provider scope
 });
 test('auto can execute an eligible self-provider but cannot bypass auth and quota',async()=>{
  const r=new AgentRouter([adapter('grok',{enabled:false}),adapter('claude',{enabled:false}),adapter('codex')],{rng:()=>0});
- const result=await r.run('agent_ask',{cwd:process.cwd(),task:'fixture',provider:'auto',allow_self_provider:true},host('codex'));
+ const result=await r.run('agent_ask',selectedInput({cwd:process.cwd(),task:'fixture',provider:'auto',allow_self_provider:true}),host('codex'));
  assert.deepEqual(result.executed,['codex']);assert.equal(result.selfProviderExecuted,true);
  await assert.rejects(()=>r.plan('auto',host('codex'),false,false),/NO_CALLABLE_PROVIDER/);
  for(const overrides of [{authenticated:false},{quota:{state:'exhausted' as const,source:'fixture'}}]){
@@ -74,13 +75,13 @@ test('auto can execute an eligible self-provider but cannot bypass auth and quot
 test('auto read-only retry preserves opt-in when rechecking an unexecuted self-provider',async()=>{
  const grok=adapter('grok');grok.run=async()=>({provider:'grok',text:'',error:'usage limit',errorKind:'quota_exhausted'});
  const calls:Record<string,number>={};const r=new AgentRouter([grok,adapter('claude',{enabled:false}),adapter('codex',{},calls)],{rng:()=>0});
- const result=await r.run('agent_ask',{cwd:process.cwd(),task:'fixture',provider:'auto',allow_self_provider:true},host('codex'));
+ const result=await r.run('agent_ask',selectedInput({cwd:process.cwd(),task:'fixture',provider:'auto',allow_self_provider:true}),host('codex'));
  assert.deepEqual(result.executed,['grok','codex']);assert.equal(result.retryCount,1);assert.equal(calls.codex,2);
 });
 test('router separates provider turn success from acceptance and command evidence',async()=>{
  const grok=adapter('grok');grok.run=async()=>({provider:'grok',text:'done',error:null,exitCode:1,commandExecutions:[{exitCode:1},{exitCode:0}]});
  const router=new AgentRouter([grok,adapter('claude'),adapter('codex')]);
- const result=await router.run('agent_implement',{cwd:process.cwd(),task:'fixture',provider:'grok'},host('codex'));
+ const result=await router.run('agent_implement',selectedInput({cwd:process.cwd(),task:'fixture',provider:'grok'}),host('codex'));
  assert.equal(result.outcome,'success');assert.equal(result.outcomeMeaning,'provider_turn_execution_only');assert.equal(result.completionCriteria.status,'unverified');
  const execution=result.results[0].execution as any;assert.equal(execution.turnStatus,'completed');assert.equal(execution.commands.status,'mixed');assert.equal(result.results[0].exitCode,1);
 });
@@ -135,13 +136,13 @@ test('unknown host blocks routed work because self exclusion cannot be guarantee
 
 test('explicit multi-provider run executes requested callable providers',async()=>{
  const r=new AgentRouter([adapter('grok'),adapter('claude'),adapter('codex')]);
- const result=await r.run('agent_ask',{task:'x',cwd:process.cwd(),provider:'grok,claude'},host('codex'));
+ const result=await r.run('agent_ask',selectedInput({task:'x',cwd:process.cwd(),provider:'grok,claude'}),host('codex'));
  assert.deepEqual(result.selected,['grok','claude']);assert.equal(result.successCount,2);assert.equal(result.error,null);
 });
 test('one provider exception preserves the other provider result',async()=>{
  const broken=adapter('grok');broken.run=async()=>{throw Error('connection closed');};
  const r=new AgentRouter([broken,adapter('claude'),adapter('codex')]);
- const result=await r.run('agent_ask',{task:'x',cwd:process.cwd(),provider:'grok,claude'},host('codex'));
+ const result=await r.run('agent_ask',selectedInput({task:'x',cwd:process.cwd(),provider:'grok,claude'}),host('codex'));
  assert.equal(result.successCount,1);assert.equal(result.failureCount,1);
  assert.equal(result.results[0].error,'connection closed');assert.equal(result.results[1].text,'claude-ok');
 });

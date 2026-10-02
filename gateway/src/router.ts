@@ -1,7 +1,9 @@
 import type {HostDetection} from './host.js';
 import {isDelegatedProcess} from './process.js';
 import {allowSelfProvider} from './config.js';
-import {validateRunSettings} from './model-settings.js';
+import {validateRunSettings,resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from './model-settings.js';
+import {unavailableCatalog} from './model-catalog.js';
+import {modelPolicy,effortPolicy} from './config.js';
 import type {AgentKind,ProviderAdapter,ProviderName,ProviderRunResult,ProviderStatus,RunHooks,RunInput,SkippedProvider} from './types.js';
 
 const names:ProviderName[]=['grok','claude','codex'];
@@ -52,8 +54,9 @@ export class AgentRouter{
   async status(host:HostDetection,force=false,override?:boolean){
     const allowSelf=allowSelfProvider(override);
     const statuses=await this.statuses(force);const providers:any={};
-    for(const name of names){const status=statuses[name];const reason=blockedReason(status,host,name,allowSelf);providers[name]={...status,quota:{...status.quota,resetsAt:status.quota.resetsAt??null,retryAfter:status.quota.retryAfter??null,limitKind:status.quota.limitKind??(status.quota.state==='exhausted'?'quota_exhausted':null)},callable:!reason,blocked_reason:reason??null,selfProvider:name===host.host};}
-    return {server:'agent-acp-mcp',version:'2.2.4',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
+    const catalogs=Object.fromEntries(await Promise.all(names.map(async name=>[name,statuses[name].enabled?await this.catalog(name,force):unavailableCatalog(name,'Provider disabled.')])));
+    for(const name of names){const status=statuses[name];const reason=blockedReason(status,host,name,allowSelf);providers[name]={...status,modelCatalog:catalogs[name],quota:{...status.quota,resetsAt:status.quota.resetsAt??null,retryAfter:status.quota.retryAfter??null,limitKind:status.quota.limitKind??(status.quota.state==='exhausted'?'quota_exhausted':null)},callable:!reason,blocked_reason:reason??null,selfProvider:name===host.host};}
+    return {server:'agent-acp-mcp',version:'2.3.0',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
   }
   async plan(spec:string|undefined,host:HostDetection,forceStatus=false,override?:boolean){
     if(isDelegatedProcess())throw Error('NESTED_DELEGATION_BLOCKED: delegated provider sessions cannot invoke this gateway');
@@ -72,6 +75,21 @@ export class AgentRouter{
     const selected=selection.mode==='auto'?randomNonEmptySubset(eligible,this.options.rng):eligible;
     return {selection,statuses,eligible,selected,skipped,allowSelf};
   }
+  async models(spec='grok,claude,codex',force=false){
+    const parsed=parseProviderSpec(spec);if(parsed.mode!=='explicit')throw Error('agent_models requires explicit provider names; routing auto is not supported');
+    const providers=Object.fromEntries(await Promise.all(parsed.requested.map(async name=>[name,{modelPolicy:modelPolicy(name),effortPolicy:effortPolicy(name),catalog:await this.catalog(name,force)}])));
+    return {providers,selectionPolicy:'auto requires a concrete parent value and selection_reason per call; fixed configuration rejects conflicting values',discoveryOnly:true};
+  }
+  private async catalog(name:ProviderName,force=false){try{return await this.adapter(name).models?.(force)??unavailableCatalog(name);}catch(error){return unavailableCatalog(name,`Catalog discovery failed: ${error instanceof Error?error.message:String(error)}; support remains unverified.`);}}
+  async preflight(input:RunInput,host:HostDetection){
+    validateRunSettings(input);
+    const plan=await this.plan(input.provider,host,false,input.allow_self_provider);
+    // Validate the entire auto retry pool before the first provider can write.
+    const candidates=plan.selection.mode==='auto'?plan.eligible:plan.selected;
+    const settings=new Map(candidates.map(name=>[name,resolveProviderSettings(name,input)]));
+    for(const name of candidates)validateCatalog(name,settings.get(name)!,await this.catalog(name));
+    return {plan,settings};
+  }
   async run(kind:AgentKind,input:RunInput,host:HostDetection,signal?:AbortSignal,hooks?:RunHooks){
     validateRunSettings(input);
     const now=this.options.now??Date.now;
@@ -83,14 +101,15 @@ export class AgentRouter{
     const check=()=>{if(!stopped&&now()>=deadlineAt)stop('deadline_exceeded');return stopped;};
     try{
       if(check())throw Error(stopped!);
-      const plan=await this.plan(input.provider,host,false,input.allow_self_provider);
+      const {plan,settings}=await this.preflight(input,host);
       if(input.session_id&&(plan.selection.mode==='auto'||plan.selected.length!==1||plan.selected[0]!=='grok'))throw Error('session_id continuation is supported only with provider="grok"');
       const executed:ProviderName[]=[],notExecuted:SkippedProvider[]=[];
       const invoke=async(name:ProviderName):Promise<ProviderRunResult|undefined>=>{
         const stopReason=check();if(stopReason){notExecuted.push({provider:name,reason:stopReason});return;}
         executed.push(name);let result:ProviderRunResult;
         try{result=await this.adapter(name).run(kind,{...input,deadlineAt,max_runtime_minutes:(deadlineAt-now())/60_000},controller.signal,{onActivity:event=>{try{hooks?.onActivity?.({provider:name,...event});}catch{}}});}
-        catch(e){result={provider:name,text:'',error:e instanceof Error?e.message:String(e),errorKind:'task_error'};}
+        catch(e){result=selectionFailure(name,e,settings.get(name)!.selection);}
+        result=withSelection(result,settings.get(name)!.selection);
         if(check())result={...result,providerError:result.error??null,providerErrorKind:result.errorKind??null,error:stopped==='cancelled'?'Cancelled':'Task runtime deadline exceeded',errorKind:stopped};
         if(kind==='agent_implement'&&result.error)result={...result,handoff:{requiresWorkspaceReview:true,cwd:input.cwd,allowedPaths:input.allowed_paths??[input.cwd],kind,reason:result.errorKind??'task_error',sessionId:result.sessionId??'unavailable',nextAction:'review_workspace_before_continuing',changes:'unverified'}};
         return {...result,execution:executionEvidence(result)};

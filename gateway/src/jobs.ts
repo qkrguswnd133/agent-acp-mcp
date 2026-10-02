@@ -17,6 +17,8 @@ export class JobManager {
   private starting:Promise<unknown>=Promise.resolve();
   private maintenanceCheck:()=>void=()=>{};
   private pendingStarts=0;
+  private preflight:((input:RunInput)=>Promise<unknown>)|undefined;
+  setPreflight(check:(input:RunInput)=>Promise<unknown>){this.preflight=check;}
   constructor(private directory:string,private runner:Runner,private stallMs=15*60*1000){}
   setMaintenanceCheck(check:()=>void){this.maintenanceCheck=check;}
   isIdle(){return this.active.size===0&&this.pendingStarts===0;}
@@ -53,6 +55,10 @@ export class JobManager {
     const isolate=kind==='agent_implement'&&(input.workspace_mode==='isolated'||(input.workspace_mode==='auto'&&!!conflict));
     if(conflict&&!isolate)throw Error(workspaceConflictMessage({...conflict.job,provider:typeof conflict.job.activity?.provider==='string'?conflict.job.activity.provider:conflict.job.provider}));
     const id=randomUUID();let worktree:ManagedWorktree|undefined;
+    // Prevalidate every candidate before managed-worktree or provider writes.
+    await this.preflight?.(input);
+    if(this.closing)throw Error('Bridge is shutting down');
+    this.maintenanceCheck();
     if(isolate){const prepared=await createManagedWorktree({...input,cwd},id);input=prepared.input;cwd=input.cwd;worktree=prepared.worktree;
       if(this.closing)throw Error(`Bridge is shutting down; newly created worktree preserved at ${worktree.path}`);
       this.maintenanceCheck();

@@ -1,5 +1,5 @@
 // Documentation example only: use the matching .json for deployment (JSON disallows comments).
-// auto is a gateway sentinel: do not pass an explicit effort override.
+// auto requires the parent to choose concrete model/effort values and pass selection_reason.
 {
   "mcpServers": {
     "agent": {
@@ -14,7 +14,7 @@
         "CLAUDE_ENABLED": "true",
         "CODEX_ENABLED": "true",
         "GROK_MODEL": "auto",
-        "GROK_EFFORT": "xhigh",
+        "GROK_EFFORT": "auto",
         "CLAUDE_MODEL": "auto",
         // Claude CLI choices: low, medium, high, xhigh, max (model/version dependent).
         "CLAUDE_EFFORT": "auto",

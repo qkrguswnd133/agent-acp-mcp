@@ -22,6 +22,8 @@ Distribution installers should leave live global instruction files untouched by 
 
 ## Configuration remains separate
 
+Since 2.3.0, merge the **Parent model and effort selection** section when updating these templates. `auto` fields require a task-specific concrete selection and `selection_reason`. Discover supported settings with `agent_models`; keep fixed fields unchanged. Model/effort selection does not change the separate provider routing policy. The installer/updater does not modify existing global instruction files.
+
 - Discover the actual `agent_*` tools and schemas. Do not infer tool availability from this file.
 - The gateway detects the host from MCP client information. Never add a manual `MCP_HOST` override.
 - Configure paths and provider policies in the host's MCP configuration, using the receiving machine's actual locations.
@@ -31,7 +33,7 @@ Distribution installers should leave live global instruction files untouched by 
 
 ## Verification scope
 
-Use local fixture tests for an installation check that must avoid provider/model calls. A fresh gateway `agent_status` can perform Grok compatibility verification, including a small model request when health state is absent or changed. It is not a guaranteed no-usage smoke test. Check the current implementation and user-authorized scope before running it.
+Use local fixture tests for an installation check that must avoid provider/model calls. Gateway `agent_status` and `agent_models` can initialize official CLI/ACP connections and query authentication, catalogs or billing, but do not send a task model prompt. Their compatibility checks do not certify successful model/tool execution.
 
 The standalone monitor reads status separately and does not route model tasks. Global instructions cannot repair missing CLI installations, incorrect gateway paths, or unsupported runtime versions.
 
