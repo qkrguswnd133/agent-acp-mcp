@@ -193,6 +193,15 @@ test('Codex turn.completed is successful, and a preceding non-terminal error doe
  });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
 });
 
+test('Codex does not claim success after an unrecovered shell launch failure',async()=>{
+ const events=[{type:'thread.started',thread_id:'shell-fixture'},{type:'item.completed',item:{type:'command_execution',id:'command-1',command:'git show HEAD',exit_code:-1,aggregated_output:'Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access denied)'}},{type:'item.completed',item:{type:'agent_message',text:'Unable to inspect the files.'}},{type:'turn.completed',usage:{input_tokens:7}}].map(e=>JSON.stringify(e)).join('\n');
+ const cli=await fakeCli(events);const state=await fs.mkdtemp(path.join(os.tmpdir(),'codex-shell-result-'));
+ try{await withEnv({CODEX_CLI:cli.command,CODEX_MODEL:'auto',CODEX_EFFORT:'auto',AGENT_MCP_STATE_DIR:state},async()=>{
+  const {CodexProvider}=await loadProvider('codex');const result=await new CodexProvider().run('agent_review',selectedInput({task:'fixture',cwd:process.cwd()},'codex'));
+  assert.equal(result.errorKind,'shell_launch_failed');assert.equal(result.text,'Unable to inspect the files.');assert.equal(result.sessionId,'shell-fixture');assert.deepEqual(result.usage,{input_tokens:7});assert.equal(result.commandExecutions?.length,1);assert.equal(result.selection?.effort.source,'parent');
+ });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
+});
+
 test('Codex refreshes an old local status after another process wrote an already-expired runtime limit',async()=>{
  const cli=await fakeCli('{}');const state=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-codex-state-'));
  try{await withEnv({CODEX_CLI:cli.command,CODEX_MODEL:'auto',AGENT_MCP_STATE_DIR:state},async()=>{

@@ -50,7 +50,7 @@ const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringif
 const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.3.0'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.3.1'});
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
@@ -108,11 +108,11 @@ process.stdin.on('end',()=>{void closeBridge();});
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.3.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.3.1'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.3.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.3.1',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

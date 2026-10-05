@@ -27,6 +27,8 @@ Gateway는 사용자 CLI 설정을 분리하면서 Windows 샌드박스 구현�
 
 구현 작업은 기본 `workspace-write`이며 MCP 서버 env의 `CODEX_IMPLEMENT_SANDBOX="danger-full-access"`로 전체 파일 시스템 접근을 허용할 수 있습니다. 이 경우 `allowed_paths`는 OS가 강제하는 경계가 아니라 작업 지침입니다. `read-only` 값도 지원합니다. 읽기 도구는 이 설정과 무관하게 `read-only`를 사용합니다. 승인·명령 정책 우회 옵션은 추가하지 않습니다. CLI 0.159.2에서는 `--ignore-user-config`로 `windows.sandbox`가 빠지면 `workspace-write`를 전달해도 파일 수정이 읽기 전용으로 거절되는 사례를 재현했습니다. 별도 정책·회사 관리 설정에 의한 거절은 이 설정으로 해제되지 않습니다.
 
+2.3.1부터 Windows의 샌드박스 Codex 실행은 자식 프로세스 PATH에서 `WindowsApps` 경로를 제외하고 일반 PowerShell 7 실행 파일을 우선 선택합니다. 없으면 Windows 기본 PowerShell을 사용합니다. 시스템 PATH·설치·권한은 변경하지 않으며 full-access 구현의 환경은 유지합니다. Store 실행 별칭으로만 제공되는 도구가 필요하면 일반 설치본의 경로를 MCP 실행 환경에 제공하세요. `shellExecution`에는 선택한 셸과 관측된 셸 시작 실패가 기록됩니다. 복구되지 않은 `CreateProcessAsUserW failed: 5`가 있으면 `shell_launch_failed`로 반환하며 부분 응답·세션·사용량은 보존합니다. 설치 후 MCP를 재연결하고 읽기 전용 `git show`·`git diff` 호출로 확인하세요.
+
 ### Codex 실행 모델·effort 기록
 
 Codex 결과는 CLI JSON의 실행 정보를 우선 사용하고, 값이 없으면 해당 `thread_id`와 작업 경로·실행 시간이 일치하는 공식 세션 JSONL의 `turn_context`에서 보완합니다. `modelSource`와 `effortSource`는 `cli_json`, `session_jsonl`, `unavailable` 중 하나입니다. 실행 기록에 나타난 값이며 서버 내부 라우팅까지 확인한 의미는 아닙니다. 요청한 모델이나 기본값을 실제 실행값으로 대신 반환하지 않습니다.
