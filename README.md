@@ -14,6 +14,8 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 
 ## 업데이트
 
+**2.4.0 작업 관리 개선:** 빈 worktree 자동 정리, 목록·일괄 정리 사전 확인, 14일 이상 보관 경고, `agent_job_wait`, 간결한 작업 결과와 원본 artifact 조회를 지원합니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)를 확인하세요. 기존 보관 폴더는 업데이트만으로 일괄 삭제되지 않습니다.
+
 **2.3.0 모델 선택 규약 변경:** 모델·effort의 `auto`는 Parent가 작업별로 구체적인 값과 `selection_reason`을 선택해 전달하는 정책입니다. CLI 기본값으로 넘기지 않습니다. `agent_models`로 지원 정보와 고정/auto 정책을 먼저 확인하세요. 기존 고정 설정은 호출로 덮어쓰지 않습니다. MCP 재연결과 함께 [모델 선택 지침](gateway/MODEL-OVERRIDES.md) 및 [Parent 지침 템플릿](distribution/instructions/README.md)을 반영하세요. 개인 설정·지침은 자동으로 교체되지 않습니다.
 
 Monitor에서 새 릴리스를 확인하고 현재 설치된 구성요소를 함께 업데이트할 수 있습니다. Monitor는 Ed25519 서명, 다운로드한 ZIP의 SHA-256, ZIP 내부 파일별 체크섬을 검증한 뒤 업데이트를 실행합니다. 수동 업데이트는 새 ZIP을 별도 폴더에 압축 해제한 후 `Update.ps1`을 실행합니다. 실행 중인 작업을 마치고 MCP 연결을 닫아야 할 수 있습니다. 업데이트는 이전 실행 파일의 백업과 사용자 상태를 보존합니다.

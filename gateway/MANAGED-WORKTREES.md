@@ -13,13 +13,23 @@ The returned job includes `worktree` metadata with original cwd, repository, iso
 
 ## Parent lifecycle
 
-1. Poll `agent_job_status` to completion. Failed/cancelled jobs retain all work and are not eligible for automatic cleanup.
+1. Use `agent_job_wait(job_id, timeout_seconds=25)` or `agent_job_status` until terminal. Cancelling a wait or reaching its timeout does not cancel the job. Clean empty worktrees (`tip == base`, no modified/untracked/ignored files) are removed after successful, failed or cancelled jobs. Partial changes and commits remain preserved.
 2. Call `agent_worktree_status(job_id)` to inspect branch, base and changes.
 3. Review the diff, run appropriate verification, and commit intended changes in the isolated worktree. Integrate them into the original checkout and test the integrated result. Do not merge while another agent is changing the original checkout.
 4. Remove only reviewed disposable build artifacts in the isolated tree. Modified, untracked **and ignored** files prevent automatic removal.
 5. Call `agent_worktree_cleanup(job_id, integration_ref="HEAD", verified=true, verification_summary="<checks and results>")`.
 
-Cleanup checks that the job completed successfully, both workspaces are free of known active jobs, the original is clean, the managed path/branch registration matches, the isolated checkout is clean, and its HEAD is an ancestor of the original checkout's verified HEAD. Then it uses non-force `git worktree remove` and removes only the expected branch reference. Running/failed/cancelled jobs, conflicts and unmerged changes are preserved. No scheduled cleanup or automatic re-execution is performed.
+For nonempty worktrees, cleanup checks successful completion, parent verification, no known active jobs in either workspace, correct managed path/branch/Git registration, a clean isolated checkout, and its HEAD being an ancestor of the current original HEAD identified by `integration_ref`. Original modified/untracked files do not block removal and are untouched. Clean empty worktrees bypass integration/verification and original-workspace activity checks; activity in the target still blocks deletion. Interrupted jobs and known incomplete child-process cleanup remain preserved. Git removal never uses force; branch deletion uses the verified tip as a compare-and-swap guard. There is no automatic merge, scheduled cleanup or automatic re-execution.
+
+## Inventory and bulk cleanup
+
+`agent_worktree_list(offset=0, limit=50, include_removed=false)` returns job IDs/states, base/tip, commit and changed-file counts, integration into original HEAD, creation time and disk size. Disk scanning stops after two seconds or 10,000 entries per tree, never follows directory junctions, and marks incomplete estimates. Missing paths are reported without deleting their branches. Historical creation times fall back to the job start. `agent_status.worktreeWarnings` highlights records older than 14 days (cached for one minute).
+
+Preview with `agent_worktree_cleanup(job_ids=[...], dry_run=true)`. Apply the same list with `dry_run=false`; nonempty targets additionally require `verified=true` and a factual `verification_summary`. Each target has its own success or skip reason; one blocked target does not stop the rest. A single `job_id` remains supported. Up to 50 IDs may be supplied per call. Previously retained empty worktrees can be cleaned this way; an update does not sweep existing folders automatically.
+
+## Bounded job results
+
+`agent_job_status` and `agent_job_wait` return compact results by default, with UTF-8 head/tail previews, truncation counts and artifact metadata. Full snapshots (including Codex JSONL stdout and command output) are stored under `state/jobs/<job_id>/artifacts/`; artifact references include relative path, byte size and SHA-256. `verbose=true` restores the full original result and may exceed the caller's output limit. Legacy inline records remain readable. Storage/hydration errors preserve the original task outcome and add diagnostics; artifacts above 128 MiB remain inline on disk with a diagnostic. Settings/state backups preserve this directory during updates.
 
 `merge`/fast-forward integration is supported for automatic ancestry verification. Cherry-pick/squash integration does not generally preserve ancestry and requires manual equivalence review and manual cleanup; the gateway will not guess that changes are equivalent. Verification is the parent's assertion and evidence; Git checks do not substitute for tests.
 

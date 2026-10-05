@@ -14,7 +14,7 @@ export async function resolveGitExecutable():Promise<string>{
 
 // Parse argv, never execute a shell. Metacharacters are deliberately unsupported.
 export function gitTokens(command: string): string[] {
-  if (/[\r\n\0;&|<>`$]/.test(command)) throw Error('Shell operators are not allowed');
+  if (/[\r\n\0;&|<>`$]/.test(command)) throw Error('Shell operators are not allowed. Run one command per terminal call; do not chain commands.');
   const tokens: string[] = [];
   let token = '', quote = '', started = false;
   for (const char of command.trim()) {
@@ -42,7 +42,15 @@ export async function gitReadCommand(command:string, checkPath:(p:string)=>Promi
   const sub=tokens.shift();
   if (!sub || !['show','log','diff','status','rev-parse','branch','ls-files'].includes(sub)) throw Error('Git mutation/global options are not allowed');
   if (sub==='branch' && !(tokens.length===1 && tokens[0]==='--show-current')) throw Error('Only git branch --show-current is allowed');
-  if (sub==='rev-parse' && !(tokens.length===1 && ['HEAD','--show-toplevel','--show-prefix','--is-inside-work-tree','--abbrev-ref'].includes(tokens[0])) && !(tokens.length===2 && tokens[0]==='--abbrev-ref' && tokens[1]==='HEAD')) throw Error('Unsupported rev-parse query');
+  if(sub==='rev-parse'){
+    const ref=(value:string)=>value.length<=200&&!value.startsWith('-')&&/^[A-Za-z0-9_./@{}^~+\-]+$/.test(value);
+    const query=tokens.length===1&&['HEAD','--show-toplevel','--show-prefix','--is-inside-work-tree'].includes(tokens[0]);
+    const abbrev=tokens.length===2&&tokens[0]==='--abbrev-ref'&&tokens[1]==='HEAD';
+    const verify=tokens.length===2&&tokens[0]==='--verify'&&ref(tokens[1]);
+    const short=tokens.length===2&&/^--short(?:=(?:[1-9]|[1-5][0-9]|6[0-4]))?$/.test(tokens[0])&&ref(tokens[1]);
+    if(!query&&!abbrev&&!verify&&!short)throw Error('Unsupported rev-parse query. Use --short <ref> or --verify <ref> as a single command.');
+    if(verify||short)tokens.splice(1,0,'--end-of-options');
+  }
   let paths=false;
   for(let i=0;i<tokens.length;i++) {
     const arg=tokens[i];

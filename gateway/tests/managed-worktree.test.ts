@@ -7,7 +7,7 @@ import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {resolveGitExecutable} from '../src/git-read-policy.js';
-import {createManagedWorktree,cleanupManagedWorktree,type ManagedWorktree} from '../src/managed-worktree.js';
+import {createManagedWorktree,cleanupManagedWorktree,inspectManagedWorktree,type ManagedWorktree} from '../src/managed-worktree.js';
 import {JobManager} from '../src/jobs.js';
 const exec=promisify(execFile);
 async function git(cwd:string,...args:string[]){return (await exec(await resolveGitExecutable(),['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args],{cwd,windowsHide:true})).stdout.trim();}
@@ -28,8 +28,6 @@ test('managed isolation rejects implicit dirty base, maps scope, preserves edits
   await fs.writeFile(path.join(w.path,'file.txt'),'agent change');
   await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','fixture tests'),/modified/);
   await git(w.path,'add','.');await git(w.path,'commit','-m','agent change');
-  await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','fixture tests'),/Original workspace/);
-  await fs.unlink(path.join(repo,'dirty.txt'));
   await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','fixture tests'),/not merged/);
   await git(repo,'merge','--ff-only',w.branch);
   await fs.writeFile(path.join(w.path,'.gitignore'),'generated/\n');await git(w.path,'add','.gitignore');await git(w.path,'commit','-m','ignore generated');await git(repo,'merge','--ff-only',w.branch);
@@ -40,6 +38,7 @@ test('managed isolation rejects implicit dirty base, maps scope, preserves edits
   assert.equal(cleaned.state,'removed');assert.equal(await fs.stat(w.path).catch(()=>undefined),undefined);
   assert.equal(await fs.stat(path.dirname(w.path)).catch(()=>undefined),undefined);
   assert.equal(await fs.readFile(path.join(repo,'file.txt'),'utf8'),'agent change');
+  assert.equal(await fs.readFile(path.join(repo,'dirty.txt'),'utf8'),'original only');
  }finally{if(await fs.stat(w.path).catch(()=>undefined)){await git(repo,'worktree','remove',w.path);}await fs.rm(root,{recursive:true,force:true});}
 });
 test('managed worktree preserves the original repository name when cwd is a subdirectory',async()=>{
@@ -77,16 +76,17 @@ test('invalid UUID and ownership paths cannot create or remove a worktree',async
   }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);}
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
-test('failed isolated implementation preserves worktree and blocks managed cleanup',async()=>{
- const {root,repo}=await fixture();const m=new JobManager(path.join(root,'jobs'),async()=>({error:'fixture failure',errorKind:'task_error'}));
+test('failed isolated implementation preserves modified worktree and blocks managed cleanup',async()=>{
+ const {root,repo}=await fixture();const m=new JobManager(path.join(root,'jobs'),async(_kind,input)=>{await fs.writeFile(path.join(input.cwd,'file.txt'),'partial work');return {error:'fixture failure',errorKind:'task_error'};});
  const job=await m.start('agent_implement',{cwd:repo,task:'fixture',workspace_mode:'isolated'});
- try{await finish(m,job.job_id);await assert.rejects(()=>m.cleanupWorktree(job.job_id,'HEAD','reviewed'),/Failed, cancelled/);assert.ok(await fs.stat(job.worktree!.path));}
- finally{await m.close();await git(repo,'worktree','remove',job.worktree!.path);await git(repo,'branch','-D',job.worktree!.branch);await fs.rm(root,{recursive:true,force:true});}
+ try{await finish(m,job.job_id);await assert.rejects(()=>m.cleanupWorktree(job.job_id,'HEAD','reviewed'),/modified, untracked or ignored/);assert.ok(await fs.stat(job.worktree!.path));}
+ finally{await m.close();await git(job.worktree!.path,'restore','file.txt');await git(repo,'worktree','remove',job.worktree!.path);await git(repo,'branch','-D',job.worktree!.branch);await fs.rm(root,{recursive:true,force:true});}
 });
 test('auto creates worktree only on implementation conflict and cleanup requires completed verification',async()=>{
  const {root,repo}=await fixture();let release!:()=>void;
  const m=new JobManager(path.join(root,'jobs'),async(_kind,input)=>{
   if(input.task==='hold')await new Promise<void>(r=>{release=r;});
+  else {await fs.writeFile(path.join(input.cwd,'file.txt'),'completed work');await git(input.cwd,'add','.');await git(input.cwd,'commit','-m','completed work');}
   return {error:null,cwd:input.cwd};
  });
  try{
@@ -94,6 +94,7 @@ test('auto creates worktree only on implementation conflict and cleanup requires
   while(!release)await new Promise(r=>setTimeout(r,5));assert.equal(first.worktree,undefined);
   const second=await m.start('agent_implement',{cwd:repo,task:'isolated',workspace_mode:'auto'});
   assert.ok(second.worktree);assert.notEqual(second.cwd,repo);await finish(m,second.job_id);
+  await git(repo,'merge','--ff-only',second.worktree!.branch);
   await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD','test verified'),/active job/);
   release();await finish(m,first.job_id);
   await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD',''),/summary/);
@@ -101,5 +102,83 @@ test('auto creates worktree only on implementation conflict and cleanup requires
   assert.equal((await restarted.worktreeStatus(second.job_id)).worktree.baseCommit,second.worktree?.baseCommit);
   assert.equal((await restarted.cleanupWorktree(second.job_id,'HEAD','no changes; fixture tests passed')).worktree.state,'removed');
   await restarted.close();
+ }finally{release?.();await m.close();await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('clean empty worktrees bypass integration and support non-mutating dry-run',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'fixture'},randomUUID());
+ try{
+  await fs.writeFile(path.join(repo,'file.txt'),'unrelated tracked edit');await fs.writeFile(path.join(repo,'untracked.txt'),'unrelated new file');
+  const preview=await cleanupManagedWorktree(w,'','',{dryRun:true,emptyOnly:true});
+  assert.equal(preview.eligible,true);assert.equal(preview.empty,true);assert.equal(preview.state,'preserved');assert.ok(await fs.stat(w.path));
+  assert.equal(await git(repo,'rev-parse',w.branch),w.baseCommit);
+  const status=await inspectManagedWorktree(w);
+  assert.ok('createdAt' in status&&status.createdAt);assert.ok('tipCommit' in status&&status.tipCommit===w.baseCommit);
+  assert.ok('commitCount' in status&&status.commitCount===0);assert.ok('changedFileCount' in status&&status.changedFileCount===0);
+  assert.ok('integratedIntoOriginalHead' in status&&status.integratedIntoOriginalHead);assert.ok('diskBytes' in status&&status.diskBytes>0);assert.ok('diskBytesComplete' in status&&status.diskBytesComplete);
+  assert.equal((await cleanupManagedWorktree(w,'not-a-ref','',{emptyOnly:true})).state,'removed');
+  assert.equal(await fs.readFile(path.join(repo,'file.txt'),'utf8'),'unrelated tracked edit');assert.equal(await fs.readFile(path.join(repo,'untracked.txt'),'utf8'),'unrelated new file');
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('nonempty cleanup validates current HEAD, ancestry, empty-only and summary while preserving dry runs',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'fixture'},randomUUID());
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'change');await git(w.path,'add','.');await git(w.path,'commit','-m','change');
+  const tip=await git(w.path,'rev-parse','HEAD');
+  await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','verified',{emptyOnly:true}),/Only empty/);
+  const unmerged=await cleanupManagedWorktree(w,'HEAD','verified',{dryRun:true});assert.equal(unmerged.eligible,false);assert.match(unmerged.reason!,/not merged/);
+  await assert.rejects(()=>cleanupManagedWorktree(w,tip,'verified'),/currently checked-out original HEAD/);
+  const before=await inspectManagedWorktree(w);assert.ok('commitCount' in before&&before.commitCount===1);assert.ok('changedFileCount' in before&&before.changedFileCount===1);assert.ok('integratedIntoOriginalHead' in before&&!before.integratedIntoOriginalHead);
+  await git(repo,'merge','--ff-only',w.branch);
+  await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD',''),/summary/);
+  await fs.writeFile(path.join(repo,'file.txt'),'unrelated local edit');
+  const preview=await cleanupManagedWorktree(w,'HEAD','',{dryRun:true});assert.equal(preview.eligible,true);assert.equal(preview.integrationCommit,tip);assert.ok(await fs.stat(w.path));
+  assert.equal((await cleanupManagedWorktree(w,'HEAD','verified')).state,'removed');assert.equal(await fs.readFile(path.join(repo,'file.txt'),'utf8'),'unrelated local edit');
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('dirty, untracked, ignored, missing, and wrong-branch worktrees remain ineligible',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'fixture'},randomUUID());
+ try{
+  for(const name of ['file.txt','untracked.txt']){
+   await fs.writeFile(path.join(w.path,name),'keep');const preview=await cleanupManagedWorktree(w,'','',{dryRun:true});assert.equal(preview.eligible,false);assert.match(preview.reason!,/modified, untracked or ignored/);
+   if(name==='file.txt')await git(w.path,'restore',name);else await fs.unlink(path.join(w.path,name));
+  }
+  await fs.writeFile(path.join(repo,'.git','info','exclude'),'ignored.txt\n');await fs.writeFile(path.join(w.path,'ignored.txt'),'keep');
+  assert.equal((await cleanupManagedWorktree(w,'','',{dryRun:true})).eligible,false);await fs.unlink(path.join(w.path,'ignored.txt'));
+  await git(w.path,'checkout','--detach');await assert.rejects(()=>cleanupManagedWorktree(w,'',''),/registration or branch changed/);await git(w.path,'checkout',w.branch);
+  assert.equal((await cleanupManagedWorktree({...w,branch:'main'},'','',{dryRun:true})).eligible,false);
+  await git(repo,'worktree','remove',w.path);
+  const missing=await cleanupManagedWorktree(w,'','',{dryRun:true});assert.equal(missing.eligible,false);assert.match(missing.reason!,/path is missing/);
+  const status=await inspectManagedWorktree(w);assert.ok('exists' in status&&!status.exists);assert.equal(status.state,'preserved');assert.equal(await git(repo,'rev-parse',w.branch),w.baseCommit);
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('idle clean empty jobs are automatically cleaned for completed, failed and cancelled results',async()=>{
+ for(const result of [{error:null},{error:'failure',errorKind:'task_error'},{error:'cancelled',errorKind:'cancelled'}]){
+  const {root,repo}=await fixture();const m=new JobManager(path.join(root,'jobs'),async()=>result);
+  try{const job=await m.start('agent_implement',{cwd:repo,task:'empty',workspace_mode:'isolated'});const done=await finish(m,job.job_id);assert.equal(done.worktree?.state,'removed');assert.equal(await fs.stat(job.worktree!.path).catch(()=>undefined),undefined);}
+  finally{await m.close();await fs.rm(root,{recursive:true,force:true});}
+ }
+});
+
+test('inspection disk estimate does not follow a directory junction outside the worktree',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'fixture'},randomUUID());
+ const outside=path.join(root,'outside'),link=path.join(w.path,'external');
+ try{
+  await fs.mkdir(outside);await fs.writeFile(path.join(outside,'large.bin'),Buffer.alloc(1024*1024));await fs.symlink(outside,link,'junction');
+  const status=await inspectManagedWorktree(w);assert.ok('diskBytes' in status&&status.diskBytes<1024*1024);assert.ok('diskBytesComplete' in status&&status.diskBytesComplete);
+  await fs.unlink(link);assert.equal((await cleanupManagedWorktree(w,'','')).state,'removed');assert.equal((await fs.stat(path.join(outside,'large.bin'))).size,1024*1024);
+ }finally{if(await fs.lstat(link).catch(()=>undefined))await fs.unlink(link);if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('empty isolation is cleaned while another job still owns the original workspace',async()=>{
+ const {root,repo}=await fixture();let release!:()=>void;
+ const m=new JobManager(path.join(root,'jobs'),async(_kind,input)=>{if(input.task==='hold')await new Promise<void>(r=>{release=r;});return {error:null};});
+ try{
+  const first=await m.start('agent_implement',{cwd:repo,task:'hold'});while(!release)await new Promise(r=>setTimeout(r,5));
+  const second=await m.start('agent_implement',{cwd:repo,task:'empty',workspace_mode:'auto'});const done=await finish(m,second.job_id);
+  assert.equal(done.worktree?.state,'removed');assert.equal((await m.status(first.job_id)).status,'running');release();await finish(m,first.job_id);
  }finally{release?.();await m.close();await fs.rm(root,{recursive:true,force:true});}
 });

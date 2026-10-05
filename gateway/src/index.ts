@@ -50,20 +50,20 @@ const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringif
 const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.3.1'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.4.0'});
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
    agent_investigate:'Start a read-only debugging/RCA/architecture investigation using independent provider evidence.'
  };
  for(const [name,description] of Object.entries(readTools))server.registerTool(name,{
-   description:description+' provider="auto" randomly routes to a non-empty subset of enabled, healthy providers; host eligibility follows ALLOW_SELF_PROVIDER / allow_self_provider. If all initially executed providers hit a usage/rate limit, auto may retry once with fresh-checked unexecuted providers within the original deadline. Explicit provider lists never add providers. Returns a background job_id; poll agent_job_status.',
+   description:description+' provider="auto" randomly routes to a non-empty subset of enabled, healthy providers; host eligibility follows ALLOW_SELF_PROVIDER / allow_self_provider. If all initially executed providers hit a usage/rate limit, auto may retry once with fresh-checked unexecuted providers within the original deadline. Explicit provider lists never add providers. Returns a background job_id; use agent_job_wait or agent_job_status.',
    inputSchema:z.object(base),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:true}
  },tracked(async(input,context)=>{
    try{return reply(await jobs.start(name,{...input,__host:detectHost(server,context)} as any));}catch(e){return errorReply(e);}
  }));
  server.registerTool('agent_implement',{
-   description:'Start bounded implementation through selected external providers. With workspace_mode=auto, a conflicting job triggers an isolated Git worktree; dirty originals require explicit base_ref and are never copied. Parent must integrate, verify and call agent_worktree_cleanup after success. Multiple providers run sequentially; any failure stops later implementation and returns handoff information requiring parent workspace review. No automatic implementation retry. Implementation supports local shell builds/tests and failure repair. Grok file tools enforce allowed_paths; shells and Claude/Codex receive the requested scope, not a filesystem sandbox from this gateway. Inspect commandExecutions and final verification. Returns job_id; poll agent_job_status.',
+   description:'Start bounded implementation through selected external providers. With workspace_mode=auto, a conflicting job triggers an isolated Git worktree; dirty originals require explicit base_ref and are never copied. Parent must integrate, verify and call agent_worktree_cleanup after success. Multiple providers run sequentially; any failure stops later implementation and returns handoff information requiring parent workspace review. No automatic implementation retry. Implementation supports local shell builds/tests and failure repair. Grok file tools enforce allowed_paths; shells and Claude/Codex receive the requested scope, not a filesystem sandbox from this gateway. Inspect commandExecutions and final verification. Returns job_id; use agent_job_wait or agent_job_status. Clean empty worktrees are automatically removed after completion; changed or committed work is preserved.',
    inputSchema:z.object({...base,completion_criteria:z.string().min(1),allowed_paths:z.array(z.string()).min(1).optional(),workspace_mode:z.enum(['auto','current','isolated']).default('auto').describe('auto creates a managed worktree only when another overlapping job blocks implementation; current preserves blocking; isolated always creates one. Parent integrates and verifies before cleanup.'),base_ref:z.string().min(1).max(300).optional().describe('Committed Git starting ref for isolation. Required if original has uncommitted changes; those changes are NOT copied.')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:true}
  },tracked(async(input,context)=>{try{return reply(await jobs.start('agent_implement',{...input,__host:detectHost(server,context)} as any));}catch(e){return errorReply(e);} }));
  server.registerTool('agent_worktree_status',{
@@ -71,13 +71,21 @@ function createServer(){
    inputSchema:z.object({job_id:z.string().uuid()}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },tracked(async({job_id})=>{try{return reply(await jobs.worktreeStatus(job_id));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_cleanup',{
-   description:'After parent has committed, merged and tested the original workspace, remove a completed job clean managed worktree and branch. Requires integration into original HEAD, no dirty/untracked/ignored files, and parent verification. Failed/cancelled jobs and unmerged work are preserved. Never force deletes.',
-   inputSchema:z.object({job_id:z.string().uuid(),integration_ref:z.string().min(1).default('HEAD'),verified:z.literal(true),verification_summary:z.string().min(1).max(4000)}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
- },tracked(async({job_id,integration_ref,verification_summary})=>{try{return reply(await jobs.cleanupWorktree(job_id,integration_ref,verification_summary));}catch(e){return errorReply(e);}}));
+   description:'Safely remove idle managed worktrees. Supply job_id or up to 50 job_ids. dry_run previews eligibility without deleting. Clean empty worktrees (tip=base) need no integration/verification, including failed/cancelled jobs. Nonempty work requires completed job, parent verified=true and verification_summary, clean target including ignored/untracked files, and tip merged into current original HEAD. Unrelated original edits do not block cleanup. Bulk results preserve every skipped reason. Never force deletes.',
+   inputSchema:z.object({job_id:z.string().uuid().optional(),job_ids:z.array(z.string().uuid()).min(1).max(50).optional(),dry_run:z.boolean().default(false),integration_ref:z.string().min(1).default('HEAD'),verified:z.literal(true).optional(),verification_summary:z.string().max(4000).default('')}).refine(v=>!!v.job_id!==!!v.job_ids,'Supply either job_id or job_ids'),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({job_id,job_ids,dry_run,integration_ref,verified,verification_summary})=>{try{const options={dryRun:dry_run,verified:verified===true};return reply(job_ids?await jobs.cleanupWorktrees(job_ids,integration_ref,verification_summary,options):await jobs.cleanupWorktree(job_id!,integration_ref,verification_summary,options));}catch(e){return errorReply(e);}}));
+ server.registerTool('agent_worktree_list',{
+   description:'List managed worktrees recorded by this gateway: job state, base/tip, commit/change counts, integration into original HEAD, creation time and bounded disk size. Missing paths and scan limits are explicit. Paginated; never deletes.',
+   inputSchema:z.object({offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(50),include_removed:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },tracked(async({offset,limit,include_removed})=>{try{return reply(await jobs.listWorktrees(offset,limit,include_removed));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_job_status',{
    description:'Read background job progress and final provider results. Poll while queued/running/cancelling. Check outcome, successCount, failureCount, skipped, and handoff even when some providers succeeded. Outcome success means provider turn execution, not verified completion criteria. Inspect execution.commands, completionCriteria, processExit and processWarnings separately. implementationProgress warns when observed reading continues without writes/commands; parent should review scope/next step, never automatically cancel or replay. Missing telemetry is unavailable. Failed implementations require parent workspace review before continuing.',
-   inputSchema:z.object({job_id:z.string().uuid()}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
- },async({job_id})=>{try{return reply(await jobs.status(job_id));}catch(e){return errorReply(e);}});
+   inputSchema:z.object({job_id:z.string().uuid(),verbose:z.boolean().default(false).describe('Default response is bounded with head/tail previews and full artifact references. true loads the full original result and can exceed client output limits.')}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },async({job_id,verbose})=>{try{return reply(await jobs.status(job_id,verbose));}catch(e){return errorReply(e);}});
+ server.registerTool('agent_job_wait',{
+   description:'Wait for job completion or timeout, returning a compact status. Works across gateway processes. Timeout or cancelling this wait never cancels the job; use agent_job_cancel for that. Reissue the wait if wait.timed_out=true.',
+   inputSchema:z.object({job_id:z.string().uuid(),timeout_seconds:z.number().min(0).max(60).default(25),verbose:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },async({job_id,timeout_seconds,verbose},context)=>{try{return reply(await jobs.wait(job_id,timeout_seconds,verbose,context.mcpReq.signal));}catch(e){return errorReply(e);}});
  server.registerTool('agent_job_cancel',{
    description:'Cancel a background multi-agent job. Partial edits are preserved.',inputSchema:z.object({job_id:z.string().uuid()}),annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
  },async({job_id})=>{try{return reply(await jobs.cancel(job_id));}catch(e){return errorReply(e);}});
@@ -88,7 +96,7 @@ function createServer(){
  server.registerTool('agent_status',{
    description:'Show detected MCP host plus Grok/Claude/Codex enabled, availability, authentication, subscription-auth, quota and callable state. Quota includes limitKind, actual resetsAt (null if unknown), and retryAfter for rechecking. Host is detected from MCP clientInfo; no static host setting is used.',
    inputSchema:z.object({refresh:z.boolean().optional(),allow_self_provider:z.boolean().optional()}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
- },tracked(async({refresh,allow_self_provider},context)=>{try{return reply(await router.status(detectHost(server,context),refresh??false,allow_self_provider));}catch(e){return errorReply(e);}}));
+ },tracked(async({refresh,allow_self_provider},context)=>{try{const [status,worktreeWarnings]=await Promise.all([router.status(detectHost(server,context),refresh??false,allow_self_provider),jobs.worktreeWarnings()]);return reply({...status,worktreeWarnings});}catch(e){return errorReply(e);}}));
  server.registerTool('agent_cli_status',{
    description:'Refresh provider CLI/version/auth/quota diagnostics without updating anything.',inputSchema:z.object({}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },tracked(async(_input,context)=>{try{return reply(await router.status(detectHost(server,context),true));}catch(e){return errorReply(e);}}));
@@ -108,11 +116,11 @@ process.stdin.on('end',()=>{void closeBridge();});
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.3.1'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.4.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.3.1',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.4.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 
