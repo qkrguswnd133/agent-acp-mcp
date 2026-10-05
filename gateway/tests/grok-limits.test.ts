@@ -40,6 +40,14 @@ function fixtureDependencies(stateRoot:string,telemetryFails=false):RunGrokDepen
   stateRoot,
  };
 }
+test('ACP read-only task prompt includes single-command guidance even with an existing profile',async()=>{
+ const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'grok-read-prompt-'));const deps=fixtureDependencies(path.join(cwd,'state'));
+ const server=fixtureServer.replace("text:'partial fixture answer'","text:JSON.stringify(message.params.prompt)");
+ deps.spawn=((_command:string,_args:string[],options:any)=>spawn(process.execPath,['--input-type=module','--eval',server],options) as ChildProcessWithoutNullStreams) as typeof spawn;
+ try{const result=await runGrok('grok_review',selectedInput({cwd,task:'fixture'},'grok'),undefined,undefined,deps);assert.match(result.text,/one at a time/);assert.match(result.text,/--short HEAD/);assert.doesNotMatch(result.text,/Do not modify files or execute shell commands/);assert.equal(await fs.stat(path.join(cwd,'fixture-edit.txt')).catch(()=>undefined),undefined);}
+ finally{await fs.rm(cwd,{recursive:true,force:true});}
+});
+
 test('Grok per-call model/effort is confirmed on ACP session without changing health defaults',async()=>{
  const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'grok-model-override-'));
  const modelState={currentModelId:'grok-4.6',availableModels:['grok-4.6','grok-5'].map(modelId=>({modelId,_meta:{agentType:'grok-build',supportsReasoningEffort:true,reasoningEfforts:[{id:'xhigh'},{id:'high'}]}}))};
