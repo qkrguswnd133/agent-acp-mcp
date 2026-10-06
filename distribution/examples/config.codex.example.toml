@@ -30,7 +30,7 @@ CODEX_WINDOWS_SANDBOX = "unelevated"
 # Implementation only: workspace-write (default), danger-full-access, read-only.
 # Full access removes filesystem isolation; allowed_paths remains a task instruction.
 CODEX_IMPLEMENT_SANDBOX = "workspace-write"
-# New worktrees default to %LOCALAPPDATA%/Agent ACP MCP/worktrees.
+# New worktrees default to %USERPROFILE%/.agent-acp/worktrees.
 # Optional absolute persistent root; existing TEMP worktrees are not migrated automatically.
 # AGENT_MCP_WORKTREE_DIR = "D:/AgentWorktrees"
 # The release includes portable PowerShell 7.6.6. Optional native PowerShell 7+ override:

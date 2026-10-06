@@ -26,6 +26,8 @@ Since 2.3.0, merge the **Parent model and effort selection** section when updati
 
 For 2.5.0, also merge **Background jobs, limits, and partial work** and **Managed parallel worktrees**. These explain complete review bodies with compact diagnostics, persistent worktree storage, explicit migration/recovery, checkout health and opt-in patch-equivalent cleanup. Preview migration/recovery first; both default to dry-run. Existing TEMP worktrees and provider sessions are not migrated automatically. PowerShell selection uses the bundled runtime or an explicit valid native PowerShell 7+ path, with no 5.1 fallback.
 
+For 2.5.1, update the Windows storage default to `%USERPROFILE%/.agent-acp/worktrees` and merge the interrupted-job maintenance paragraph. The parent must review remaining workspace writers and provide `idle_confirmed=true` plus a summary for interrupted migration/recovery. This acknowledgement cannot override failed process checks and never marks the old job completed. Existing AppData/TEMP worktrees remain where they are until explicit migration.
+
 - Discover the actual `agent_*` tools and schemas. Do not infer tool availability from this file.
 - The gateway detects the host from MCP client information. Never add a manual `MCP_HOST` override.
 - Configure paths and provider policies in the host's MCP configuration, using the receiving machine's actual locations.

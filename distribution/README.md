@@ -37,7 +37,9 @@ Windows Codex는 `WindowsApps` 밖의 실제 PowerShell 7 실행 파일을 사�
 
 ### Worktree 저장 위치와 유지 관리
 
-새 worktree의 기본 루트는 `%LOCALAPPDATA%\Agent ACP MCP\worktrees`이며, `AGENT_MCP_WORKTREE_DIR`에 절대 경로를 지정해 바꿀 수 있습니다. 기존 TEMP worktree는 업데이트나 환경변수 변경만으로 이동하지 않습니다. 작업이 끝나고 원본·격리 작업공간이 유휴 상태일 때 `agent_worktree_migrate(job_id, dry_run=true)`로 확인한 뒤 `dry_run=false`로 적용합니다. `target_root`는 선택 사항이며 생략하면 현재 저장 루트를 사용합니다. 이동 후 provider 세션은 새 cwd에서 다시 시작해야 하며 기존 세션 기록의 경로를 고쳐 쓰지 않습니다.
+2.5.1부터 새 worktree의 기본 루트는 `%USERPROFILE%\.agent-acp\worktrees`입니다. 패키지 앱의 AppData 가상화를 피하도록 AppData 밖을 사용합니다. `AGENT_MCP_WORKTREE_DIR`에 절대 경로를 지정하면 해당 설정이 우선합니다. `WORKTREE_STORAGE_REDIRECTED` 오류가 나면 일반 사용자 폴더의 실제 경로로 지정하고 MCP를 재연결하세요. 기존 TEMP·AppData worktree는 업데이트나 환경변수 변경만으로 이동하지 않습니다. 작업이 끝나고 원본·격리 작업공간이 유휴 상태일 때 `agent_worktree_migrate(job_id, dry_run=true)`로 확인한 뒤 `dry_run=false`로 적용합니다. `target_root`는 선택 사항이며 생략하면 현재 저장 루트를 사용합니다. 이동 후 provider 세션은 새 cwd에서 다시 시작해야 하며 기존 세션 기록의 경로를 고쳐 쓰지 않습니다.
+
+Windows에서 소유 프로세스가 사라진 `interrupted` 작업은 미리보기의 프로세스 검사를 통과하고 Parent가 잔존 작업 여부를 확인한 뒤 `idle_confirmed=true`, `verification_summary`를 지정해 이동·복구할 수 있습니다. 이 확인값은 실제 소유자·하위 프로세스·작업 경로 검사 실패를 우회하지 않습니다. 일반 cleanup은 계속 별도 안전 조건을 적용합니다. 상세 조건과 복구 동작은 [관리형 worktree 설명](gateway/MANAGED-WORKTREES.md)을 확인하세요.
 
 `agent_worktree_list`의 `include_disk_size`는 기본 `false`입니다. 용량이 필요할 때만 `true`로 조회하며, 최대 4개씩 검사합니다. 3일 이상 보관된 항목은 상태 경고에 나타납니다. TEMP 정리 일정은 PC 정책에 따라 달라지므로 이 경고를 안전한 보관 기한으로 해석하지 마세요. 손상 상태 확인, 복구와 patch 동등성 정리 절차는 [관리형 worktree 설명](../gateway/MANAGED-WORKTREES.md)을 따르세요.
 

@@ -50,7 +50,7 @@ const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringif
 const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.5.0'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.5.1'});
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
@@ -79,13 +79,13 @@ function createServer(){
    inputSchema:z.object({offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(50),include_removed:z.boolean().default(false),include_disk_size:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },tracked(async({offset,limit,include_removed,include_disk_size})=>{try{return reply(await jobs.listWorktrees(offset,limit,include_removed,include_disk_size));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_migrate',{
-   description:'Move a finished idle managed worktree with git worktree move into persistent storage. Default dry_run=true. Does not automatically migrate existing worktrees. Updates gateway metadata; start a new provider session after moving because historical provider paths cannot be rewritten. Never runs on active or unknown-owner jobs.',
-   inputSchema:z.object({job_id:z.string().uuid(),dry_run:z.boolean().default(true),target_root:z.string().min(1).optional()}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
- },tracked(async({job_id,dry_run,target_root})=>{try{return reply(await jobs.worktreeMaintenance(job_id,'migrate',{dryRun:dry_run,targetRoot:target_root}));}catch(e){return errorReply(e);}}));
+   description:'Move an idle managed worktree with git worktree move into persistent storage. Default dry_run=true. Interrupted Windows jobs need absent-owner/process checks, plus parent idle_confirmed=true and verification_summary before apply. Inspect the worktree and remaining processes first; unknown or active ownership blocks. Does not automatically migrate existing worktrees. Updates gateway metadata; start a new provider session after moving because historical provider paths cannot be rewritten.',
+   inputSchema:z.object({job_id:z.string().uuid(),dry_run:z.boolean().default(true),target_root:z.string().min(1).optional(),idle_confirmed:z.literal(true).optional().describe('Parent confirms review found no remaining writer after interrupted ownership; cannot override process checks.'),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({job_id,dry_run,target_root,idle_confirmed,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,'migrate',{dryRun:dry_run,targetRoot:target_root,idleConfirmed:idle_confirmed,summary:verification_summary}));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_recover',{
    description:'Recover an idle metadata-only checkout whose tracked files are all missing and index unchanged. Default restore repopulates files from HEAD. remove restores then removes the checkout while preserving its branch. Refuses partial/missing/sparse checkouts. Default dry_run=true; apply requires verified=true and a parent summary acknowledging missing files. Uncommitted lost content cannot be recovered from Git.',
-   inputSchema:z.object({job_id:z.string().uuid(),action:z.enum(['restore','remove']).default('restore'),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
- },tracked(async({job_id,action,dry_run,verified,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,action,{dryRun:dry_run,verified,summary:verification_summary}));}catch(e){return errorReply(e);}}));
+   inputSchema:z.object({job_id:z.string().uuid(),action:z.enum(['restore','remove']).default('restore'),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional().describe('Required for interrupted-job apply alongside fresh successful Windows ownership checks and parent workspace/process review.'),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({job_id,action,dry_run,verified,idle_confirmed,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,action,{dryRun:dry_run,verified,idleConfirmed:idle_confirmed,summary:verification_summary}));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_job_status',{
    description:'Read background job progress and final provider results. Poll while queued/running/cancelling. Check outcome, successCount, failureCount, skipped, and handoff even when some providers succeeded. Outcome success means provider turn execution, not verified completion criteria. Inspect execution.commands, completionCriteria, processExit and processWarnings separately. implementationProgress warns when observed reading continues without writes/commands; parent should review scope/next step, never automatically cancel or replay. Missing telemetry is unavailable. Failed implementations require parent workspace review before continuing.',
    inputSchema:z.object({job_id:z.string().uuid(),verbose:z.boolean().default(false).describe('Default preserves the full review text and compacts command logs with artifact references. Large review bodies may exceed the response budget. true loads the full original diagnostics and can exceed client output limits.')}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
@@ -124,11 +124,11 @@ process.stdin.on('end',()=>{void closeBridge();});
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.5.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.5.1'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.5.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.5.1',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

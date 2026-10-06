@@ -10,9 +10,9 @@ async function fixture(){return fs.mkdtemp(path.join(os.tmpdir(),'job-payload-')
 test('artifact hydration retains migrated current cwd without rewriting provider history',async()=>{
  const dir=await fixture(),job={job_id:randomUUID(),status:'completed',cwd:'D:/old',result:{text:'review',cwd:'D:/old',rawEvents:'x'.repeat(100000)}};
  try{
-  const saved=await persistJobPayload(job,dir);saved.cwd='D:/new';saved.worktreeMigration={previousCwd:'D:/old',currentCwd:'D:/new',restartRequired:true};
+  const saved=await persistJobPayload(job,dir);saved.cwd='D:/new';saved.worktreeMigration={previousCwd:'D:/old',currentCwd:'D:/new',restartRequired:true};saved.worktreeIdleCheck={ownerAbsent:true,parentConfirmed:true};
   const full=await presentJobPayload(saved,{jobsDirectory:dir,verbose:true});
-  assert.equal(full.cwd,'D:/new');assert.equal(full.result.cwd,'D:/old');assert.deepEqual(full.worktreeMigration,saved.worktreeMigration);
+  assert.equal(full.cwd,'D:/new');assert.equal(full.result.cwd,'D:/old');assert.deepEqual(full.worktreeMigration,saved.worktreeMigration);assert.deepEqual(full.worktreeIdleCheck,saved.worktreeIdleCheck);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
 function oversized(){return {

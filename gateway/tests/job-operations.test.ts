@@ -10,6 +10,7 @@ import {JobManager} from '../src/jobs.js';
 import {persistJobPayload} from '../src/job-payload.js';
 import {createManagedWorktree} from '../src/managed-worktree.js';
 import {resolveGitExecutable} from '../src/git-read-policy.js';
+import {verifyInterruptedOwnership} from '../src/interrupted-ownership.js';
 const exec=promisify(execFile);
 const testStorage=await fs.mkdtemp(path.join(os.tmpdir(),'job-operations-worktrees-'));
 const previousStorage=process.env.AGENT_MCP_WORKTREE_DIR;
@@ -18,13 +19,13 @@ after(async()=>{if(previousStorage===undefined)delete process.env.AGENT_MCP_WORK
 const delay=(n:number)=>new Promise(r=>setTimeout(r,n));
 async function root(t:any){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'job-operations-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));return dir;}
 async function fixtureGit(cwd:string,...args:string[]){return (await exec(await resolveGitExecutable(),['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args],{cwd,windowsHide:true})).stdout.trim();}
-async function maintenanceFixture(t:any){
+async function maintenanceFixture(t:any,ownershipVerifier?:typeof verifyInterruptedOwnership){
  const dir=await root(t),repo=path.join(dir,'repo'),jobs=path.join(dir,'jobs');await fs.mkdir(repo);await fs.mkdir(jobs);
  await fixtureGit(repo,'init');await fs.mkdir(path.join(repo,'nested'));await fs.writeFile(path.join(repo,'nested','base.txt'),'base');await fixtureGit(repo,'add','.');await fixtureGit(repo,'commit','-m','base');
  const id=randomUUID(),created=await createManagedWorktree({cwd:path.join(repo,'nested'),task:'fixture'},id),file=path.join(jobs,id+'.json');
  const record={job_id:id,kind:'agent_implement',cwd:created.input.cwd,ownerPid:process.pid,status:'completed',startedAt:'2020-01-01T00:00:00Z',lastActivityAt:'2020-01-01T00:00:00Z',finishedAt:'2020-01-01T00:00:01Z',worktree:created.worktree,activity:{cwd:created.input.cwd,event:'historical'},result:{error:null,results:[{provider:'grok',sessionId:'historical-session',cwd:created.input.cwd,text:'completed'}]}};
  await fs.writeFile(file,JSON.stringify(record));
- const m=new JobManager(jobs,async()=>{throw Error('No replay');});
+ const m=new JobManager(jobs,async()=>{throw Error('No replay');},undefined,ownershipVerifier);
  return {dir,repo,jobs,id,file,record,m,w:created.worktree};
 }
 async function disposeFixture(f:Awaited<ReturnType<typeof maintenanceFixture>>){
@@ -78,7 +79,7 @@ test('maintenance migration dry-run is read-only and apply updates cwd while ret
  const f=await maintenanceFixture(t),targetRoot=path.join(f.dir,'persistent'),before=await fs.readFile(f.file,'utf8');
  try{
   await fs.writeFile(path.join(f.w.path,'nested','base.txt'),'unfinished edit');
-  const preview=await f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot});assert.equal(preview.dry_run,true);assert.equal('eligible' in preview.worktree&&preview.worktree.eligible,true);assert.equal(await fs.readFile(f.file,'utf8'),before);assert.equal(await fs.stat(targetRoot).catch(()=>undefined),undefined);
+  const preview=await f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot});assert.equal('dry_run' in preview&&preview.dry_run,true);assert.equal('eligible' in preview.worktree&&preview.worktree.eligible,true);assert.equal(await fs.readFile(f.file,'utf8'),before);assert.equal(await fs.stat(targetRoot).catch(()=>undefined),undefined);
   const applied=await f.m.worktreeMaintenance(f.id,'migrate',{targetRoot});assert.ok('restartRequired' in applied&&applied.restartRequired);assert.notEqual(applied.worktree.path,f.w.path);
   const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.cwd,path.join(applied.worktree.path,'nested'));assert.equal(saved.worktree.originalCwd,f.w.originalCwd);assert.deepEqual(saved.result,f.record.result);assert.deepEqual(saved.activity,f.record.activity);assert.equal(saved.worktreeMigration.previousCwd,f.record.cwd);assert.equal(saved.worktreeMigration.currentCwd,saved.cwd);assert.equal(saved.worktreeMigration.restartRequired,true);assert.equal(await fs.readFile(path.join(saved.cwd,'base.txt'),'utf8'),'unfinished edit');assert.equal(await fs.readFile(path.join(f.repo,'nested','base.txt'),'utf8'),'base');
   assert.equal(await fs.stat(f.w.path).catch(()=>undefined),undefined);assert.equal(await fs.stat(f.file+'.cleanup.lock').catch(()=>undefined),undefined);
@@ -89,7 +90,7 @@ test('maintenance requires terminal idle ownership and confirmed child cleanup',
  const f=await maintenanceFixture(t),targetRoot=path.join(f.dir,'persistent');
  try{
   for(const status of ['running','queued','cancelling','interrupted']){
-   await fs.writeFile(f.file,JSON.stringify({...f.record,status}));await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),/finished.*idle/);
+   await fs.writeFile(f.file,JSON.stringify({...f.record,status}));await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),/finished.*idle|owner process is still alive/);
   }
   await fs.writeFile(f.file,JSON.stringify({...f.record,result:{error:null,results:[{childCleanedUp:false}]}}));await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),/child cleanup/);
   await fs.writeFile(f.file,JSON.stringify(f.record));const otherId=randomUUID(),otherFile=path.join(f.jobs,otherId+'.json');
@@ -157,5 +158,37 @@ test('list100 completes full healthy checkout inspections without disk estimates
   for(let i=0;i<99;i++){const id=randomUUID();await fs.writeFile(path.join(f.jobs,id+'.json'),JSON.stringify({...f.record,job_id:id}));}
   const started=performance.now(),list=await f.m.listWorktrees(0,100);t.diagnostic(`list100 full inspections completed in ${Math.round(performance.now()-started)} ms (100 records sharing a healthy checkout)`);
   assert.equal(list.items.length,100);assert.ok(list.items.every(item=>!item.error&&item.worktree.checkoutState==='complete'&&item.worktree.missingTrackedFileCount===0&&!('diskBytes' in item.worktree)));
+ }finally{await disposeFixture(f);}
+});
+
+test('interrupted migration requires fresh ownership evidence and explicit idle acknowledgement, preserving history',async t=>{
+ const scans:unknown[]=[];const f=await maintenanceFixture(t,async input=>{scans.push(input);return {ownerAbsent:true,processScan:'passed',checkedAt:'2026-01-01T00:00:00Z'};});
+ const targetRoot=path.join(f.dir,'persistent'),record={...f.record,status:'running',ownerPid:2147483647,result:{error:'historical partial result',childCleanedUp:false,results:[{provider:'grok',sessionId:'old-session',childCleanedUp:false}]}};await fs.writeFile(f.file,JSON.stringify(record));
+ try{
+  const before=await fs.readFile(f.file,'utf8'),preview=await f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot});assert.ok('requires_idle_confirmation' in preview&&preview.requires_idle_confirmation);assert.ok('idleCheck' in preview&&preview.idleCheck?.ownerAbsent);assert.equal(scans.length,1);assert.equal(await fs.readFile(f.file,'utf8'),before);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{targetRoot,summary:'reviewed'}),/idle_confirmed=true/);await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{targetRoot,idleConfirmed:true}),/verification summary/);
+  await f.m.worktreeMaintenance(f.id,'migrate',{targetRoot,idleConfirmed:true,summary:'Parent confirmed no manually launched workspace writers'});assert.equal(scans.length,2);
+  const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,'running');assert.equal(saved.error,undefined);assert.deepEqual(saved.result,record.result);assert.equal(saved.worktreeIdleCheck.parentConfirmed,true);assert.equal(saved.worktreeIdleCheck.processScan,'passed');assert.equal(saved.worktreeIdleCheck.ownerAbsent,true);assert.equal(saved.worktreeIdleCheck.checkedAt,'2026-01-01T00:00:00Z');
+ }finally{await disposeFixture(f);}
+});
+
+test('interrupted maintenance blocks unknown or surviving-process evidence even with parent acknowledgement',async t=>{
+ for(const reason of ['Process inventory unavailable','Interrupted owner is still alive','Interrupted job has surviving child processes']){
+  const f=await maintenanceFixture(t,async()=>{throw Error(reason);});await fs.writeFile(f.file,JSON.stringify({...f.record,status:'interrupted',ownerPid:2147483647}));
+  try{
+   const before=await fs.readFile(f.file,'utf8');for(const dryRun of [true,false])await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun,targetRoot:path.join(f.dir,'persistent'),idleConfirmed:true,summary:'Parent reviewed idle state'}),new RegExp(reason));
+   assert.equal(await fs.readFile(f.file,'utf8'),before);assert.ok(await fs.stat(f.w.path));assert.equal(await fs.stat(f.file+'.cleanup.lock').catch(()=>undefined),undefined);
+  }finally{await disposeFixture(f);}
+ }
+});
+
+test('interrupted recovery uses the same process scan and requires both idle and recovery acknowledgement',async t=>{
+ const f=await maintenanceFixture(t,async()=>({ownerAbsent:true,processScan:'passed',checkedAt:'2026-01-01T00:00:00Z'}));await fs.writeFile(f.file,JSON.stringify({...f.record,status:'interrupted',ownerPid:2147483647}));
+ try{
+  await fs.unlink(path.join(f.w.path,'nested','base.txt'));await fs.rmdir(path.join(f.w.path,'nested'));
+  const preview=await f.m.worktreeMaintenance(f.id,'restore',{dryRun:true});assert.ok('requires_idle_confirmation' in preview&&preview.requires_idle_confirmation);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'restore',{verified:true,summary:'Missing files reviewed'}),/idle_confirmed=true/);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'restore',{idleConfirmed:true,summary:'Idle writers reviewed'}),/verified=true/);
+  const restored=await f.m.worktreeMaintenance(f.id,'restore',{idleConfirmed:true,verified:true,summary:'Missing files and absence of manual writers reviewed'});assert.equal(restored.worktree.state,'preserved');assert.equal(await fs.readFile(path.join(f.w.path,'nested','base.txt'),'utf8'),'base');assert.equal(JSON.parse(await fs.readFile(f.file,'utf8')).status,'interrupted');
  }finally{await disposeFixture(f);}
 });

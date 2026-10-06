@@ -1,0 +1,10 @@
+{
+ "gateway":[
+  "Gateway 2.5.1: Windows worktree 기본 경로를 %USERPROFILE%\\.agent-acp\\worktrees로 변경해 패키지 앱의 AppData 가상화를 피합니다. 기존 AGENT_MCP_WORKTREE_DIR 설정과 저장된 경로는 유지하며 자동 이동하지 않습니다.",
+  "worktree 생성·이동 시 디렉터리 생성 전후 실제 경로를 확인합니다. 패키지 경로로 우회되거나 링크를 통과하면 원인과 AGENT_MCP_WORKTREE_DIR 설정 방법을 표시하고 Git 작업을 중단합니다.",
+  "손상 checkout 복구 시 staged 변경이 없음을 확인한 뒤 index와 파일을 함께 복원합니다. CRLF/LF 변환 후 수정 상태로 남아 복구 제거가 실패하던 문제를 수정했습니다.",
+  "Windows interrupted 작업의 이동·복구는 소유 프로세스 부재와 새 프로세스 검사, Parent의 idle_confirmed 및 검증 요약이 확인되면 가능합니다. 실행 중·하위 프로세스 잔존·확인 불가 상태는 계속 차단하며 작업을 자동 재개하지 않습니다.",
+  "경로 우회, 줄바꿈 변환, 중단된 작업의 소유권과 확인 실패 회귀 테스트를 추가했습니다. 업데이트 후 MCP를 재연결하세요. 기존 worktree 이동은 별도로 실행해야 합니다."
+ ],
+ "monitor":["Monitor 1.2.1을 유지합니다. 이번 배포는 Gateway worktree 수정이며 화면·계정·사용량 설정은 변경하지 않습니다."]
+}

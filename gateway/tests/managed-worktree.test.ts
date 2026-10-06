@@ -193,7 +193,7 @@ test('persistent storage is configurable and recorded for later ownership checks
   delete process.env.AGENT_MCP_WORKTREE_DIR;
   const persistent=managedWorktreeStorageRoot();
   assert.ok(path.isAbsolute(persistent));assert.notEqual(persistent,path.join(os.tmpdir(),'agent-acp-worktrees'));
-  if(process.platform==='win32')assert.equal(persistent,path.join(process.env.LOCALAPPDATA??path.join(os.homedir(),'AppData','Local'),'Agent ACP MCP','worktrees'));
+  if(process.platform==='win32')assert.equal(persistent,path.join(process.env.USERPROFILE??os.homedir(),'.agent-acp','worktrees'));
   process.env.AGENT_MCP_WORKTREE_DIR='relative';assert.throws(()=>managedWorktreeStorageRoot(),/absolute/);
  }finally{process.env.AGENT_MCP_WORKTREE_DIR=saved;}
  const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'storage'},randomUUID());
@@ -254,6 +254,57 @@ test('partial and staged-deletion checkouts cannot use recovery cleanup',async()
   await git(w.path,'add','file.txt');await fs.unlink(path.join(w.path,'second.txt'));
   assert.match((await recoverManagedWorktree(w,'',{dryRun:true})).reason!,/staged/);
  }finally{await git(w.path,'restore','--source=HEAD','--staged','--worktree','.');await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('recovery refreshes the unchanged index across EOL conversions and preserves committed tips',async()=>{
+ for(const eol of ['lf','crlf'])for(const action of ['restore','remove'] as const){
+  const {root,repo}=await fixture();await git(repo,'config','core.autocrlf','true');
+  const {worktree:w}=await createManagedWorktree({cwd:repo,task:'EOL recovery'},randomUUID());
+  try{
+   await fs.writeFile(path.join(w.path,'.gitattributes'),`*.txt text eol=${eol}\n`);
+   await fs.writeFile(path.join(w.path,'file.txt'),'committed\r\n한글 내용\r\n');await git(w.path,'add','.');await git(w.path,'commit','-m','EOL commit');
+   const tip=await git(w.path,'rev-parse','HEAD'),tree=await git(w.path,'write-tree');
+   for(const name of ['file.txt','.gitattributes'])await fs.unlink(path.join(w.path,name));
+   const result=await recoverManagedWorktree(w,'Reviewed missing checkout; preserve branch',{action});
+   assert.equal(result.state,action==='remove'?'removed':'preserved');assert.equal(await git(repo,'rev-parse',w.branch),tip);
+   if(action==='restore'){
+    assert.equal(await git(w.path,'write-tree'),tree);assert.equal(await git(w.path,'status','--porcelain'),'');
+    assert.equal((await fs.readFile(path.join(w.path,'file.txt'),'utf8')).replaceAll('\r\n','\n'),'committed\n한글 내용\n');
+   }
+  }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+ }
+});
+
+test('Windows default storage ignores package-virtualized LOCALAPPDATA', {skip:process.platform!=='win32'},()=>{
+ const saved=process.env.AGENT_MCP_WORKTREE_DIR,local=process.env.LOCALAPPDATA;
+ try{delete process.env.AGENT_MCP_WORKTREE_DIR;process.env.LOCALAPPDATA=path.join(os.tmpdir(),'Packages','Fixture','LocalCache');
+  assert.equal(managedWorktreeStorageRoot(),path.join(process.env.USERPROFILE??os.homedir(),'.agent-acp','worktrees'));
+ }finally{if(saved===undefined)delete process.env.AGENT_MCP_WORKTREE_DIR;else process.env.AGENT_MCP_WORKTREE_DIR=saved;if(local===undefined)delete process.env.LOCALAPPDATA;else process.env.LOCALAPPDATA=local;}
+});
+
+test('first-mkdir redirection is rejected before creating or moving a Git worktree',async t=>{
+ const {root,repo}=await fixture(),saved=process.env.AGENT_MCP_WORKTREE_DIR;
+ let w:ManagedWorktree|undefined;
+ const mkdir=fs.mkdir.bind(fs),redirect=path.join(root,'virtual-root'),actual=path.join(root,'package-private');
+ try{
+  await mkdir(actual);
+  t.mock.method(fs,'mkdir',async(...args:any[])=>{
+   if(String(args[0])===redirect){await fs.symlink(actual,redirect,'junction');return undefined;}
+   return (mkdir as any)(...args);
+  });
+  process.env.AGENT_MCP_WORKTREE_DIR=redirect;
+  await assert.rejects(()=>createManagedWorktree({cwd:repo,task:'redirected create'},randomUUID()),/WORKTREE_STORAGE_REDIRECTED:.*AGENT_MCP_WORKTREE_DIR/);
+  assert.deepEqual(await fs.readdir(actual),[]);assert.equal((await git(repo,'worktree','list','--porcelain')).split('worktree ').length-1,1);
+  await fs.unlink(redirect);process.env.AGENT_MCP_WORKTREE_DIR=testStorage;
+  w=(await createManagedWorktree({cwd:repo,task:'source'},randomUUID())).worktree;
+  await assert.rejects(()=>migrateManagedWorktree(w!,{targetRoot:redirect}),/WORKTREE_STORAGE_REDIRECTED/);
+  assert.equal((await fs.readFile(path.join(w.path,'file.txt'),'utf8')),'base');assert.deepEqual(await fs.readdir(actual),[]);
+  // A subsequent call sees the existing redirected directory and fails early too.
+  assert.match((await migrateManagedWorktree(w,{targetRoot:redirect,dryRun:true})).reason!,/AGENT_MCP_WORKTREE_DIR/);
+ }finally{
+  t.mock.restoreAll();if(saved===undefined)delete process.env.AGENT_MCP_WORKTREE_DIR;else process.env.AGENT_MCP_WORKTREE_DIR=saved;
+  if(w&&await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});
+ }
 });
 
 test('patch-equivalent cleanup requires opt-in, parent verification and current-tree equivalence',async()=>{

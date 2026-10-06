@@ -6,6 +6,7 @@ import {randomUUID} from 'node:crypto';
 import type {RunInput} from './types.js';
 import {createManagedWorktree,inspectManagedWorktree,cleanupManagedWorktree,migrateManagedWorktree,rollbackManagedWorktreeMigration,recoverManagedWorktree,type ManagedWorktree} from './managed-worktree.js';
 import {persistJobPayload,presentJobPayload} from './job-payload.js';
+import {verifyInterruptedOwnership} from './interrupted-ownership.js';
 
 type Runner=(kind:string,input:RunInput,signal:AbortSignal,hooks:{onActivity:(event:Record<string,unknown>)=>void})=>Promise<any>;
 type Status='queued'|'running'|'cancelling'|'completed'|'failed'|'cancelled'|'interrupted';
@@ -15,6 +16,7 @@ const terminal=new Set<Status>(['completed','failed','cancelled','interrupted'])
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function ownerAlive(pid:unknown){if(!Number.isSafeInteger(pid)||Number(pid)<1)return true;try{process.kill(Number(pid),0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}}
 interface CleanupOptions {dryRun?:boolean;verified?:boolean;emptyOnly?:boolean;automatic?:boolean;allowPatchEquivalent?:boolean}
+interface WorktreeMaintenanceOptions {dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string;idleConfirmed?:boolean}
 export class JobManager {
   private active=new Map<string,Active>();
   private closing=false;
@@ -23,7 +25,7 @@ export class JobManager {
   private pendingStarts=0;
   private preflight:((input:RunInput)=>Promise<unknown>)|undefined;
   setPreflight(check:(input:RunInput)=>Promise<unknown>){this.preflight=check;}
-  constructor(private directory:string,private runner:Runner,private stallMs=15*60*1000){}
+  constructor(private directory:string,private runner:Runner,private stallMs=15*60*1000,private interruptedOwnership=verifyInterruptedOwnership){}
   setMaintenanceCheck(check:()=>void){this.maintenanceCheck=check;}
   isIdle(){return ![...this.active.values()].some(e=>!terminal.has(e.job.status)||e.finalizing)&&this.pendingStarts===0;}
   private file(id:string){if(!uuid.test(id))throw Error('Invalid job_id');return path.join(this.directory,id+'.json');}
@@ -199,16 +201,21 @@ export class JobManager {
     await Promise.all(Array.from({length:Math.min(4,selected.length)},async()=>{for(;;){const index=next++;if(index>=selected.length)break;const job=selected[index];try{const {changes,changedFiles,...worktree}=await inspectManagedWorktree(job.worktree!,{includeDiskSize}) as any;items[index]={job_id:job.job_id,jobStatus:job.status,createdAt:job.worktree!.createdAt??job.startedAt,worktree};}catch(error){items[index]={job_id:job.job_id,jobStatus:job.status,createdAt:job.startedAt,error:error instanceof Error?error.message:String(error)};}}}));
     return {items,total:jobs.length,next_offset:offset+limit<jobs.length?offset+limit:null,include_disk_size:includeDiskSize};
   }
-  worktreeMaintenance(id:string,action:'migrate'|'restore'|'remove',options:{dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string}={}){
+  worktreeMaintenance(id:string,action:'migrate'|'restore'|'remove',options:WorktreeMaintenanceOptions={}){
     this.file(id);const result=this.starting.then(()=>this.worktreeMaintenanceExclusive(id,action,options));this.starting=result.catch(()=>{});return result;
   }
-  private async worktreeMaintenanceExclusive(id:string,action:'migrate'|'restore'|'remove',options:{dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string}){
-    this.maintenanceCheck();let job=await this.readJob(id);
+  private async worktreeMaintenanceExclusive(id:string,action:'migrate'|'restore'|'remove',options:WorktreeMaintenanceOptions){
+    this.maintenanceCheck();let job=await this.readJob(id);const currentStatus=job.status;
     if((job as any).payload?.artifact){job=await presentJobPayload(job,{verbose:true,jobsDirectory:this.directory});if((job as any).payload?.diagnostics)throw Error('Full job evidence unavailable; maintenance refused');}
+    job.status=currentStatus;
     if(!job.worktree||job.worktree.state==='removed')throw Error('Job has no active managed worktree');
-    if(!terminal.has(job.status)||job.status==='interrupted'||this.active.get(id)?.finalizing)throw Error('Job must be finished with confirmed idle ownership');
-    if(job.result?.childCleanedUp===false||job.result?.results?.some((r:any)=>r.childCleanedUp===false))throw Error('Provider child cleanup is unconfirmed');
+    if(!terminal.has(job.status)||this.active.get(id)?.finalizing)throw Error('Job must be finished with confirmed idle ownership');
+    const interrupted=job.status==='interrupted';
+    if(!interrupted&&(job.result?.childCleanedUp===false||job.result?.results?.some((r:any)=>r.childCleanedUp===false)))throw Error('Provider child cleanup is unconfirmed');
+    if(interrupted&&!options.dryRun&&(!options.idleConfirmed||!options.summary?.trim()))throw Error('Interrupted maintenance requires idle_confirmed=true and a verification summary confirming no manually launched or untracked workspace writers');
     if(action!=='migrate'&&!options.dryRun&&(!options.verified||!options.summary?.trim()))throw Error('Recovery requires verified=true and a summary acknowledging missing files');
+    const recorded=interrupted?JSON.parse(await fs.readFile(this.file(id),'utf8')):undefined;
+    if(recorded&&(recorded.job_id!==id||recorded.ownerPid!==job.ownerPid||recorded.cwd!==job.cwd))throw Error('Interrupted job record changed during inspection; preserved');
     const original=job.worktree,lockFile=this.file(id)+'.cleanup.lock';
     const lock=options.dryRun?undefined:await fs.open(lockFile,'wx').catch(()=>{throw Error('Worktree maintenance already in progress');});
     try{
@@ -219,9 +226,11 @@ export class JobManager {
       const relative=path.relative(original.path,job.cwd);
       if([...this.active.values()].some(e=>e.job.job_id!==id&&(!terminal.has(e.job.status)||e.finalizing)&&(workspaceConflict({cwd:original.path,kind:'agent_implement'},e.job)||workspaceConflict({cwd:original.originalCwd,kind:'agent_implement'},e.job))))throw Error('Original or isolated workspace still has an active job');
       if(action==='migrate'&&(relative.startsWith('..'+path.sep)||relative==='..'||path.isAbsolute(relative)))throw Error('Job cwd is outside its managed worktree; migration refused');
+      const idleCheck=interrupted?await this.interruptedOwnership({ownerPid:job.ownerPid,workspacePaths:[original.path,original.originalCwd,original.repository]}):undefined;
       const result=action==='migrate'?await migrateManagedWorktree(original,{dryRun:options.dryRun,targetRoot:options.targetRoot}):await recoverManagedWorktree(original,options.summary??'',{dryRun:options.dryRun,action});
-      if(options.dryRun)return {job_id:id,worktree:result,dry_run:true};
+      if(options.dryRun)return {job_id:id,worktree:result,dry_run:true,...(interrupted?{requires_idle_confirmation:true,idleCheck,ownershipNote:'Process scan cannot identify every detached or manually launched writer; parent must confirm the workspace is idle before applying.'}:{})};
       const oldCwd=job.cwd;job.worktree=result;
+      if(recorded){job.status=recorded.status;if(recorded.error===undefined)delete job.error;else job.error=recorded.error;(job as any).worktreeIdleCheck={...idleCheck,parentConfirmed:true,verificationSummary:options.summary,scope:'owner, descendants and observable workspace references; detached/manual writers reviewed by parent'};}
       if(action==='migrate'){
         job.cwd=path.join(result.path,relative);(job as any).worktreeMigration={previousCwd:oldCwd,currentCwd:job.cwd,at:new Date().toISOString(),restartRequired:true};
       }

@@ -9,7 +9,7 @@ interface Artifact {path:string;bytes:number;sha256:string;format:'json';}
 const bytes=(value:unknown)=>Buffer.byteLength(JSON.stringify(value),'utf8');
 const digest=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const isRecord=(v:any):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','successCount','failureCount','results','skipped','childCleanedUp']);
+const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp']);
 type PayloadScope='job'|'result'|'providers'|'provider'|'other';
 function markResponseLimit(job:any){
  if(job.payload?.schema===SCHEMA){
@@ -177,7 +177,7 @@ export async function presentJobPayload(job:any,options:{verbose?:boolean;jobsDi
   const full=await readArtifact(cloned,options.jobsDirectory,cloned.payload.artifact);
   // Derived status fields are added after reading persisted state; keep those current.
   const result={...cloned,...full};delete result.payload;
-  for(const key of ['status','error','completionPending','implementationProgress','stalled_suspected','poll_after_seconds','owner_available','message','worktree','cwd','worktreeMigration'])if(Object.hasOwn(cloned,key))result[key]=cloned[key];
+  for(const key of ['status','error','completionPending','implementationProgress','stalled_suspected','poll_after_seconds','owner_available','message','worktree','cwd','worktreeMigration','worktreeIdleCheck'])if(Object.hasOwn(cloned,key))result[key]=cloned[key];
   return result;
  }catch(e){return diagnostic(cloned,'hydration',e);}
 }

@@ -12,9 +12,15 @@ const execute=promisify(execFile);
 const legacyStorage=path.join(os.tmpdir(),'agent-acp-worktrees');
 export function managedWorktreeStorageRoot(){
  const configured=process.env.AGENT_MCP_WORKTREE_DIR;
- const data=process.platform==='win32'?(process.env.LOCALAPPDATA??path.join(os.homedir(),'AppData','Local')):
-  process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support'):(process.env.XDG_DATA_HOME??path.join(os.homedir(),'.local','share'));
+ if(process.platform==='win32')return validateStorageRoot(configured??path.join(process.env.USERPROFILE??os.homedir(),'.agent-acp','worktrees'));
+ const data=process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support'):(process.env.XDG_DATA_HOME??path.join(os.homedir(),'.local','share'));
  return validateStorageRoot(configured??path.join(data,'Agent ACP MCP','worktrees'));
+}
+/** MSIX may redirect the first mkdir although its previously absent path looked
+ * canonical. Check both before and after creation; never adopt that hidden root. */
+async function assertWorktreeStoragePath(storage:string){
+ const actual=await canonical(storage);
+ if(actual!==storage)throw Error(`WORKTREE_STORAGE_REDIRECTED: Worktree storage must not traverse symlinks or package virtualization. Requested: ${storage}; resolved: ${actual}. Set AGENT_MCP_WORKTREE_DIR to an ordinary directory outside AppData, such as a worktrees folder under USERPROFILE.`);
 }
 function validateStorageRoot(root:string){
  if(!root.trim()||!path.isAbsolute(root)||root.includes('\0')||path.resolve(root)===path.parse(path.resolve(root)).root)throw Error('Managed worktree storage root must be an absolute non-root directory');
@@ -52,11 +58,13 @@ export async function createManagedWorktree(input:RunInput,id:string):Promise<{w
   return path.relative(repository,target);
  }));
  const storage=managedWorktreeStorageRoot();
- if(await canonical(storage)!==storage)throw Error('Managed worktree storage root must not traverse symlinks');
+ await assertWorktreeStoragePath(storage);
  if(within(repository,storage)||within(storage,repository))throw Error('Managed worktree storage must be separate from the original repository');
  await fs.mkdir(storage,{recursive:true});
- const container=path.join(await fs.realpath(storage),id),target=path.join(container,leaf),branch='agent-acp/'+id;
+ await assertWorktreeStoragePath(storage);
+ const container=path.join(storage,id),target=path.join(container,leaf),branch='agent-acp/'+id;
  await fs.mkdir(container);
+ await assertWorktreeStoragePath(container);
  await git(repository,['worktree','add','-b',branch,target,baseCommit]);
  const effectiveCwd=path.join(target,path.relative(repository,originalCwd));
  const worktree:ManagedWorktree={originalCwd,repository,path:target,branch,baseCommit,sourceHadChanges,state:'preserved',createdAt:new Date().toISOString(),storageRoot:await fs.realpath(storage)};
@@ -224,7 +232,8 @@ export async function migrateManagedWorktree(value:ManagedWorktree,options:Migra
   await verifyRegistration(value,target,repository);
   if((await checkoutHealth(target)).checkoutState!=='complete')throw Error('Worktree checkout is damaged or partial; migration refused');
   const storageRoot=validateStorageRoot(options.targetRoot??managedWorktreeStorageRoot());
-  if(await canonical(storageRoot)!==storageRoot||within(repository,storageRoot)||within(storageRoot,repository)||within(target,storageRoot))throw Error('Unsafe migration storage root');
+  await assertWorktreeStoragePath(storageRoot);
+  if(within(repository,storageRoot)||within(storageRoot,repository)||within(target,storageRoot))throw Error('Unsafe migration storage root');
   const destinationContainer=path.join(storageRoot,value.branch.slice('agent-acp/'.length));
   destinationPath=path.join(destinationContainer,repositoryLeaf(repository));
   if(destinationPath===target)throw Error('Worktree is already at the requested storage root');
@@ -232,8 +241,9 @@ export async function migrateManagedWorktree(value:ManagedWorktree,options:Migra
   if(options.dryRun)return {...value,dryRun:true,eligible:true,sourcePath:target,destinationPath,restartRequired:true};
   const head=await git(target,['rev-parse','HEAD']);
   await fs.mkdir(storageRoot,{recursive:true});
-  if(await fs.realpath(storageRoot)!==storageRoot)throw Error('Migration storage root changed; preserved');
+  await assertWorktreeStoragePath(storageRoot);
   await fs.mkdir(destinationContainer);
+  await assertWorktreeStoragePath(destinationContainer);
   try{
    await verifyRegistration(value,target,repository);
    if(await git(target,['rev-parse','HEAD'])!==head||(await checkoutHealth(target)).checkoutState!=='complete')throw Error('Worktree changed during migration; preserved');
@@ -289,10 +299,13 @@ export async function recoverManagedWorktree(value:ManagedWorktree,verificationS
   if(!verificationSummary.trim())throw Error('Recovery requires a parent verification summary acknowledging missing files');
   await verifyRegistration(value,target,repository);
   await check();
-  // Restore only a proven empty checkout. Git's ordinary remove can then safely
-  // remove these reconstructed files without --force. Never delete the branch.
-  await git(target,['restore','--source=HEAD','--worktree','--','.']);
+  // The index has already been proven equal to HEAD. Restore its stat/checkout
+  // metadata too: worktree-only restore can leave false modifications after EOL
+  // conversion when GIT_OPTIONAL_LOCKS=0 prevents a later status refresh.
+  // Never reset an index containing staged changes, or delete the branch here.
+  await git(target,['restore','--source='+head,'--staged','--worktree','--','.']);
   await verifyRegistration(value,target,repository);
+  if(await git(target,['rev-parse','HEAD'])!==head)throw Error('Worktree HEAD changed during recovery; inspect preserved checkout');
   if((await checkoutHealth(target)).checkoutState!=='complete'||await git(target,['status','--porcelain','--untracked-files=all','--ignored']))throw Error('Restored checkout needs inspection; branch and worktree preserved');
   if(recoveryAction==='remove'){
    if(await git(target,['rev-parse','HEAD'])!==head)throw Error('Worktree HEAD changed during recovery; preserved');

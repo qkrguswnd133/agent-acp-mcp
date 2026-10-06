@@ -31,6 +31,8 @@ try{
  await client.connect(new StdioClientTransport({command:process.execPath,args:[path.join(gateway,'dist/src/index.js')],env:{...process.env,GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false',AGENT_MCP_STATE_DIR:path.join(fixture,'quota')},stderr:'pipe'}));
  const listing=await client.listTools();for(const n of ['agent_worktree_list','agent_worktree_cleanup','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(t=>t.name===n));
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.dry_run.default,true);
+ assert.ok(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.idle_confirmed);
+ assert.ok(listing.tools.find(t=>t.name==='agent_worktree_recover').inputSchema.properties.idle_confirmed);
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_list').inputSchema.properties.include_disk_size.default,false);
  assert.equal((await call('agent_status')).worktreeWarnings.count,2);
  assert.equal((await call('agent_worktree_list')).total,2);
