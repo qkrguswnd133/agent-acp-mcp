@@ -23,6 +23,8 @@ Gateway 2.2.2부터 지원되는 공식 Claude·Grok·Codex npm 패키지의 진
 
 ### Windows Codex 작업 권한
 
+**2.5.2 기록 정리:** `agent_worktree_forget(job_id, dry_run=true)`는 실제 경로·브랜치·Git 등록이 모두 없는지 검사합니다. 확인 후 `dry_run=false`, `verified=true`, `verification_summary`로 활성 목록에서 제외합니다. 작업 결과·원본 로그는 유지되고 `include_removed=true`로 정리 이력을 볼 수 있습니다. `agent_worktree_cleanup`에도 `idle_confirmed`가 추가되어, 중단된 작업의 실제 유휴 검사와 Parent 검증 후 정리할 수 있습니다. 커밋이 있으면 반영 여부와 `verified=true`가 필요합니다.
+
 Gateway는 사용자 CLI 설정을 분리하면서 Windows 샌드박스 구현을 명시합니다. 기본 `CODEX_WINDOWS_SANDBOX="unelevated"`는 별도 관리자 설정 없이 사용할 수 있는 Windows 제한 토큰 샌드박스입니다. 이미 관리자 샌드박스 구성이 끝난 PC는 MCP 서버 env에서 `"elevated"`로 지정할 수 있습니다. 다른 값은 실행 전에 거절합니다.
 
 구현 작업은 기본 `workspace-write`이며 MCP 서버 env의 `CODEX_IMPLEMENT_SANDBOX="danger-full-access"`로 전체 파일 시스템 접근을 허용할 수 있습니다. 이 경우 `allowed_paths`는 OS가 강제하는 경계가 아니라 작업 지침입니다. `read-only` 값도 지원합니다. 읽기 도구는 이 설정과 무관하게 `read-only`를 사용합니다. 승인·명령 정책 우회 옵션은 추가하지 않습니다. CLI 0.159.2에서는 `--ignore-user-config`로 `windows.sandbox`가 빠지면 `workspace-write`를 전달해도 파일 수정이 읽기 전용으로 거절되는 사례를 재현했습니다. 별도 정책·회사 관리 설정에 의한 거절은 이 설정으로 해제되지 않습니다.

@@ -56,7 +56,7 @@ export class AgentRouter{
     const statuses=await this.statuses(force);const providers:any={};
     const catalogs=Object.fromEntries(await Promise.all(names.map(async name=>[name,statuses[name].enabled?await this.catalog(name,force):unavailableCatalog(name,'Provider disabled.')])));
     for(const name of names){const status=statuses[name];const reason=blockedReason(status,host,name,allowSelf);providers[name]={...status,modelCatalog:catalogs[name],quota:{...status.quota,resetsAt:status.quota.resetsAt??null,retryAfter:status.quota.retryAfter??null,limitKind:status.quota.limitKind??(status.quota.state==='exhausted'?'quota_exhausted':null)},callable:!reason,blocked_reason:reason??null,selfProvider:name===host.host};}
-    return {server:'agent-acp-mcp',version:'2.5.1',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
+    return {server:'agent-acp-mcp',version:'2.5.2',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
   }
   async plan(spec:string|undefined,host:HostDetection,forceStatus=false,override?:boolean){
     if(isDelegatedProcess())throw Error('NESTED_DELEGATION_BLOCKED: delegated provider sessions cannot invoke this gateway');

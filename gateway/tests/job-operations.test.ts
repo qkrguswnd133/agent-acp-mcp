@@ -1,3 +1,4 @@
+import './isolated-environment.js';
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -190,5 +191,63 @@ test('interrupted recovery uses the same process scan and requires both idle and
   await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'restore',{verified:true,summary:'Missing files reviewed'}),/idle_confirmed=true/);
   await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'restore',{idleConfirmed:true,summary:'Idle writers reviewed'}),/verified=true/);
   const restored=await f.m.worktreeMaintenance(f.id,'restore',{idleConfirmed:true,verified:true,summary:'Missing files and absence of manual writers reviewed'});assert.equal(restored.worktree.state,'preserved');assert.equal(await fs.readFile(path.join(f.w.path,'nested','base.txt'),'utf8'),'base');assert.equal(JSON.parse(await fs.readFile(f.file,'utf8')).status,'interrupted');
+ }finally{await disposeFixture(f);}
+});
+
+test('forgetting an absent worktree preserves job history, hides only active inventory and is idempotent',async t=>{
+ const f=await maintenanceFixture(t);const summary='Path, branch and registration are gone';
+ try{
+  const before=await fs.readFile(f.file,'utf8');await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}),/path still exists/);
+  await fixtureGit(f.repo,'worktree','remove',f.w.path);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}),/branch still exists/);
+  await fixtureGit(f.repo,'update-ref','-d','refs/heads/'+f.w.branch,f.w.baseCommit);
+  const preview=await f.m.worktreeMaintenance(f.id,'forget',{dryRun:true});assert.ok('eligible' in preview.worktree&&preview.worktree.eligible);assert.equal(await fs.readFile(f.file,'utf8'),before);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{summary}),/verified=true/);
+  const refs=await fixtureGit(f.repo,'show-ref'),registration=await fixtureGit(f.repo,'worktree','list','--porcelain');
+  const fullResult={...f.record.result,rawEvents:'events'.repeat(20000)};await fs.writeFile(f.file,JSON.stringify({...f.record,status:'failed',result:fullResult}));
+  const applied=await f.m.worktreeMaintenance(f.id,'forget',{verified:true,summary});assert.equal(applied.worktree.state,'removed');assert.equal(applied.worktree.recordDisposition,'forgotten');
+  assert.equal((await f.m.listWorktrees()).total,0);assert.equal((await f.m.listWorktrees(0,50,true)).total,1);assert.equal((await f.m.worktreeWarnings()).count,0);
+  const status=await f.m.status(f.id,true);assert.equal(status.status,'failed');assert.deepEqual(status.result,fullResult);assert.ok(status.worktree.forgottenAt);
+  assert.equal(await fixtureGit(f.repo,'show-ref'),refs);assert.equal(await fixtureGit(f.repo,'worktree','list','--porcelain'),registration);
+  const saved=await fs.readFile(f.file,'utf8');assert.ok('already_forgotten' in await f.m.worktreeMaintenance(f.id,'forget',{verified:true,summary}));assert.equal(await fs.readFile(f.file,'utf8'),saved);
+ }finally{await disposeFixture(f);}
+});
+
+test('forget refuses remaining registration and unknown repository state; metadata write failure is non-destructive',async t=>{
+ const f=await maintenanceFixture(t),save=(f.m as any).save;
+ try{
+  const before=await fs.readFile(f.file,'utf8');assert.ok(path.resolve(f.w.path).startsWith(path.resolve(testStorage)+path.sep));await fs.rm(f.w.path,{recursive:true});await fixtureGit(f.repo,'update-ref','-d','refs/heads/'+f.w.branch,f.w.baseCommit);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}),/registration still exists/);
+  await fixtureGit(f.repo,'worktree','prune','--expire','now');
+  const hidden=f.repo+'-hidden';await fs.rename(f.repo,hidden);
+  try{await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}));assert.equal(await fs.readFile(f.file,'utf8'),before);}finally{await fs.rename(hidden,f.repo);}
+  (f.m as any).save=async()=>{throw Error('simulated save failure');};await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,summary:'Confirmed absent'}),/metadata save failed/);
+  assert.equal(await fs.readFile(f.file,'utf8'),before);assert.equal((await f.m.listWorktrees()).total,1);
+ }finally{(f.m as any).save=save;await disposeFixture(f);}
+});
+
+test('interrupted cleanup requires idle confirmation and process scan, preserving historical failure metadata',async t=>{
+ let scans=0;const f=await maintenanceFixture(t,async()=>{scans++;return {ownerAbsent:true,processScan:'passed',checkedAt:new Date().toISOString()};});
+ const record={...f.record,status:'running',ownerPid:2147483647,result:{error:'historical interruption',childCleanedUp:false,usage:{totalTokens:7}}};await fs.writeFile(f.file,JSON.stringify(record));
+ try{
+  const preview=await f.m.cleanupWorktree(f.id,'HEAD','',{dryRun:true});assert.ok("requires_idle_confirmation" in preview&&preview.requires_idle_confirmation);assert.equal(scans,1);
+  await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed'),/idle_confirmed=true/);
+  await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed',{automatic:true,idleConfirmed:true}),/idle_confirmed=true/);
+  const applied=await f.m.cleanupWorktree(f.id,'HEAD','Checked no remaining writers',{idleConfirmed:true});assert.equal(applied.worktree.state,'removed');assert.equal(scans,2);
+  const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,'running');assert.deepEqual(saved.result,record.result);assert.equal(saved.worktreeIdleCheck.parentConfirmed,true);
+ }finally{await disposeFixture(f);}
+});
+
+test('interrupted nonempty cleanup still requires integration and verified review; dirty or unknown-owner trees survive',async t=>{
+ const f=await maintenanceFixture(t,async()=>({ownerAbsent:true,processScan:'passed',checkedAt:new Date().toISOString()}));await fs.writeFile(f.file,JSON.stringify({...f.record,status:'interrupted',ownerPid:2147483647,result:{error:'partial task'}}));
+ try{
+  await fs.writeFile(path.join(f.w.path,'nested/base.txt'),'committed change');await fixtureGit(f.w.path,'add','.');await fixtureGit(f.w.path,'commit','-m','change');
+  await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed',{idleConfirmed:true,verified:true}),/not merged/);
+  await fixtureGit(f.repo,'merge','--ff-only',f.w.branch);
+  await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed',{idleConfirmed:true}),/Parent verification/);
+  await fs.writeFile(path.join(f.w.path,'retain.txt'),'untracked');await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed',{idleConfirmed:true,verified:true}),/untracked/);await fs.unlink(path.join(f.w.path,'retain.txt'));
+  const unknown=new JobManager(f.jobs,async()=>{},undefined,async()=>{throw Error('ownership unknown');});
+  try{await assert.rejects(()=>unknown.cleanupWorktree(f.id,'HEAD','reviewed',{idleConfirmed:true,verified:true}),/ownership unknown/);}finally{await unknown.close();}
+  assert.ok(await fs.stat(f.w.path));assert.equal((await f.m.cleanupWorktree(f.id,'HEAD','Integrated and tested; no remaining writer',{idleConfirmed:true,verified:true})).worktree.state,'removed');
  }finally{await disposeFixture(f);}
 });

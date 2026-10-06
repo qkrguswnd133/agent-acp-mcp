@@ -14,7 +14,7 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 
 ## 업데이트
 
-**2.5.1 작업 보존 개선:** 새 worktree는 `%USERPROFILE%\.agent-acp\worktrees`에 보관합니다. 기존 TEMP worktree는 자동 이동하지 않으며, 명시적 이동·손상 복구 도구와 3일 이상 보관 경고를 제공합니다. 검증된 cherry-pick 결과의 정리는 선택적으로 patch 동등성을 확인합니다. 리뷰 본문은 64 KiB를 넘어도 그대로 반환하고 명령 로그를 줄입니다. Windows Codex용 portable PowerShell 7.6.6을 함께 배포하며 개인·시스템 PowerShell 설치는 변경하지 않습니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)와 [설정 설명](distribution/README.md)을 확인하세요.
+**2.5.2 작업 보존 개선:** 새 worktree는 `%USERPROFILE%\.agent-acp\worktrees`에 보관합니다. 기존 TEMP worktree는 자동 이동하지 않으며, 명시적 이동·손상 복구 도구와 3일 이상 보관 경고를 제공합니다. 검증된 cherry-pick 결과의 정리는 선택적으로 patch 동등성을 확인합니다. 리뷰 본문은 64 KiB를 넘어도 그대로 반환하고 명령 로그를 줄입니다. Windows Codex용 portable PowerShell 7.6.6을 함께 배포하며 개인·시스템 PowerShell 설치는 변경하지 않습니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)와 [설정 설명](distribution/README.md)을 확인하세요.
 
 **2.3.0 모델 선택 규약 변경:** 모델·effort의 `auto`는 Parent가 작업별로 구체적인 값과 `selection_reason`을 선택해 전달하는 정책입니다. CLI 기본값으로 넘기지 않습니다. `agent_models`로 지원 정보와 고정/auto 정책을 먼저 확인하세요. 기존 고정 설정은 호출로 덮어쓰지 않습니다. MCP 재연결과 함께 [모델 선택 지침](gateway/MODEL-OVERRIDES.md) 및 [Parent 지침 템플릿](distribution/instructions/README.md)을 반영하세요. 개인 설정·지침은 자동으로 교체되지 않습니다.
 
@@ -23,6 +23,10 @@ Monitor에서 새 릴리스를 확인하고 현재 설치된 구성요소를 함
 업데이트 기능이 없는 기존 사용자는 최신 ZIP의 `Update.ps1`을 한 번 실행해야 합니다. **v2.2.0 / Monitor 1.1.0도 압축 해제 오류가 있으므로 v2.2.1 ZIP의 `Update.ps1`로 한 번 업데이트하세요.** 수정된 Monitor 1.1.1부터는 `··· → 업데이트 확인`에서 변경 사항을 보고 **업데이트** 버튼 하나로 설치할 수 있습니다. 업데이트 창은 Windows 라이트·다크 테마를 따르며 배포, MCP Gateway, Monitor의 현재·최신 버전을 각각 표시합니다. 설치 영수증이 없는 기존 배포 번호는 **미확인**으로 표시합니다.
 
 ## 개발 및 릴리스
+
+2.5.2에서는 `agent_worktree_forget`으로 경로·브랜치·Git 등록이 모두 사라진 항목만 활성 목록에서 제외할 수 있습니다. 작업 결과와 로그는 남습니다. `interrupted` cleanup은 프로세스 검사와 Parent의 `idle_confirmed`를 요구하며, 미반영 커밋·수정 파일은 계속 보존합니다.
+
+Gateway 테스트는 실행마다 별도 임시 저장소를 만들고 `TEMP`/`TMP`/`TMPDIR`, worktree와 상태 경로를 격리합니다. `npm test`, `npm run smoke` 및 직접 실행하는 worktree 테스트에 적용하며, 실패해도 해당 실행에서 만든 디렉터리만 정리합니다. 기존 사용자 보관 폴더는 일괄 정리하지 않습니다.
 
 소스는 `gateway/`, `monitor/`, `distribution/`에 있습니다. `gateway/package-lock.json`과 `monitor/package-lock.json`으로 의존성을 고정합니다. Windows x64, Node.js 22.12+, npm 및 Windows .NET Framework C# 컴파일러가 필요합니다. 빌드는 공식 portable PowerShell ZIP의 고정 SHA-256을 검증하고, 콘솔 UTF-8 및 프로필 차단용 작은 Codex 실행기를 소스에서 컴파일합니다.
 

@@ -1,3 +1,4 @@
+import './isolated-environment.js';
 import {Client} from '@modelcontextprotocol/client';
 import {StdioClientTransport} from '@modelcontextprotocol/client/stdio';
 import path from 'node:path';

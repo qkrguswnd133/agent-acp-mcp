@@ -35,6 +35,7 @@ function repositoryLeaf(repository:string){
 export interface ManagedWorktree {
  originalCwd:string; repository:string; path:string; branch:string; baseCommit:string;
  sourceHadChanges:boolean; state:'preserved'|'removed'; integrationCommit?:string; integrationMethod?:'ancestor'|'patch-equivalent'; verificationSummary?:string; createdAt?:string; storageRoot?:string; recoveryBranchPreserved?:boolean;
+ recordDisposition?:'forgotten';forgottenAt?:string;
 }
 async function git(cwd:string,args:string[]){
  const env=safeChildEnv({GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0'});
@@ -138,7 +139,7 @@ export interface InspectOptions {includeDiskSize?:boolean}
 export async function inspectManagedWorktree(value:ManagedWorktree,options:InspectOptions={}){
  if(value.state==='removed')return {...value};
  const {target,repository}=await ownership(value);
- if(!await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))return {...value,exists:false,checkoutState:'missing' as const,nextAction:'Worktree path is missing. Registration and branch are preserved for manual inspection.'};
+ if(!await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))return {...value,exists:false,checkoutState:'missing' as const,nextAction:'Worktree path is missing; branch and registration presence is unconfirmed. Use agent_worktree_forget to verify all three are absent before hiding only this listing.'};
  await verifyRegistration(value,target,repository);
  const [head,originalHead,changes,health,changedFiles,changedNames,statusText]=await Promise.all([
   git(target,['rev-parse','HEAD']),git(repository,['rev-parse','HEAD']),git(target,['status','--porcelain','--untracked-files=all','--ignored']),checkoutHealth(target),
@@ -154,6 +155,19 @@ export async function inspectManagedWorktree(value:ManagedWorktree,options:Inspe
   nextAction:health.checkoutState!=='complete'?'Tracked files are missing. Ordinary cleanup and migration are blocked; inspect the preserved branch and use explicit recovery only for a metadata-only checkout.':head===value.baseCommit&&!changes?'Clean empty worktree can be removed once the job is idle.':'Parent must review, commit, integrate, test, then call agent_worktree_cleanup. No automatic merge or deletion.'};
 }
 export interface CleanupOptions {dryRun?:boolean;emptyOnly?:boolean;allowPatchEquivalent?:boolean}
+/** Forget metadata only after proving every managed Git/filesystem reference is
+ * absent. An inaccessible repository or any remaining object fails closed. */
+export async function forgetManagedWorktree(value:ManagedWorktree,summary:string,dryRun=true){
+ const {target,repository}=await ownership(value);
+ if(await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))throw Error('Worktree path still exists; record preserved');
+ const ref='refs/heads/'+value.branch;
+ if((await git(repository,['for-each-ref','--format=%(refname)',ref])).split('\n').includes(ref))throw Error('Managed branch still exists; record preserved');
+ const registration=await git(repository,['worktree','list','--porcelain','-z']);
+ if(registration.split('\0\0').some(block=>block.split('\0').some(line=>line==='branch '+ref||(line.startsWith('worktree ')&&path.relative(path.resolve(line.slice(9)),target)===''))))throw Error('Git worktree registration still exists; record preserved');
+ if(dryRun)return {...value,dryRun:true,eligible:true,recordOnly:true};
+ if(!summary.trim())throw Error('Forgetting a missing worktree requires a verification summary');
+ return {...value,state:'removed' as const,recordDisposition:'forgotten' as const,forgottenAt:new Date().toISOString(),verificationSummary:summary,recordOnly:true};
+}
 export interface CleanupResult extends ManagedWorktree {dryRun?:boolean;eligible?:boolean;reason?:string;empty?:boolean;tipCommit?:string}
 export async function cleanupManagedWorktree(value:ManagedWorktree,integrationRef:string,verificationSummary:string,options:CleanupOptions={}):Promise<CleanupResult>{
  if(value.state==='removed')return {...value,...(options.dryRun?{dryRun:true,eligible:true}:{})};

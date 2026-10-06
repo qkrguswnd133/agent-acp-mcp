@@ -1,3 +1,4 @@
+import '../gateway/scripts/test-sandbox-preload.mjs';
 import test from 'node:test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -29,7 +30,8 @@ const client=new Client({name:'codex-lifecycle-verifier',version:'1.0.0'});
 const call=async(name,args={},options)=>{const r=await client.callTool({name,arguments:args},options);if(r.isError)throw Error(r.content[0].text);return JSON.parse(r.content[0].text);};
 try{
  await client.connect(new StdioClientTransport({command:process.execPath,args:[path.join(gateway,'dist/src/index.js')],env:{...process.env,GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false',AGENT_MCP_STATE_DIR:path.join(fixture,'quota')},stderr:'pipe'}));
- const listing=await client.listTools();for(const n of ['agent_worktree_list','agent_worktree_cleanup','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(t=>t.name===n));
+ const listing=await client.listTools();for(const n of ['agent_worktree_list','agent_worktree_cleanup','agent_worktree_forget','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(t=>t.name===n));
+ assert.ok(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.idle_confirmed);
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.dry_run.default,true);
  assert.ok(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.idle_confirmed);
  assert.ok(listing.tools.find(t=>t.name==='agent_worktree_recover').inputSchema.properties.idle_confirmed);
@@ -44,6 +46,15 @@ try{
  assert.equal((await call('agent_job_wait',{job_id:activeId,timeout_seconds:0.1})).wait.timed_out,true);
  const abort=new AbortController(),waiting=call('agent_job_wait',{job_id:activeId,timeout_seconds:25},{signal:abort.signal});setTimeout(()=>abort.abort(),100);await assert.rejects(waiting);assert.equal((await call('agent_job_status',{job_id:activeId})).status,'running');
  await fs.unlink(path.join(entries[1].worktree.path,'retain.txt'));assert.equal((await call('agent_worktree_cleanup',{job_id:entries[1].id})).worktree.state,'removed');
+ await fs.writeFile(path.join(jobs,activeId+'.json'),JSON.stringify({...active,status:'completed'}));
+ const orphanId=randomUUID(),orphan=(await createManagedWorktree({cwd:repo,task:'orphan fixture'},orphanId)).worktree;
+ await git('worktree','remove',orphan.path);await git('update-ref','-d','refs/heads/'+orphan.branch,orphan.baseCommit);
+ const orphanFile=path.join(jobs,orphanId+'.json'),orphanJob={job_id:orphanId,kind:'agent_implement',cwd:orphan.path,status:'failed',ownerPid:process.pid,startedAt:'2020-01-01T00:00:00Z',lastActivityAt:'2020-01-01T00:00:00Z',worktree:orphan,result:{text:'Historical partial work',error:'fixture error'}};
+ await fs.writeFile(orphanFile,JSON.stringify(orphanJob));
+ assert.equal((await call('agent_worktree_forget',{job_id:orphanId})).worktree.eligible,true);
+ assert.equal(JSON.parse(await fs.readFile(orphanFile,'utf8')).worktree.state,'preserved');
+ assert.equal((await call('agent_worktree_forget',{job_id:orphanId,dry_run:false,verified:true,verification_summary:'All references confirmed absent'})).record_only,true);
+ assert.equal((await call('agent_worktree_list')).total,0);assert.equal((await call('agent_job_status',{job_id:orphanId})).result.text,'Historical partial work');
  console.log(JSON.stringify({pass:true,host:'codex',bulkDryRun:true,safeBatch:true,oldWarning:true,compactBytes:Buffer.byteLength(JSON.stringify(compact)),fullBytes:Buffer.byteLength(JSON.stringify(full)),verboseRestored:true,waitCompleted:true,waitTimeout:true,waitCancellationLeavesJobRunning:true}));
 }finally{await client.close();for(const entry of entries){if(await fs.stat(entry.worktree.path).catch(()=>false)){await fs.unlink(path.join(entry.worktree.path,'retain.txt')).catch(()=>{});await git('worktree','remove',entry.worktree.path);await git('update-ref','-d','refs/heads/'+entry.worktree.branch,entry.worktree.baseCommit);}}await fs.rm(fixture,{recursive:true,force:true});if(previousStorage===undefined)delete process.env.AGENT_MCP_WORKTREE_DIR;else process.env.AGENT_MCP_WORKTREE_DIR=previousStorage;}
 

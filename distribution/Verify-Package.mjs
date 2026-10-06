@@ -58,7 +58,7 @@ try {
       const listing=await client.listTools();
       assert(listing.tools.some(tool=>tool.name==='agent_implement'));
       assert(listing.tools.some(tool=>tool.name==='agent_models'));
-      for(const name of ['agent_worktree_list','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(tool=>tool.name===name));
+      for(const name of ['agent_worktree_list','agent_worktree_forget','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(tool=>tool.name===name));
       const inventory=await client.callTool({name:'agent_worktree_list',arguments:{limit:1}});
       assert(!inventory.isError);
       assert.equal(JSON.parse(inventory.content.find(item=>item.type==='text').text).total,0);

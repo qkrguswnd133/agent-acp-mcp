@@ -1,3 +1,4 @@
+import './isolated-environment.js';
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -99,12 +100,12 @@ test('auto creates worktree only on implementation conflict and cleanup requires
   const second=await m.start('agent_implement',{cwd:repo,task:'isolated',workspace_mode:'auto'});
   assert.ok(second.worktree);assert.notEqual(second.cwd,repo);await finish(m,second.job_id);
   await git(repo,'merge','--ff-only',second.worktree!.branch);
-  await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD','test verified'),/active job/);
+  await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD','test verified',{verified:true}),/active job/);
   release();await finish(m,first.job_id);
   await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD',''),/summary/);
   const restarted=new JobManager(path.join(root,'jobs'),async()=>{throw Error('Must not rerun');});
   assert.equal((await restarted.worktreeStatus(second.job_id)).worktree.baseCommit,second.worktree?.baseCommit);
-  assert.equal((await restarted.cleanupWorktree(second.job_id,'HEAD','no changes; fixture tests passed')).worktree.state,'removed');
+  assert.equal((await restarted.cleanupWorktree(second.job_id,'HEAD','no changes; fixture tests passed',{verified:true})).worktree.state,'removed');
   await restarted.close();
  }finally{release?.();await m.close();await fs.rm(root,{recursive:true,force:true});}
 });

@@ -1,12 +1,12 @@
 {
   "name": "agent-acp-mcp-local",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node scripts/run-tests.mjs",
-    "smoke": "node dist/tests/smoke.js"
+    "smoke": "node scripts/run-tests.mjs --smoke"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",

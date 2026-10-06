@@ -28,6 +28,8 @@ For 2.5.0, also merge **Background jobs, limits, and partial work** and **Manage
 
 For 2.5.1, update the Windows storage default to `%USERPROFILE%/.agent-acp/worktrees` and merge the interrupted-job maintenance paragraph. The parent must review remaining workspace writers and provide `idle_confirmed=true` plus a summary for interrupted migration/recovery. This acknowledgement cannot override failed process checks and never marks the old job completed. Existing AppData/TEMP worktrees remain where they are until explicit migration.
 
+For 2.5.2, merge the `agent_worktree_forget` guidance and the expanded interrupted cleanup rule. Forgetting only hides an absent worktree listing while retaining job evidence. Explicit interrupted cleanup now accepts idle confirmation after fresh process checks; nonempty work also requires verified integration. Automatic interrupted cleanup is still forbidden.
+
 - Discover the actual `agent_*` tools and schemas. Do not infer tool availability from this file.
 - The gateway detects the host from MCP client information. Never add a manual `MCP_HOST` override.
 - Configure paths and provider policies in the host's MCP configuration, using the receiving machine's actual locations.
