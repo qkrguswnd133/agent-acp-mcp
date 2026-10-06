@@ -1,6 +1,7 @@
 [CmdletBinding()]
-param([string]$GatewayRoot = (Join-Path $PSScriptRoot '..\gateway'))
+param([string]$GatewayRoot)
 $ErrorActionPreference = 'Stop'
+if (-not $GatewayRoot) { $GatewayRoot = Join-Path $PSScriptRoot '..\gateway' }
 $gatewayDirectory = [IO.Path]::GetFullPath($GatewayRoot)
 if (-not (Test-Path -LiteralPath $gatewayDirectory -PathType Container)) { throw 'Gateway directory does not exist.' }
 # Refuse redirected source/output parents: the generated launcher must remain in
