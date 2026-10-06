@@ -33,6 +33,11 @@ export function codexSandboxArgs(writable:boolean,platform:NodeJS.Platform=proce
  }
  return args;
 }
+/** Disable profile/login shell startup for every run, including explicit full
+ * access. The CLI also rejects a model's request to turn login back on. */
+export function codexExecutionArgs(writable:boolean,platform:NodeJS.Platform=process.platform,env:NodeJS.ProcessEnv=process.env):string[]{
+ return ['exec','--ignore-user-config',...codexSandboxArgs(writable,platform,env),'--json','-c','mcp_servers={}','-c','features.plugins=false','-c','allow_login_shell=false'];
+}
 // One resolved launcher serves status, app-server telemetry and run alike.
 async function exe(){
  if(cachedExecutable)return cachedExecutable;
@@ -158,9 +163,8 @@ export class CodexProvider implements ProviderAdapter{
  }
  private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
-  const sandboxArgs=codexSandboxArgs(writable);
-  const args=['exec','--ignore-user-config',...sandboxArgs,'--json','-c','mcp_servers={}','-c','features.plugins=false'];if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
-  const shellEnvironment=sandboxArgs[1]==='danger-full-access'?{env:providerChildEnv(),shell:undefined}:await codexShellEnvironment(providerChildEnv());
+  const args=codexExecutionArgs(writable);if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
+  const shellEnvironment=await codexShellEnvironment(providerChildEnv());
   const r=await runCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity});
   statusCache=undefined;const parsed=parseEvents(r.stdout);
   const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt);

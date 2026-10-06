@@ -8,6 +8,12 @@
         "C:/Users/YOUR_NAME/AppData/Local/Programs/Agent ACP MCP/dist/src/index.js"
       ],
       "env": {
+        // New worktrees default to %LOCALAPPDATA%/Agent ACP MCP/worktrees.
+        // Optional absolute root; changing it does not migrate existing TEMP worktrees:
+        // "AGENT_MCP_WORKTREE_DIR": "D:/AgentWorktrees",
+        // Bundled portable PowerShell 7.6.6 is available. Optional native PowerShell 7+ override:
+        // "CODEX_POWERSHELL_PATH": "C:/Program Files/PowerShell/7/pwsh.exe",
+        // Invalid explicit/WindowsApps paths fail; no Windows PowerShell 5.1 fallback.
         // Persistent default: "true" allows self-provider calls in auto/explicit routing; "false" blocks.
         "ALLOW_SELF_PROVIDER": "false",
         "GROK_ENABLED": "true",

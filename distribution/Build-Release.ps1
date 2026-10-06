@@ -57,6 +57,9 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
 Npm (Join-Path $repository 'gateway') @('ci','--no-audit','--no-fund')
 Npm (Join-Path $repository 'monitor') @('ci','--no-audit','--no-fund')
 Node @((Join-Path $repository 'scripts\assert-monitor-source.mjs'))
+Node @((Join-Path $repository 'scripts\prepare-powershell.mjs'))
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repository 'scripts\build-codex-shell-launcher.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Codex UTF-8 shell launcher build failed.' }
 if (-not $SkipTests) {
     Npm (Join-Path $repository 'gateway') @('test')
     Npm (Join-Path $repository 'monitor') @('test')

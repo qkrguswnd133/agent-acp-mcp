@@ -37,6 +37,10 @@ test('job summaries discard prompts, response text, raw events and unrelated usa
   const job=sanitizeJob({job_id:'x',cwd:'C:\\dev\\sample-project',status:'failed',prompt:'secret',error:'token secret',result:{results:[{provider:'claude',model:'opus',effort:'high',sessionId:'s',text:'private response',rawEvents:'private',error:'error secret',errorKind:'quota_exhausted',usage:{input_tokens:4,output_tokens:2,prompt:'secret'}}]}});
   assert.equal(job.project,'sample-project');assert.deepEqual(job.providers[0].usage,{input_tokens:4,output_tokens:2});assert.equal(JSON.stringify(job).includes('secret'),false);assert.equal(JSON.stringify(job).includes('private'),false);
 });
+
+test('gateway env parser retains persistent worktree and native PowerShell overrides',()=>{
+  assert.deepEqual(parseGatewayEnvironment('[mcp_servers.agent.env]\nAGENT_MCP_WORKTREE_DIR="D:/AgentWorktrees"\nCODEX_POWERSHELL_PATH="D:/PowerShell7/pwsh.exe"'),{AGENT_MCP_WORKTREE_DIR:'D:/AgentWorktrees',CODEX_POWERSHELL_PATH:'D:/PowerShell7/pwsh.exe'});
+});
 test('runtime cache reads preserve actual reset and discard legacy invented reset and expired blocks',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'agent-monitor-cache-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
   const file=path.join(dir,'quota.json'),now=Date.parse('2026-09-22T00:00:00Z');

@@ -4,7 +4,7 @@ import os from 'node:os';
 import {pathToFileURL} from 'node:url';
 
 export const PROVIDERS=['grok','claude','codex'];
-const ALLOWED_ENV=new Set(['GROK_ENABLED','CLAUDE_ENABLED','CODEX_ENABLED','GROK_CLI','CLAUDE_CLI','CODEX_CLI','CODEX_CLI_PATH','GROK_MODEL','CLAUDE_MODEL','CODEX_MODEL','GROK_EFFORT','CLAUDE_EFFORT','CODEX_EFFORT','QUOTA_RETRY_MINUTES','AGENT_MCP_STATE_DIR']);
+const ALLOWED_ENV=new Set(['GROK_ENABLED','CLAUDE_ENABLED','CODEX_ENABLED','GROK_CLI','CLAUDE_CLI','CODEX_CLI','CODEX_CLI_PATH','GROK_MODEL','CLAUDE_MODEL','CODEX_MODEL','GROK_EFFORT','CLAUDE_EFFORT','CODEX_EFFORT','QUOTA_RETRY_MINUTES','AGENT_MCP_STATE_DIR','AGENT_MCP_WORKTREE_DIR','CODEX_POWERSHELL_PATH']);
 const text=value=>typeof value==='string'&&value.length<=512?value:null;
 const number=value=>typeof value==='number'&&Number.isFinite(value)?value:null;
 export function timestamp(value){

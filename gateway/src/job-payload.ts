@@ -9,7 +9,15 @@ interface Artifact {path:string;bytes:number;sha256:string;format:'json';}
 const bytes=(value:unknown)=>Buffer.byteLength(JSON.stringify(value),'utf8');
 const digest=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const isRecord=(v:any):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','successCount','failureCount','results','skipped','childCleanedUp']);
+const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','successCount','failureCount','results','skipped','childCleanedUp']);
+type PayloadScope='job'|'result'|'providers'|'provider'|'other';
+function markResponseLimit(job:any){
+ if(job.payload?.schema===SCHEMA){
+  job.payload.responseLimitExceededByReview=false;
+  job.payload.responseLimitExceededByReview=job.payload.serializedContentBytes>0&&bytes(job)>MAX_JOB_RESPONSE_BYTES;
+ }
+ return job;
+}
 
 // Work in Unicode code points: previews must not introduce broken surrogate pairs.
 function preview(value:string,limit:number){
@@ -22,6 +30,10 @@ function preview(value:string,limit:number){
 }
 function compact(job:any){
  const originalBytes=bytes(job);
+ const texts=[job.result?.text,...(Array.isArray(job.result?.results)?job.result.results.map((value:any)=>value?.text):[])].filter((value):value is string=>typeof value==='string');
+ const contentBytes=texts.reduce((total,value)=>total+Buffer.byteLength(value),0);
+ // JSON escaping can make a body substantially larger than its UTF-8 text.
+ const serializedContentBytes=texts.reduce((total,value)=>total+bytes(value)-2,0);
  let rawEventCount=0,rawEventBytes=0,rawEventLines=0,hasRawEvents=false,hasStringEvents=false,commandCount=0;
  const count=(value:any)=>{
   if(!value||typeof value!=='object')return;
@@ -41,12 +53,13 @@ function compact(job:any){
  count(job);
  if(originalBytes<=MAX_JOB_RESPONSE_BYTES&&!hasRawEvents)return structuredClone(job);
  const counts={rawEvents:hasStringEvents?null:rawEventCount,rawEventArrayItems:rawEventCount,rawEventBytes,rawEventTextLines:rawEventLines,commandExecutions:commandCount};
- // Each pass reduces content while retaining object field names and metadata ahead of prose.
- for(const [stringLimit,arrayLimit,keyLimit] of [[4096,24,96],[1024,12,48],[256,4,24],[96,2,12],[48,1,8]]){
+ // Result bodies are the requested deliverable. Only ancillary data is reduced.
+ // Try the normal limit first, even when the body leaves very little room.
+ for(const [stringLimit,arrayLimit,keyLimit] of [[4096,24,96],[1024,12,48],[256,4,24],[96,2,12],[48,1,8],[24,1,0]]){
   let changes=0;
   const fields:Array<Record<string,unknown>>=[];
-  const note=(field:string,detail:Record<string,unknown>)=>{changes++;if(fields.length<32)fields.push({field:preview(field,256),...detail});};
-  const visit=(value:any,field:string,depth:number):any=>{
+  const note=(field:string,detail:Record<string,unknown>)=>{changes++;if(keyLimit>0&&fields.length<32)fields.push({field:preview(field,256),...detail});};
+  const visit=(value:any,field:string,depth:number,scope:PayloadScope='other'):any=>{
    if((field==='rawEvents'||field.endsWith('.rawEvents'))&&(typeof value==='string'||Array.isArray(value))){
     note(field,typeof value==='string'?{originalBytes:Buffer.byteLength(value),previewBytes:0}:{originalCount:value.length,previewCount:0});
     return typeof value==='string'?'':[];
@@ -56,30 +69,38 @@ function compact(job:any){
     const reduced=preview(value,limit);if(reduced!==value)note(field,{originalBytes:Buffer.byteLength(value),previewBytes:Buffer.byteLength(reduced)});return reduced;
    }
    if(!value||typeof value!=='object')return value;
-   if(depth>12){note(field,{reason:'depth_limit'});return null;}
+   if(depth>(keyLimit===0?5:12)){note(field,{reason:'depth_limit'});return null;}
    if(Array.isArray(value)){
-    if(value.length<=arrayLimit||(['result.results','result.skipped'].includes(field)&&value.length<=10))return value.map((v,i)=>visit(v,`${field}[${i}]`,depth+1));
+    if(value.length<=arrayLimit||scope==='providers'||(field==='result.skipped'&&value.length<=10))return value.map((v,i)=>visit(v,`${field}[${i}]`,depth+1,scope==='providers'?'provider':'other'));
     const head=Math.ceil(arrayLimit/2),tail=Math.floor(arrayLimit/2);
     note(field,{originalCount:value.length,previewCount:arrayLimit});
     return [...value.slice(0,head).map((v,i)=>visit(v,`${field}[${i}]`,depth+1)),...value.slice(value.length-tail).map((v,i)=>visit(v,`${field}[${value.length-tail+i}]`,depth+1))];
    }
-   const entries=Object.entries(value).sort(([a],[b])=>Number(protectedKeys.has(b))-Number(protectedKeys.has(a)));
-   const kept=entries.slice(0,keyLimit);
+   const resultScope=scope==='result'||scope==='provider';
+   const required=(key:string)=>(scope==='job'&&(protectedKeys.has(key)||key==='result'))||(resultScope&&(protectedKeys.has(key)||key==='text'));
+   const entries=Object.entries(value).filter(([key])=>field!==''||key!=='payload').sort(([a],[b])=>Number(required(b)||protectedKeys.has(b))-Number(required(a)||protectedKeys.has(a)));
+   // Essential result fields cannot be displaced by a diagnostic-heavy object.
+   const metadataLimit=field.endsWith('.usage')?24:protectedKeys.has(field.split('.').at(-1)!)?8:1;
+   const kept=entries.filter(([key],index)=>required(key)||(index<Math.max(keyLimit,scope==='job'||resultScope?0:metadataLimit)&&(keyLimit>0||Buffer.byteLength(key)<=256)));
    if(entries.length>kept.length)note(field,{originalFieldCount:entries.length,previewFieldCount:kept.length});
-   return Object.fromEntries(kept.map(([key,item])=>[key,visit(item,field?`${field}.${key}`:key,depth+1)]));
+   return Object.fromEntries(kept.map(([key,item])=>[key,resultScope&&key==='text'&&typeof item==='string'?item:visit(item,field?`${field}.${key}`:key,depth+1,scope==='job'&&key==='result'?'result':scope==='result'&&key==='results'?'providers':'other')]));
   };
-  const result=visit(job,'',0);
-  result.payload={schema:SCHEMA,truncated:true,originalBytes,counts,truncatedFieldCount:changes,fields,
-   ...(job.payload?.schema===SCHEMA?{...job.payload}:{}),verboseAvailable:true};
+  const result=visit(job,'',0,'job');
+  const prior=job.payload?.schema===SCHEMA?job.payload:{};
+  const priorCounts=isRecord(prior.counts)?Object.fromEntries(Object.keys(counts).map(key=>[key,typeof prior.counts[key]==='number'||prior.counts[key]===null?prior.counts[key]:(counts as any)[key]])):counts;
+  result.payload={schema:SCHEMA,truncated:true,originalBytes:typeof prior.originalBytes==='number'?prior.originalBytes:originalBytes,counts:priorCounts,truncatedFieldCount:changes,fields,
+   contentBytes,serializedContentBytes,responseLimitExceededByReview:false,verboseAvailable:true};
+  for(const key of ['artifact','artifactRoot','diagnostics'])if(prior[key]!==undefined)result.payload[key]=bytes(prior[key])<=1024?structuredClone(prior[key]):visit(prior[key],`payload.${key}`,0);
   // Leave room for the artifact reference attached after the original has been written.
   if(bytes(result)<=MAX_JOB_RESPONSE_BYTES-1024)return result;
+  if(keyLimit===0){
+   // A complete review may itself exceed the response budget. Make that exception
+   // explicit; command output, raw events and arbitrary text never get it.
+   result.payload.reason='response_byte_limit';
+   return markResponseLimit(result);
+  }
  }
- // Pathological metadata maps can still exceed the cap. Keep the job identity and outcome.
- const result:any={};
- for(const key of ['job_id','status','kind','provider','error','errorKind'])if(job[key]!==undefined)result[key]=typeof job[key]==='string'?preview(job[key],512):job[key];
- result.payload={schema:SCHEMA,truncated:true,originalBytes,counts,reason:'response_byte_limit',verboseAvailable:true};
- if(job.payload?.artifact)result.payload.artifact=job.payload.artifact;
- return result;
+ throw Error('No job payload compaction pass');
 }
 function validId(job:any){
  if(typeof job.job_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(job.job_id))throw Error('Invalid artifact job identifier');
@@ -123,7 +144,7 @@ export async function persistJobPayload(job:any,jobsDirectory:string):Promise<an
    await readArtifact(original,jobsDirectory,{path:`${id}/artifacts/${name}`,bytes:size,sha256,format:'json'});
   }
   reduced.payload.artifact={path:`${id}/artifacts/${name}`,bytes:size,sha256,format:'json'} satisfies Artifact;
-  return reduced;
+  return markResponseLimit(reduced);
  }catch(e){return diagnostic(original,'storage',e);}
 }
 async function readArtifact(job:any,directory:string,ref:Artifact){
@@ -156,7 +177,7 @@ export async function presentJobPayload(job:any,options:{verbose?:boolean;jobsDi
   const full=await readArtifact(cloned,options.jobsDirectory,cloned.payload.artifact);
   // Derived status fields are added after reading persisted state; keep those current.
   const result={...cloned,...full};delete result.payload;
-  for(const key of ['status','error','completionPending','implementationProgress','stalled_suspected','poll_after_seconds','owner_available','message','worktree'])if(Object.hasOwn(cloned,key))result[key]=cloned[key];
+  for(const key of ['status','error','completionPending','implementationProgress','stalled_suspected','poll_after_seconds','owner_available','message','worktree','cwd','worktreeMigration'])if(Object.hasOwn(cloned,key))result[key]=cloned[key];
   return result;
  }catch(e){return diagnostic(cloned,'hydration',e);}
 }

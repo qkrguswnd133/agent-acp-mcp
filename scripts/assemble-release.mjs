@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {copyTree,releaseVersion,scanFirstParty} from './release-lib.mjs';
+import {copyTree,releaseVersion,scanFirstParty,regularFiles} from './release-lib.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const stage=path.join(repo,'build','release',`v${releaseVersion}`,'payload');
@@ -56,6 +56,10 @@ await copyTree(path.join(repo,'distribution','examples'),path.join(stage,'exampl
 await copyTree(path.join(repo,'distribution','instructions'),path.join(stage,'instructions'));
 for(const filename of ['package.json','package-lock.json']) await copyFile(`gateway/${filename}`,`gateway/${filename}`);
 await copyTree(path.join(repo,'gateway','dist','src'),path.join(stage,'gateway','dist','src'));
+await copyTree(path.join(repo,'gateway','src'),path.join(stage,'gateway','src'));
+await copyTree(path.join(repo,'gateway','runtime','powershell7'),path.join(stage,'gateway','runtime','powershell7'));
+await copyTree(path.join(repo,'gateway','runtime','codex-shell'),path.join(stage,'gateway','runtime','codex-shell'));
+await copyFile('gateway/scripts/codex-shell-launcher.cs');
 await copyTree(path.join(repo,'gateway','profiles'),path.join(stage,'gateway','profiles'));
 for(const name of gatewayDocs) await copyFile(`gateway/${name}`,`gateway/${name}`);
 await copyTree(monitorPackage,path.join(stage,'monitor'));
@@ -63,5 +67,6 @@ const info={schemaVersion:1,version:releaseVersion,components:{gateway:gateway.v
 await fs.writeFile(path.join(stage,'release-info.json'),JSON.stringify(info,null,2)+'\n');
 // Electron/Chromium license notices are third-party legal text and remain in
 // the ZIP. They can contain upstream authors' Unix paths and private domains.
-await scanFirstParty([stage],{skipRelativeFiles:['monitor/LICENSE','monitor/LICENSES.chromium.html']});
+const upstream=(await regularFiles(path.join(stage,'gateway/runtime/powershell7'))).map(file=>'gateway/runtime/powershell7/'+file);
+await scanFirstParty([stage],{skipRelativeFiles:['monitor/LICENSE','monitor/LICENSES.chromium.html',...upstream]});
 console.log(`Assembled ${stage}`);

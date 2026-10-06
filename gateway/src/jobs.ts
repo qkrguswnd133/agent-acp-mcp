@@ -4,7 +4,7 @@ import {workspaceConflict,workspaceConflictMessage} from './workspace-lock.js';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import type {RunInput} from './types.js';
-import {createManagedWorktree,inspectManagedWorktree,cleanupManagedWorktree,type ManagedWorktree} from './managed-worktree.js';
+import {createManagedWorktree,inspectManagedWorktree,cleanupManagedWorktree,migrateManagedWorktree,rollbackManagedWorktreeMigration,recoverManagedWorktree,type ManagedWorktree} from './managed-worktree.js';
 import {persistJobPayload,presentJobPayload} from './job-payload.js';
 
 type Runner=(kind:string,input:RunInput,signal:AbortSignal,hooks:{onActivity:(event:Record<string,unknown>)=>void})=>Promise<any>;
@@ -14,7 +14,7 @@ interface Active {job:Job;controller:AbortController;done:Promise<void>;writes:P
 const terminal=new Set<Status>(['completed','failed','cancelled','interrupted']);
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function ownerAlive(pid:unknown){if(!Number.isSafeInteger(pid)||Number(pid)<1)return true;try{process.kill(Number(pid),0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}}
-interface CleanupOptions {dryRun?:boolean;verified?:boolean;emptyOnly?:boolean;automatic?:boolean}
+interface CleanupOptions {dryRun?:boolean;verified?:boolean;emptyOnly?:boolean;automatic?:boolean;allowPatchEquivalent?:boolean}
 export class JobManager {
   private active=new Map<string,Active>();
   private closing=false;
@@ -139,9 +139,9 @@ export class JobManager {
     }
     return this.status(id);
   }
-  async worktreeStatus(id:string){
+  async worktreeStatus(id:string,includeDiskSize=false){
     const job=await this.readJob(id);if(!job.worktree)throw Error('Job has no managed worktree');
-    return {job_id:id,jobStatus:job.status,worktree:await inspectManagedWorktree(job.worktree)};
+    return {job_id:id,jobStatus:job.status,worktree:await inspectManagedWorktree(job.worktree,{includeDiskSize})};
   }
   cleanupWorktree(id:string,integrationRef='HEAD',verificationSummary='',options:CleanupOptions={}){
     this.file(id);
@@ -162,7 +162,7 @@ export class JobManager {
     const lockFile=this.file(id)+'.cleanup.lock';
     const lock=options.dryRun?undefined:await fs.open(lockFile,'wx').catch(()=>{throw Error('Worktree cleanup already in progress; preserved');});
     try{
-    const inspection=await cleanupManagedWorktree(job.worktree,integrationRef,verificationSummary,{dryRun:true,emptyOnly:options.emptyOnly});
+    const inspection=await cleanupManagedWorktree(job.worktree,integrationRef,verificationSummary,{dryRun:true,emptyOnly:options.emptyOnly,allowPatchEquivalent:options.allowPatchEquivalent});
     if(!inspection.eligible)throw Error(inspection.reason??'Worktree not eligible for cleanup');
     const empty=inspection.empty===true;
     if(!empty&&(job.status!=='completed'||job.result?.error))throw Error('Failed, cancelled or incomplete jobs with commits are preserved; parent review required');
@@ -177,7 +177,7 @@ export class JobManager {
     }
     if([...this.active.values()].some(e=>e.job.job_id!==id&&(!terminal.has(e.job.status)||e.finalizing)&&(workspaceConflict({cwd:job.worktree!.path,kind:'agent_implement'},e.job)||(!empty&&workspaceConflict({cwd:job.worktree!.originalCwd,kind:'agent_implement'},e.job)))))throw Error('Original or isolated workspace still has an active job');
     if(options.dryRun)return {job_id:id,worktree:inspection,dry_run:true,eligible:true,requires_parent_verification:!empty};
-    job.worktree=await cleanupManagedWorktree(job.worktree,integrationRef,verificationSummary,{emptyOnly:options.emptyOnly});
+    job.worktree=await cleanupManagedWorktree(job.worktree,integrationRef,verificationSummary,{emptyOnly:options.emptyOnly,allowPatchEquivalent:options.allowPatchEquivalent});
     const entry=this.active.get(id);if(entry)entry.job.worktree=job.worktree;
     this.warningCache=undefined;
     await this.save(job);return {job_id:id,worktree:job.worktree};
@@ -193,17 +193,52 @@ export class JobManager {
     const jobs:Job[]=[];for(const name of names){if(!uuid.test(name.replace(/\.json$/,''))||!name.endsWith('.json'))continue;try{const job=await this.readJob(name.slice(0,-5));if(job.worktree)jobs.push(job);}catch{}}
     return jobs.sort((a,b)=>a.job_id.localeCompare(b.job_id));
   }
-  async listWorktrees(offset=0,limit=50,includeRemoved=false){
+  async listWorktrees(offset=0,limit=50,includeRemoved=false,includeDiskSize=false){
     const jobs=(await this.recordedWorktrees()).filter(job=>includeRemoved||job.worktree!.state!=='removed');
-    const items=[];for(const job of jobs.slice(offset,offset+limit)){try{const {changes,changedFiles,...worktree}=await inspectManagedWorktree(job.worktree!) as any;items.push({job_id:job.job_id,jobStatus:job.status,createdAt:job.worktree!.createdAt??job.startedAt,worktree});}catch(error){items.push({job_id:job.job_id,jobStatus:job.status,createdAt:job.startedAt,error:error instanceof Error?error.message:String(error)});}}
-    return {items,total:jobs.length,next_offset:offset+limit<jobs.length?offset+limit:null};
+    const selected=jobs.slice(offset,offset+limit),items:any[]=new Array(selected.length);let next=0;
+    await Promise.all(Array.from({length:Math.min(4,selected.length)},async()=>{for(;;){const index=next++;if(index>=selected.length)break;const job=selected[index];try{const {changes,changedFiles,...worktree}=await inspectManagedWorktree(job.worktree!,{includeDiskSize}) as any;items[index]={job_id:job.job_id,jobStatus:job.status,createdAt:job.worktree!.createdAt??job.startedAt,worktree};}catch(error){items[index]={job_id:job.job_id,jobStatus:job.status,createdAt:job.startedAt,error:error instanceof Error?error.message:String(error)};}}}));
+    return {items,total:jobs.length,next_offset:offset+limit<jobs.length?offset+limit:null,include_disk_size:includeDiskSize};
+  }
+  worktreeMaintenance(id:string,action:'migrate'|'restore'|'remove',options:{dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string}={}){
+    this.file(id);const result=this.starting.then(()=>this.worktreeMaintenanceExclusive(id,action,options));this.starting=result.catch(()=>{});return result;
+  }
+  private async worktreeMaintenanceExclusive(id:string,action:'migrate'|'restore'|'remove',options:{dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string}){
+    this.maintenanceCheck();let job=await this.readJob(id);
+    if((job as any).payload?.artifact){job=await presentJobPayload(job,{verbose:true,jobsDirectory:this.directory});if((job as any).payload?.diagnostics)throw Error('Full job evidence unavailable; maintenance refused');}
+    if(!job.worktree||job.worktree.state==='removed')throw Error('Job has no active managed worktree');
+    if(!terminal.has(job.status)||job.status==='interrupted'||this.active.get(id)?.finalizing)throw Error('Job must be finished with confirmed idle ownership');
+    if(job.result?.childCleanedUp===false||job.result?.results?.some((r:any)=>r.childCleanedUp===false))throw Error('Provider child cleanup is unconfirmed');
+    if(action!=='migrate'&&!options.dryRun&&(!options.verified||!options.summary?.trim()))throw Error('Recovery requires verified=true and a summary acknowledging missing files');
+    const original=job.worktree,lockFile=this.file(id)+'.cleanup.lock';
+    const lock=options.dryRun?undefined:await fs.open(lockFile,'wx').catch(()=>{throw Error('Worktree maintenance already in progress');});
+    try{
+      for(const name of await fs.readdir(this.directory)){
+        if(!name.endsWith('.json'))continue;let other:Job;try{other=JSON.parse(await fs.readFile(path.join(this.directory,name),'utf8'));}catch{throw Error('Unreadable job record; idle state unknown');}
+        if(other.job_id!==id&&!terminal.has(other.status)&&ownerAlive(other.ownerPid)&&other.cwd&&(workspaceConflict({cwd:original.path,kind:'agent_implement'},other)||workspaceConflict({cwd:original.originalCwd,kind:'agent_implement'},other)))throw Error('Original or isolated workspace has an active job');
+      }
+      const relative=path.relative(original.path,job.cwd);
+      if([...this.active.values()].some(e=>e.job.job_id!==id&&(!terminal.has(e.job.status)||e.finalizing)&&(workspaceConflict({cwd:original.path,kind:'agent_implement'},e.job)||workspaceConflict({cwd:original.originalCwd,kind:'agent_implement'},e.job))))throw Error('Original or isolated workspace still has an active job');
+      if(action==='migrate'&&(relative.startsWith('..'+path.sep)||relative==='..'||path.isAbsolute(relative)))throw Error('Job cwd is outside its managed worktree; migration refused');
+      const result=action==='migrate'?await migrateManagedWorktree(original,{dryRun:options.dryRun,targetRoot:options.targetRoot}):await recoverManagedWorktree(original,options.summary??'',{dryRun:options.dryRun,action});
+      if(options.dryRun)return {job_id:id,worktree:result,dry_run:true};
+      const oldCwd=job.cwd;job.worktree=result;
+      if(action==='migrate'){
+        job.cwd=path.join(result.path,relative);(job as any).worktreeMigration={previousCwd:oldCwd,currentCwd:job.cwd,at:new Date().toISOString(),restartRequired:true};
+      }
+      try{await this.save(job);}catch(error){
+        if(action==='migrate'){try{await rollbackManagedWorktreeMigration(original,result);}catch(rollback){throw Error(`Job save and migration rollback failed. Worktree destination: ${result.path}; source: ${original.path}; ${String(rollback)}`);}}
+        throw Error(`Worktree ${action} completed${action==='migrate'?' and rolled back':''}, but job metadata save failed: ${String(error)}`);
+      }
+      const entry=this.active.get(id);if(entry){entry.job.worktree=result;entry.job.cwd=job.cwd;if(action==='migrate')(entry.job as any).worktreeMigration=(job as any).worktreeMigration;}
+      this.warningCache=undefined;return {job_id:id,cwd:job.cwd,worktree:result,...(action==='migrate'?{restartRequired:true}: {})};
+    }finally{if(lock){await lock.close();await fs.unlink(lockFile).catch(()=>{});}}
   }
   private warningCache?:{at:number;value:any};
   async worktreeWarnings(){
     if(this.warningCache&&Date.now()-this.warningCache.at<60000)return this.warningCache.value;
-    try{const jobs=(await this.recordedWorktrees()).filter(job=>job.worktree!.state!=='removed'&&Date.now()-Date.parse(job.worktree!.createdAt??job.startedAt)>14*86400000);
-      const value={olderThanDays:14,count:jobs.length,job_ids:jobs.slice(0,20).map(job=>job.job_id),note:jobs.length?'Old managed worktree records remain; inspect agent_worktree_list before cleanup.':null};this.warningCache={at:Date.now(),value};return value;
-    }catch{return {olderThanDays:14,count:null,note:'Worktree inventory unavailable'};}
+    try{const jobs=(await this.recordedWorktrees()).filter(job=>job.worktree!.state!=='removed'&&Date.now()-Date.parse(job.worktree!.createdAt??job.startedAt)>3*86400000);
+      const value={olderThanDays:3,count:jobs.length,job_ids:jobs.slice(0,20).map(job=>job.job_id),note:jobs.length?'Managed worktrees older than 3 days remain. TEMP cleanup schedules vary; migrate legacy TEMP worktrees or inspect before cleanup.':null};this.warningCache={at:Date.now(),value};return value;
+    }catch{return {olderThanDays:3,count:null,note:'Worktree inventory unavailable'};}
   }
   async close(){
     this.closing=true;

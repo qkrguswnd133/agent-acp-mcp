@@ -24,6 +24,8 @@ Distribution installers should leave live global instruction files untouched by 
 
 Since 2.3.0, merge the **Parent model and effort selection** section when updating these templates. `auto` fields require a task-specific concrete selection and `selection_reason`. Discover supported settings with `agent_models`; keep fixed fields unchanged. Model/effort selection does not change the separate provider routing policy. The installer/updater does not modify existing global instruction files.
 
+For 2.5.0, also merge **Background jobs, limits, and partial work** and **Managed parallel worktrees**. These explain complete review bodies with compact diagnostics, persistent worktree storage, explicit migration/recovery, checkout health and opt-in patch-equivalent cleanup. Preview migration/recovery first; both default to dry-run. Existing TEMP worktrees and provider sessions are not migrated automatically. PowerShell selection uses the bundled runtime or an explicit valid native PowerShell 7+ path, with no 5.1 fallback.
+
 - Discover the actual `agent_*` tools and schemas. Do not infer tool availability from this file.
 - The gateway detects the host from MCP client information. Never add a manual `MCP_HOST` override.
 - Configure paths and provider policies in the host's MCP configuration, using the receiving machine's actual locations.

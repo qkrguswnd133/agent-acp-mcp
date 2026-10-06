@@ -1,0 +1,12 @@
+{
+ "gateway":[
+  "Gateway 2.5.0: 새 worktree의 기본 저장소를 임시 폴더에서 영구 사용자 데이터 경로로 변경하고 AGENT_MCP_WORKTREE_DIR 설정을 지원합니다. 기존 worktree는 자동 이동하지 않습니다.",
+  "agent_worktree_migrate와 agent_worktree_recover를 추가했습니다. 이동·복구는 기본 미리보기이며, 실행 중 작업을 보호하고 복구 제거 시 브랜치를 남깁니다. 이동 후 provider 세션은 새로 시작해야 합니다.",
+  "메타데이터만 남은 checkout과 일부 파일 누락을 구분합니다. 목록은 최대 4개씩 검사하고 디스크 용량 계산을 선택 옵션으로 바꿨습니다. 보관 경고는 3일 기준입니다.",
+  "cherry-pick된 커밋은 allow_patch_equivalent 명시 시 모든 커밋의 반영과 현재 원본 HEAD의 변경 경로 내용을 확인한 뒤 정리할 수 있습니다. 병합 커밋이나 불명확한 반영 상태는 보존합니다.",
+  "간결 응답에서도 리뷰 본문 전체를 유지합니다. 명령 출력은 줄이고 원본 artifact를 보존하며, 본문이 응답 예산을 넘으면 예외를 표시합니다.",
+  "검증한 공식 portable PowerShell 7.6.6과 UTF-8 콘솔 실행기를 배포에 포함합니다. Codex의 프로필 실행과 한글 출력 깨짐을 방지하고 기존 샌드박스 권한을 유지합니다. 별도 PowerShell 설치 없이 사용할 수 있으며 ZIP 용량이 증가합니다.",
+  "실행 dist와 일치하는 Gateway 소스를 함께 설치하여 오래된 src가 남던 문제를 수정했습니다. 업데이트 후 MCP를 재연결하세요."
+ ],
+ "monitor":["Monitor 1.2.1: 사용자 지정 worktree 저장 경로와 PowerShell 실행 경로 설정을 유지합니다. 화면 구성은 동일합니다."]
+}

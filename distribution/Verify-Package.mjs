@@ -37,6 +37,13 @@ const gateway=JSON.parse(await fs.readFile(path.join(root,'gateway','package.jso
 if(info.schemaVersion!==1||info.components?.gateway!==manifest.gatewayVersion||info.components?.monitor!==manifest.monitorVersion||gateway.version!==manifest.gatewayVersion) throw new Error('Package release versions are inconsistent');
 await fs.access(path.join(root,'monitor','Agent Monitor.exe'));
 await fs.access(path.join(root,'monitor','resources','app.asar'));
+for(const name of ['managed-worktree','index','codex-shell']) {
+  await fs.access(path.join(root,'gateway','src',name+'.ts'));
+  await fs.access(path.join(root,'gateway','dist','src',name+'.js'));
+}
+const {codexShellEnvironment}=await import(pathToFileURL(path.join(root,'gateway','dist','src','codex-shell.js')).href);
+const shellEnvironment=await codexShellEnvironment({...process.env,CODEX_POWERSHELL_PATH:''});
+assert(shellEnvironment.shell?.startsWith(path.join(root,'gateway','runtime')),'Packaged native PowerShell must be selected');
 
 const clientBase=path.join(root,'gateway','node_modules','@modelcontextprotocol','client','dist');
 const {Client}=await import(pathToFileURL(path.join(clientBase,'index.mjs')).href);
@@ -51,7 +58,7 @@ try {
       const listing=await client.listTools();
       assert(listing.tools.some(tool=>tool.name==='agent_implement'));
       assert(listing.tools.some(tool=>tool.name==='agent_models'));
-      for(const name of ['agent_worktree_list','agent_job_wait'])assert(listing.tools.some(tool=>tool.name===name));
+      for(const name of ['agent_worktree_list','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(tool=>tool.name===name));
       const inventory=await client.callTool({name:'agent_worktree_list',arguments:{limit:1}});
       assert(!inventory.isError);
       assert.equal(JSON.parse(inventory.content.find(item=>item.type==='text').text).total,0);

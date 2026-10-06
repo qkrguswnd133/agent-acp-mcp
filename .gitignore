@@ -1,4 +1,5 @@
 node_modules/
+gateway/runtime/
 gateway/dist/
 monitor/release/
 build/

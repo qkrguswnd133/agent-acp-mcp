@@ -27,7 +27,19 @@ Gateway는 사용자 CLI 설정을 분리하면서 Windows 샌드박스 구현�
 
 구현 작업은 기본 `workspace-write`이며 MCP 서버 env의 `CODEX_IMPLEMENT_SANDBOX="danger-full-access"`로 전체 파일 시스템 접근을 허용할 수 있습니다. 이 경우 `allowed_paths`는 OS가 강제하는 경계가 아니라 작업 지침입니다. `read-only` 값도 지원합니다. 읽기 도구는 이 설정과 무관하게 `read-only`를 사용합니다. 승인·명령 정책 우회 옵션은 추가하지 않습니다. CLI 0.159.2에서는 `--ignore-user-config`로 `windows.sandbox`가 빠지면 `workspace-write`를 전달해도 파일 수정이 읽기 전용으로 거절되는 사례를 재현했습니다. 별도 정책·회사 관리 설정에 의한 거절은 이 설정으로 해제되지 않습니다.
 
-2.3.1부터 Windows의 샌드박스 Codex 실행은 자식 프로세스 PATH에서 `WindowsApps` 경로를 제외하고 일반 PowerShell 7 실행 파일을 우선 선택합니다. 없으면 Windows 기본 PowerShell을 사용합니다. 시스템 PATH·설치·권한은 변경하지 않으며 full-access 구현의 환경은 유지합니다. Store 실행 별칭으로만 제공되는 도구가 필요하면 일반 설치본의 경로를 MCP 실행 환경에 제공하세요. `shellExecution`에는 선택한 셸과 관측된 셸 시작 실패가 기록됩니다. 복구되지 않은 `CreateProcessAsUserW failed: 5`가 있으면 `shell_launch_failed`로 반환하며 부분 응답·세션·사용량은 보존합니다. 설치 후 MCP를 재연결하고 읽기 전용 `git show`·`git diff` 호출로 확인하세요.
+2.5.0은 공식 Windows x64 portable PowerShell 7.6.6을 Gateway와 함께 배포합니다. 다운로드 주소와 SHA-256은 저장소의 `scripts/powershell-runtime.json`에 고정하며 빌드에서 검증합니다. 이 실행 파일은 Gateway 전용으로 사용하고 개인·시스템 PowerShell 설치나 시스템 PATH를 변경하지 않습니다. ZIP 크기는 이 런타임을 포함하므로 늘어납니다.
+
+Codex용 별도 실행기(`runtime/codex-shell/pwsh.exe`)가 명령 콘솔을 UTF-8로 설정한 뒤 원본 PowerShell을 `-NoProfile`로 시작합니다. Windows 제한 언어 모드에서 출력 인코딩 속성 설정이 거절돼 한글이 깨지는 경우를 처리하며, 제한 토큰과 파일 접근 정책은 그대로 상속합니다. 원본 Microsoft 실행 파일은 수정하지 않습니다. 소스 빌드에는 Windows의 .NET Framework C# 컴파일러가 필요하며, 배포 ZIP 사용자는 컴파일할 필요가 없습니다.
+
+Windows Codex는 `WindowsApps` 밖의 실제 PowerShell 7 실행 파일을 사용합니다. 기본으로 포함된 런타임을 사용할 수 있으며, 별도 실행 파일이 필요한 경우 MCP 서버 env에 `CODEX_POWERSHELL_PATH`의 절대 경로를 지정하세요. 명시한 경로가 없거나 PowerShell 7 미만이거나 Store 경로라면 실행을 거절합니다. Windows PowerShell 5.1로 대체 실행하지 않습니다. 샌드박스 자식 프로세스 PATH에서는 `WindowsApps`를 제외합니다. `shellExecution`에는 셸 선택과 관측된 시작 실패가 기록되며, 복구되지 않은 `CreateProcessAsUserW failed: 5`는 `shell_launch_failed`로 반환합니다. 부분 응답·세션·사용량은 보존합니다.
+
+설치 후 MCP를 재연결하고 실제 작업 경로에서 읽기 전용 `git show`·`git diff` 호출을 확인하세요. PowerShell 7 제공만으로 모든 Unicode 경로나 Windows 샌드박스 정책의 실행 성공을 보장하지는 않습니다.
+
+### Worktree 저장 위치와 유지 관리
+
+새 worktree의 기본 루트는 `%LOCALAPPDATA%\Agent ACP MCP\worktrees`이며, `AGENT_MCP_WORKTREE_DIR`에 절대 경로를 지정해 바꿀 수 있습니다. 기존 TEMP worktree는 업데이트나 환경변수 변경만으로 이동하지 않습니다. 작업이 끝나고 원본·격리 작업공간이 유휴 상태일 때 `agent_worktree_migrate(job_id, dry_run=true)`로 확인한 뒤 `dry_run=false`로 적용합니다. `target_root`는 선택 사항이며 생략하면 현재 저장 루트를 사용합니다. 이동 후 provider 세션은 새 cwd에서 다시 시작해야 하며 기존 세션 기록의 경로를 고쳐 쓰지 않습니다.
+
+`agent_worktree_list`의 `include_disk_size`는 기본 `false`입니다. 용량이 필요할 때만 `true`로 조회하며, 최대 4개씩 검사합니다. 3일 이상 보관된 항목은 상태 경고에 나타납니다. TEMP 정리 일정은 PC 정책에 따라 달라지므로 이 경고를 안전한 보관 기한으로 해석하지 마세요. 손상 상태 확인, 복구와 patch 동등성 정리 절차는 [관리형 worktree 설명](../gateway/MANAGED-WORKTREES.md)을 따르세요.
 
 ### Codex 실행 모델·effort 기록
 
@@ -43,7 +55,7 @@ Codex 결과는 CLI JSON의 실행 정보를 우선 사용하고, 값이 없으�
 
 **2.3.0 이전 후 호출 변경:** `auto` 모델·effort는 Parent가 작업에 따라 선택해야 합니다. MCP를 재연결해 `agent_models`와 새 입력 설명을 불러오고, `instructions/` 템플릿의 Parent 선택 규칙을 현재 에이전트 지침에 병합하세요. 단일 provider는 `model`, `effort`, `selection_reason`, 복수/auto 라우팅은 `provider_options.<provider>`를 사용합니다. 고정 환경설정과 충돌하는 값이나 미해결 auto는 실행 전에 거절됩니다. 모니터는 선택값과 실제 확인값을 구분합니다.
 
-**2.4.0 작업 관리:** MCP 재연결 후 `agent_worktree_list`와 `agent_job_wait`를 사용할 수 있습니다. `agent_worktree_cleanup`은 기존 단일 job_id와 새 job_ids 배열·dry_run을 지원합니다. 기존 worktree는 자동으로 일괄 삭제하지 않으므로 목록 조회와 dry_run으로 먼저 확인하세요. 작업 응답은 기본적으로 64 KiB 이내로 줄이며 원본 결과는 state/jobs 아래에 보존합니다. verbose=true는 전체 결과를 반환하므로 호출 앱의 출력 제한에 주의하세요. 빈 worktree는 앞으로 완료·실패·취소 작업 종료 시 안전 조건을 만족하면 자동 정리됩니다.
+**2.5.0 작업 관리:** MCP 재연결 후 worktree 이동·복구 도구와 새 입력 설명을 불러오세요. 기존 worktree는 자동 이동하거나 일괄 삭제하지 않습니다. 리뷰 본문인 `result.text`와 `result.results[*].text`는 항상 전체를 반환합니다. 명령 출력·rawEvents 등은 줄이고 원본은 `state/jobs`의 artifact에 보존합니다. 응답의 기본 예산은 64 KiB이며 본문 보존으로 초과하면 `payload.responseLimitExceededByReview=true`와 본문 바이트 수를 표시합니다. `verbose=true`는 원본 로그까지 복원합니다. 호출 앱 자체의 출력 제한은 별도로 적용될 수 있습니다. 안전 조건을 만족하는 `cleanEmpty` worktree만 완료·실패·취소 후 자동 정리됩니다.
 
 **v2.2.0 / Monitor 1.1.0 사용자:** Electron의 `app.asar` 압축 해제 오류 때문에 앱 내 업데이트가 설치 준비 중 멈출 수 있습니다. 이번 v2.2.1 ZIP의 `Update.ps1`을 한 번 실행하세요. Monitor 1.1.1에서 해당 오류를 수정했습니다.
 

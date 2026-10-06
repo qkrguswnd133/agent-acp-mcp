@@ -238,7 +238,7 @@ test('Codex provider status, app-server and run use the official package bin wit
     const seen=await records(log);
     assert.deepEqual(seen.map(r=>r.args[0]).sort(),['--version','--version','app-server','app-server','exec','login'].sort());
     const exec=seen.find(r=>r.args[0]==='exec');
-    assert.deepEqual(exec.args,['exec','--ignore-user-config','--sandbox','read-only','-c','windows.sandbox="unelevated"','--json','-c','mcp_servers={}','-c','features.plugins=false','--model','fixture-model','-c','model_reasoning_effort="high"','-']);
+    assert.deepEqual(exec.args,['exec','--ignore-user-config','--sandbox','read-only','-c','windows.sandbox="unelevated"','--json','-c','mcp_servers={}','-c','features.plugins=false','-c','allow_login_shell=false','--model','fixture-model','-c','model_reasoning_effort="high"','-']);
     same(exec.cwd,cwd);
     // The app-server reader accepts the same descriptor directly.
     const launch=await resolveNpmLaunch(fixture.shim,codexNpmPackage,withNode);

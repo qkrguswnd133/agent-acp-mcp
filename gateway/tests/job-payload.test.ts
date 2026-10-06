@@ -7,11 +7,19 @@ import {randomUUID,createHash} from 'node:crypto';
 import {MAX_JOB_RESPONSE_BYTES,persistJobPayload,presentJobPayload} from '../src/job-payload.js';
 
 async function fixture(){return fs.mkdtemp(path.join(os.tmpdir(),'job-payload-'));}
+test('artifact hydration retains migrated current cwd without rewriting provider history',async()=>{
+ const dir=await fixture(),job={job_id:randomUUID(),status:'completed',cwd:'D:/old',result:{text:'review',cwd:'D:/old',rawEvents:'x'.repeat(100000)}};
+ try{
+  const saved=await persistJobPayload(job,dir);saved.cwd='D:/new';saved.worktreeMigration={previousCwd:'D:/old',currentCwd:'D:/new',restartRequired:true};
+  const full=await presentJobPayload(saved,{jobsDirectory:dir,verbose:true});
+  assert.equal(full.cwd,'D:/new');assert.equal(full.result.cwd,'D:/old');assert.deepEqual(full.worktreeMigration,saved.worktreeMigration);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
 function oversized(){return {
  job_id:randomUUID(),status:'failed',kind:'agent_implement',error:'primary task failure',
  activity:{phase:'running',detail:'한글🦊'.repeat(30000)},
  result:{error:'provider quota',errorKind:'quota_exhausted',sessionId:'session-preserved',usage:{totalTokens:12345},selection:{requested:'auto',selected:'grok'},handoff:{requiresWorkspaceReview:true,cwd:'C:\\workspace'},
-  text:'HEAD한글🦊'.repeat(5000)+'TAIL',rawEvents:Array.from({length:100},(_,i)=>({id:i,text:'raw🦊'.repeat(1000)})),
+  text:'HEAD한글🦊'.repeat(1400)+'TAIL',rawEvents:Array.from({length:100},(_,i)=>({id:i,text:'raw🦊'.repeat(1000)})),
   commandExecutions:Array.from({length:100},(_,i)=>({id:`command-${i}`,command:'npm test',exitCode:i%3===0?1:0,output:'START-'+('한글🦊'.repeat(3000))+'-END'}))}
  };}
 test('small ordinary jobs remain backward compatible and are not mutated',async()=>{
@@ -24,6 +32,7 @@ test('large Unicode jobs persist compact previews and lossless raw artifacts',as
  try{
   const saved=await persistJobPayload(job,dir),view=await presentJobPayload(saved,{jobsDirectory:dir});
   assert.ok(Buffer.byteLength(JSON.stringify(view))<=MAX_JOB_RESPONSE_BYTES);
+  assert.equal(view.result.text,job.result.text);assert.equal(view.payload.contentBytes,Buffer.byteLength(job.result.text));assert.equal(view.payload.responseLimitExceededByReview,false);
   assert.deepEqual(job,before);assert.equal(view.status,'failed');assert.equal(view.error,job.error);
   for(const key of ['error','errorKind','sessionId','usage','selection','handoff'])assert.deepEqual(view.result[key],(job.result as any)[key]);
   assert.equal(view.result.rawEvents.length,0);assert.equal(view.payload.counts.rawEvents,100);assert.equal(view.payload.counts.commandExecutions,100);
@@ -99,14 +108,61 @@ test('current completionPending overrides the stored snapshot during verbose hyd
  const dir=await fixture(),job={...oversized(),completionPending:false};
  try{const saved=await persistJobPayload(job,dir);saved.completionPending=true;const full=await presentJobPayload(saved,{jobsDirectory:dir,verbose:true});assert.equal(full.completionPending,true);assert.deepEqual(full.result,job.result);}finally{await fs.rm(dir,{recursive:true,force:true});}
 });
-test('serialized escaping and large activity arrays obey the byte cap',async()=>{
+test('serialized review escaping is preserved with an explicit byte cap exception',async()=>{
  const dir=await fixture(),job=oversized();
  job.result.text='\u0000\n"\\🦊'.repeat(20000);
  (job.activity as any).events=Array.from({length:500},(_,i)=>({id:i,detail:'\u0001'.repeat(10000)}));
  try{
   const saved=await persistJobPayload(job,dir);
-  assert.ok(Buffer.byteLength(JSON.stringify(saved))<=MAX_JOB_RESPONSE_BYTES);
-  assert.ok(Buffer.byteLength(JSON.stringify(await presentJobPayload(saved,{jobsDirectory:dir})))<=MAX_JOB_RESPONSE_BYTES);
+  for(const view of [saved,await presentJobPayload(saved,{jobsDirectory:dir})]){
+   assert.equal(view.result.text,job.result.text);assert.equal(view.payload.responseLimitExceededByReview,true);
+   assert.equal(view.payload.contentBytes,Buffer.byteLength(job.result.text));
+   assert.equal(view.payload.serializedContentBytes,Buffer.byteLength(JSON.stringify(job.result.text))-2);
+   assert.ok(Buffer.byteLength(JSON.stringify(view))-view.payload.serializedContentBytes<=MAX_JOB_RESPONSE_BYTES);
+  }
   assert.deepEqual((await presentJobPayload(saved,{jobsDirectory:dir,verbose:true})).result,job.result);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('100KB review bodies survive diagnostic compaction and retain honest budget metadata',async()=>{
+ const dir=await fixture(),job=oversized();job.result.text='한글🦊'.repeat(10000);
+ try{
+  const saved=await persistJobPayload(job,dir),view=await presentJobPayload(saved,{jobsDirectory:dir});
+  assert.equal(view.result.text,job.result.text);assert.equal(view.payload.contentBytes,100000);assert.equal(view.payload.responseLimitExceededByReview,true);
+  assert.ok(Buffer.byteLength(JSON.stringify(view))-100000<MAX_JOB_RESPONSE_BYTES);
+  for(const key of ['error','errorKind','sessionId','usage','selection','handoff'])assert.deepEqual(view.result[key],(job.result as any)[key]);
+  assert.ok(view.payload.artifact);assert.deepEqual(await presentJobPayload(saved,{jobsDirectory:dir,verbose:true}),job);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('all provider reviews survive even when the provider array exceeds preview limits',async()=>{
+ const dir=await fixture(),results=Array.from({length:30},(_,i)=>({provider:`provider-${i}`,text:`Review ${i}: `+'판정🦊'.repeat(1000),error:i===0?'quota exhausted':null,sessionId:`session-${i}`,usage:{inputTokens:10,outputTokens:20},commandExecutions:[{text:'diagnostic'.repeat(20000),output:'output'.repeat(20000)}]}));
+ const job={job_id:randomUUID(),status:'failed',result:{outcome:'partial_success',error:'quota exhausted',text:'Combined summary',results}};
+ try{
+  const saved=await persistJobPayload(job,dir),view=await presentJobPayload(saved,{jobsDirectory:dir});
+  assert.equal(view.result.text,job.result.text);assert.equal(view.result.results.length,results.length);
+  for(let i=0;i<results.length;i++)for(const key of ['provider','text','error','sessionId','usage'])assert.deepEqual(view.result.results[i][key],(results[i] as any)[key]);
+  assert.equal(view.payload.contentBytes,results.reduce((n,r)=>n+Buffer.byteLength(r.text),Buffer.byteLength(job.result.text)));
+  assert.equal(view.payload.responseLimitExceededByReview,true);assert.ok(Buffer.byteLength(JSON.stringify(view))-view.payload.serializedContentBytes<MAX_JOB_RESPONSE_BYTES);
+  assert.deepEqual(await presentJobPayload(saved,{jobsDirectory:dir,verbose:true}),job);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('arbitrary text fields never receive the review body budget exception',async()=>{
+ const dir=await fixture(),job={job_id:randomUUID(),status:'completed',text:'root diagnostic'.repeat(20000),activity:{text:'activity'.repeat(20000)},result:{text:'Actual result',commandExecutions:[{text:'command text'.repeat(20000),output:'output'.repeat(20000)}],rawEvents:[{text:'raw'.repeat(20000)}]}};
+ try{
+  const saved=await persistJobPayload(job,dir),view=await presentJobPayload(saved,{jobsDirectory:dir});
+  assert.equal(view.result.text,job.result.text);assert.equal(view.payload.contentBytes,Buffer.byteLength(job.result.text));assert.equal(view.payload.responseLimitExceededByReview,false);
+  assert.ok(Buffer.byteLength(JSON.stringify(view))<=MAX_JOB_RESPONSE_BYTES);assert.notEqual(view.result.commandExecutions[0].text,job.result.commandExecutions[0].text);
+  assert.deepEqual(await presentJobPayload(saved,{jobsDirectory:dir,verbose:true}),job);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('near-budget reviews shrink diagnostics and misleading field names remain ordinary text',async()=>{
+ const dir=await fixture(),job={job_id:randomUUID(),status:'completed',result:{text:'R'.repeat(62000),'results[0].text':'diagnostic'.repeat(100000),rawEvents:'event'.repeat(100000),commandExecutions:[{text:'diagnostic'.repeat(100000)}]}};
+ try{
+  const saved=await persistJobPayload(job,dir),view=await presentJobPayload(saved,{jobsDirectory:dir});
+  assert.equal(view.result.text,job.result.text);assert.equal(view.payload.responseLimitExceededByReview,false);assert.ok(Buffer.byteLength(JSON.stringify(view))<=MAX_JOB_RESPONSE_BYTES);
+  assert.deepEqual(await presentJobPayload(saved,{jobsDirectory:dir,verbose:true}),job);
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });

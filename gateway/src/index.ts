@@ -50,7 +50,7 @@ const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringif
 const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.4.0'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.5.0'});
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
@@ -68,19 +68,27 @@ function createServer(){
  },tracked(async(input,context)=>{try{return reply(await jobs.start('agent_implement',{...input,__host:detectHost(server,context)} as any));}catch(e){return errorReply(e);} }));
  server.registerTool('agent_worktree_status',{
    description:'Inspect a job managed worktree, branch, base commit and unintegrated changes. Does not modify files.',
-   inputSchema:z.object({job_id:z.string().uuid()}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
- },tracked(async({job_id})=>{try{return reply(await jobs.worktreeStatus(job_id));}catch(e){return errorReply(e);}}));
+   inputSchema:z.object({job_id:z.string().uuid(),include_disk_size:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },tracked(async({job_id,include_disk_size})=>{try{return reply(await jobs.worktreeStatus(job_id,include_disk_size));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_cleanup',{
-   description:'Safely remove idle managed worktrees. Supply job_id or up to 50 job_ids. dry_run previews eligibility without deleting. Clean empty worktrees (tip=base) need no integration/verification, including failed/cancelled jobs. Nonempty work requires completed job, parent verified=true and verification_summary, clean target including ignored/untracked files, and tip merged into current original HEAD. Unrelated original edits do not block cleanup. Bulk results preserve every skipped reason. Never force deletes.',
-   inputSchema:z.object({job_id:z.string().uuid().optional(),job_ids:z.array(z.string().uuid()).min(1).max(50).optional(),dry_run:z.boolean().default(false),integration_ref:z.string().min(1).default('HEAD'),verified:z.literal(true).optional(),verification_summary:z.string().max(4000).default('')}).refine(v=>!!v.job_id!==!!v.job_ids,'Supply either job_id or job_ids'),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
- },tracked(async({job_id,job_ids,dry_run,integration_ref,verified,verification_summary})=>{try{const options={dryRun:dry_run,verified:verified===true};return reply(job_ids?await jobs.cleanupWorktrees(job_ids,integration_ref,verification_summary,options):await jobs.cleanupWorktree(job_id!,integration_ref,verification_summary,options));}catch(e){return errorReply(e);}}));
+   description:'Safely remove idle managed worktrees. Supply job_id or up to 50 job_ids. dry_run previews eligibility without deleting. Clean empty worktrees (tip=base) need no integration/verification, including failed/cancelled jobs. Nonempty work requires completed job, parent verified=true and verification_summary, clean target including ignored/untracked files, and tip merged into current original HEAD (or opt-in verified patch equivalence). Unrelated original edits do not block cleanup. Bulk results preserve every skipped reason. Never force deletes.',
+   inputSchema:z.object({job_id:z.string().uuid().optional(),job_ids:z.array(z.string().uuid()).min(1).max(50).optional(),dry_run:z.boolean().default(false),integration_ref:z.string().min(1).default('HEAD'),allow_patch_equivalent:z.boolean().default(false).describe('Accept cherry-picked commits only when every commit is covered and the current original HEAD still matches all touched paths. Merge commits are refused.'),verified:z.literal(true).optional(),verification_summary:z.string().max(4000).default('')}).refine(v=>!!v.job_id!==!!v.job_ids,'Supply either job_id or job_ids'),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({job_id,job_ids,dry_run,integration_ref,allow_patch_equivalent,verified,verification_summary})=>{try{const options={dryRun:dry_run,verified:verified===true,allowPatchEquivalent:allow_patch_equivalent};return reply(job_ids?await jobs.cleanupWorktrees(job_ids,integration_ref,verification_summary,options):await jobs.cleanupWorktree(job_id!,integration_ref,verification_summary,options));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_list',{
-   description:'List managed worktrees recorded by this gateway: job state, base/tip, commit/change counts, integration into original HEAD, creation time and bounded disk size. Missing paths and scan limits are explicit. Paginated; never deletes.',
-   inputSchema:z.object({offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(50),include_removed:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
- },tracked(async({offset,limit,include_removed})=>{try{return reply(await jobs.listWorktrees(offset,limit,include_removed));}catch(e){return errorReply(e);}}));
+   description:'List managed worktrees with bounded parallel inspection: job state, base/tip, commit/change counts, checkout health and integration into original HEAD. Disk scanning is off unless include_disk_size=true. Missing paths and metadata-only checkouts are explicit. Paginated; never deletes.',
+   inputSchema:z.object({offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(50),include_removed:z.boolean().default(false),include_disk_size:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },tracked(async({offset,limit,include_removed,include_disk_size})=>{try{return reply(await jobs.listWorktrees(offset,limit,include_removed,include_disk_size));}catch(e){return errorReply(e);}}));
+ server.registerTool('agent_worktree_migrate',{
+   description:'Move a finished idle managed worktree with git worktree move into persistent storage. Default dry_run=true. Does not automatically migrate existing worktrees. Updates gateway metadata; start a new provider session after moving because historical provider paths cannot be rewritten. Never runs on active or unknown-owner jobs.',
+   inputSchema:z.object({job_id:z.string().uuid(),dry_run:z.boolean().default(true),target_root:z.string().min(1).optional()}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({job_id,dry_run,target_root})=>{try{return reply(await jobs.worktreeMaintenance(job_id,'migrate',{dryRun:dry_run,targetRoot:target_root}));}catch(e){return errorReply(e);}}));
+ server.registerTool('agent_worktree_recover',{
+   description:'Recover an idle metadata-only checkout whose tracked files are all missing and index unchanged. Default restore repopulates files from HEAD. remove restores then removes the checkout while preserving its branch. Refuses partial/missing/sparse checkouts. Default dry_run=true; apply requires verified=true and a parent summary acknowledging missing files. Uncommitted lost content cannot be recovered from Git.',
+   inputSchema:z.object({job_id:z.string().uuid(),action:z.enum(['restore','remove']).default('restore'),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({job_id,action,dry_run,verified,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,action,{dryRun:dry_run,verified,summary:verification_summary}));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_job_status',{
    description:'Read background job progress and final provider results. Poll while queued/running/cancelling. Check outcome, successCount, failureCount, skipped, and handoff even when some providers succeeded. Outcome success means provider turn execution, not verified completion criteria. Inspect execution.commands, completionCriteria, processExit and processWarnings separately. implementationProgress warns when observed reading continues without writes/commands; parent should review scope/next step, never automatically cancel or replay. Missing telemetry is unavailable. Failed implementations require parent workspace review before continuing.',
-   inputSchema:z.object({job_id:z.string().uuid(),verbose:z.boolean().default(false).describe('Default response is bounded with head/tail previews and full artifact references. true loads the full original result and can exceed client output limits.')}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+   inputSchema:z.object({job_id:z.string().uuid(),verbose:z.boolean().default(false).describe('Default preserves the full review text and compacts command logs with artifact references. Large review bodies may exceed the response budget. true loads the full original diagnostics and can exceed client output limits.')}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },async({job_id,verbose})=>{try{return reply(await jobs.status(job_id,verbose));}catch(e){return errorReply(e);}});
  server.registerTool('agent_job_wait',{
    description:'Wait for job completion or timeout, returning a compact status. Works across gateway processes. Timeout or cancelling this wait never cancels the job; use agent_job_cancel for that. Reissue the wait if wait.timed_out=true.',
@@ -116,11 +124,11 @@ process.stdin.on('end',()=>{void closeBridge();});
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.4.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.5.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.4.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.5.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

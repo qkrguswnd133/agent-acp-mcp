@@ -14,7 +14,7 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 
 ## 업데이트
 
-**2.4.0 작업 관리 개선:** 빈 worktree 자동 정리, 목록·일괄 정리 사전 확인, 14일 이상 보관 경고, `agent_job_wait`, 간결한 작업 결과와 원본 artifact 조회를 지원합니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)를 확인하세요. 기존 보관 폴더는 업데이트만으로 일괄 삭제되지 않습니다.
+**2.5.0 작업 보존 개선:** 새 worktree는 `%LOCALAPPDATA%\Agent ACP MCP\worktrees`에 보관합니다. 기존 TEMP worktree는 자동 이동하지 않으며, 명시적 이동·손상 복구 도구와 3일 이상 보관 경고를 제공합니다. 검증된 cherry-pick 결과의 정리는 선택적으로 patch 동등성을 확인합니다. 리뷰 본문은 64 KiB를 넘어도 그대로 반환하고 명령 로그를 줄입니다. Windows Codex용 portable PowerShell 7.6.6을 함께 배포하며 개인·시스템 PowerShell 설치는 변경하지 않습니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)와 [설정 설명](distribution/README.md)을 확인하세요.
 
 **2.3.0 모델 선택 규약 변경:** 모델·effort의 `auto`는 Parent가 작업별로 구체적인 값과 `selection_reason`을 선택해 전달하는 정책입니다. CLI 기본값으로 넘기지 않습니다. `agent_models`로 지원 정보와 고정/auto 정책을 먼저 확인하세요. 기존 고정 설정은 호출로 덮어쓰지 않습니다. MCP 재연결과 함께 [모델 선택 지침](gateway/MODEL-OVERRIDES.md) 및 [Parent 지침 템플릿](distribution/instructions/README.md)을 반영하세요. 개인 설정·지침은 자동으로 교체되지 않습니다.
 
@@ -24,7 +24,7 @@ Monitor에서 새 릴리스를 확인하고 현재 설치된 구성요소를 함
 
 ## 개발 및 릴리스
 
-소스는 `gateway/`, `monitor/`, `distribution/`에 있습니다. `gateway/package-lock.json`과 `monitor/package-lock.json`으로 의존성을 고정합니다. Windows x64, Node.js 22.12+와 npm이 필요합니다.
+소스는 `gateway/`, `monitor/`, `distribution/`에 있습니다. `gateway/package-lock.json`과 `monitor/package-lock.json`으로 의존성을 고정합니다. Windows x64, Node.js 22.12+, npm 및 Windows .NET Framework C# 컴파일러가 필요합니다. 빌드는 공식 portable PowerShell ZIP의 고정 SHA-256을 검증하고, 콘솔 UTF-8 및 프로필 차단용 작은 Codex 실행기를 소스에서 컴파일합니다.
 
 ```powershell
 $node = 'C:\Path\To\node.exe'
