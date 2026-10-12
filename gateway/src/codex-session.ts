@@ -4,7 +4,7 @@ import {createInterface} from 'node:readline';
 import path from 'node:path';
 import {home} from './process.js';
 
-export interface CodexSessionEvidence {model?:string;effort?:string;observedModels:string[];observedEfforts:string[];source:'session_jsonl'|'unavailable';}
+export interface CodexSessionEvidence {model?:string;effort?:string;observedModels:string[];observedEfforts:string[];source:'session_jsonl'|'unavailable';completed?:boolean;completedAt?:string;text?:string;usage?:unknown;}
 const empty=():CodexSessionEvidence=>({observedModels:[],observedEfforts:[],source:'unavailable'});
 const setting=(v:unknown)=>typeof v==='string'&&v.trim()&&!['auto','unavailable','unknown'].includes(v.trim())?v.trim():undefined;
 const samePath=(a:string,b:string)=>process.platform==='win32'?path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase():path.resolve(a)===path.resolve(b);
@@ -24,7 +24,7 @@ export async function readCodexSessionTelemetry(cwd:string,sessionId:string|unde
     const file=path.join(directory,entry.name),stat=await fs.stat(file);
     if(stat.size>64*1024*1024)continue;
     const input=createReadStream(file,{encoding:'utf8'}),lines=createInterface({input,crlfDelay:Infinity});
-    const models=new Set<string>(),efforts=new Set<string>();let matched=false;
+    const models=new Set<string>(),efforts=new Set<string>();let matched=false,completedAt:string|undefined,text:string|undefined,usage:unknown;
     try{
      for await(const line of lines){
       let e:any;try{e=JSON.parse(line);}catch{continue;}
@@ -34,13 +34,18 @@ export async function readCodexSessionTelemetry(cwd:string,sessionId:string|unde
        const ts=Date.parse(e.timestamp);if(!Number.isFinite(ts)||ts<startedAt-5000||ts>endedAt+5000)return empty();
        matched=true;
       }
-      if(!matched||e?.type!=='turn_context'||typeof p?.cwd!=='string'||!samePath(p.cwd,cwd))continue;
+      if(!matched)continue;
       const ts=Date.parse(e.timestamp);if(!Number.isFinite(ts)||ts<startedAt-5000||ts>endedAt+5000)continue;
+      if(e?.type==='event_msg'&&p?.type==='task_complete'){
+       completedAt=new Date(ts).toISOString();if(typeof p.last_agent_message==='string')text=p.last_agent_message;
+      }
+      if(e?.type==='event_msg'&&p?.type==='token_count'&&p?.info?.total_token_usage)usage=p.info.total_token_usage;
+      if(e?.type!=='turn_context'||typeof p?.cwd!=='string'||!samePath(p.cwd,cwd))continue;
       const model=setting(p.model),effort=setting(p.effort??p.reasoning_effort);
       if(model)models.add(model);if(effort)efforts.add(effort);
      }
     }finally{lines.close();input.destroy();}
-    if(matched)return {source:'session_jsonl',observedModels:[...models],observedEfforts:[...efforts],...(models.size===1?{model:[...models][0]}:{}),...(efforts.size===1?{effort:[...efforts][0]}:{})};
+    if(matched)return {source:'session_jsonl',observedModels:[...models],observedEfforts:[...efforts],...(models.size===1?{model:[...models][0]}:{}),...(efforts.size===1?{effort:[...efforts][0]}:{}),...(completedAt?{completed:true,completedAt,text}:{}),...(usage?{usage}:{})};
    }
   }
  }catch{/* Telemetry must never replace the provider result. */}

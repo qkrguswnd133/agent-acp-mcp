@@ -8,6 +8,14 @@ import {AgentRouter} from '../src/router.js';
 import type {ProviderAdapter,ProviderName,ProviderStatus,ProviderRunResult,RunInput} from '../src/types.js';
 const host={host:'codex' as const,clientName:'codex-mcp-client'};
 const input={cwd:process.cwd(),task:'fixture',provider:'auto',max_runtime_minutes:1};
+test('completed turn with unconfirmed children stops later implementation and preserves evidence',async()=>{
+ let second=0;
+ const first=adapter('grok',async()=>({provider:'grok',text:'finished code',error:null,childCleanedUp:false,processCleanup:{verified:false,remainingPids:[1234]},usage:{totalTokens:7}}));
+ const next=adapter('claude',async()=>{second++;return {provider:'claude',text:'must not run'};});
+ const r=await new AgentRouter([first,next]).run('agent_implement',selectedInput({...input,provider:'grok,claude'}),host);
+ assert.equal(second,0);assert.equal(r.errorKind,'process_cleanup_unconfirmed');assert.equal(r.handoff?.requiresWorkspaceReview,true);
+ assert.equal(r.results[0].text,'finished code');assert.deepEqual(r.results[0].usage,{totalTokens:7});assert.deepEqual(r.results[0].processCleanup,{verified:false,remainingPids:[1234]});
+});
 const limit=(provider:ProviderName,kind='quota_exhausted'):ProviderRunResult=>({provider,text:'partial',error:'limited',errorKind:kind,sessionId:'fixture-session',usage:{totalTokens:10}});
 function adapter(name:ProviderName,run:ProviderAdapter['run'],status?:(force?:boolean)=>Partial<ProviderStatus>):ProviderAdapter{
  const value:ProviderStatus={provider:name,enabled:true,available:true,authenticated:true,subscriptionAuth:true,version:'fixture',modelPolicy:'auto',effortPolicy:'auto',quota:{state:'available',source:'fixture'}};

@@ -2,6 +2,7 @@ import {spawn,execFile,type ChildProcess} from 'node:child_process';
 import {homedir} from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {trackProcessTree,type ProcessCleanup} from './process-tree.js';
 
 export const home=process.env.USERPROFILE??process.env.HOME??homedir();
 export const delegationKey='AGENT_ACP_MCP_DELEGATED';
@@ -85,7 +86,7 @@ export async function findExecutableInChildDirs(base:string,filename:string):Pro
   }catch{return undefined;}
 }
 
-export interface CommandResult {code:number|null;signal:NodeJS.Signals|null;stdout:string;stderr:string;timedOut:boolean;}
+export interface CommandResult {code:number|null;signal:NodeJS.Signals|null;stdout:string;stderr:string;timedOut:boolean;stopReason?:'completed'|'cancelled'|'deadline_exceeded';processCleanup?:ProcessCleanup;}
 export function commandInvocation(command:string,args:string[],cwd?:string):{command:string;args:string[]}{
   assertBatchCwdSupported(command,cwd);
   if(process.platform==='win32'&&/\.(cmd|bat)$/i.test(command)){
@@ -123,21 +124,52 @@ export function spawnPlan(launch:LaunchCommand,args:readonly string[],cwd?:strin
   return {...invocation,windowsVerbatimArguments:batch};
 }
 
-export async function runCommand(launch:LaunchCommand,args:string[],options:{cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void}={}):Promise<CommandResult>{
+export interface CommandOptions {cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void;onStdoutLine?:(line:string)=>void;completion?:()=>boolean|Promise<boolean>;completionGraceMs?:number;trackDescendants?:boolean;}
+export async function runCommand(launch:LaunchCommand,args:string[],options:CommandOptions={}):Promise<CommandResult>{
+  if(options.signal?.aborted)return {code:null,signal:null,stdout:'',stderr:'',timedOut:false,stopReason:'cancelled'};
   const invocation=spawnPlan(launch,args,options.cwd);
   const p=spawn(invocation.command,invocation.args,{cwd:options.cwd,env:options.env??safeChildEnv(),windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});
   options.onSpawn?.(p);
-  let stdout='',stderr='',timedOut=false;
-  p.stdout?.on('data',d=>{stdout+=String(d);options.onActivity?.({type:'stdout',at:new Date().toISOString()});});
+  options.onActivity?.({type:'process_spawn',pid:p.pid??null,at:new Date().toISOString()});
+  const tree=options.trackDescendants&&p.pid?trackProcessTree(p.pid,()=>p.exitCode===null&&p.signalCode===null):undefined;
+  let stdout='',stderr='',lineBuffer='',timedOut=false,stopReason:CommandResult['stopReason'];
+  // StringDecoder in the stream preserves multi-byte text split across chunks.
+  p.stdout?.setEncoding('utf8');p.stderr?.setEncoding('utf8');
+  p.stdout?.on('data',d=>{stdout+=String(d);lineBuffer+=String(d);const lines=lineBuffer.split(/\r?\n/);lineBuffer=lines.pop()??'';for(const line of lines)options.onStdoutLine?.(line);options.onActivity?.({type:'stdout',at:new Date().toISOString()});});
   p.stderr?.on('data',d=>{stderr+=String(d);options.onActivity?.({type:'stderr',at:new Date().toISOString()});});
+  p.stdin?.on('error',()=>{/* EPIPE after a terminal event must not crash the host. */});
   if(options.stdin!==undefined){p.stdin?.end(options.stdin);}else p.stdin?.end();
-  let timer:NodeJS.Timeout|undefined;
-  const stop=()=>{void terminateProcess(p);};
-  if(options.signal){if(options.signal.aborted)stop();else options.signal.addEventListener('abort',stop,{once:true});}
-  if(options.timeoutMs)timer=setTimeout(()=>{timedOut=true;stop();},options.timeoutMs);
-  const result=await new Promise<CommandResult>((resolve,reject)=>{
-    p.once('error',reject);
-    p.once('close',(code,signal)=>resolve({code,signal,stdout,stderr,timedOut}));
-  }).finally(()=>{if(timer)clearTimeout(timer);options.signal?.removeEventListener('abort',stop);});
-  return result;
+  let timer:NodeJS.Timeout|undefined,watch:NodeJS.Timeout|undefined,grace:NodeJS.Timeout|undefined,hardStop:NodeJS.Timeout|undefined,finishing=false,probing=false;
+  let settle!:(code:number|null,signal:NodeJS.Signals|null)=>void;
+  const stop=(reason:NonNullable<CommandResult['stopReason']>)=>{
+    if(stopReason)return;stopReason=reason;
+    // Never depend on close: inherited pipes and broken native teardown can
+    // leave it pending even after taskkill or the root's exit event.
+    hardStop=setTimeout(()=>settle(p.exitCode,p.signalCode),7000);
+    void terminateProcess(p).catch(()=>false).finally(()=>settle(p.exitCode,p.signalCode));
+  };
+  const abort=()=>stop('cancelled');
+  return new Promise<CommandResult>((resolve,reject)=>{
+    settle=(code,signal)=>{
+      if(finishing)return;finishing=true;
+      if(timer)clearTimeout(timer);if(watch)clearInterval(watch);if(grace)clearTimeout(grace);if(hardStop)clearTimeout(hardStop);options.signal?.removeEventListener('abort',abort);
+      if(lineBuffer){options.onStdoutLine?.(lineBuffer);lineBuffer='';}
+      void (async()=>{
+        let cleanup:ProcessCleanup|undefined;
+        if(tree){let bound:NodeJS.Timeout|undefined;cleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),remainingPids:tree.knownPids(),verified:false,note:'Process cleanup deadline reached; listed PIDs may still be running, ownership/exit verification is incomplete.'});},7000);})]);if(bound)clearTimeout(bound);}
+        if(cleanup&&p.pid&&p.exitCode===null&&p.signalCode===null)cleanup={...cleanup,verified:false,remainingPids:[...new Set([...cleanup.remainingPids,p.pid])],note:[cleanup.note,'Root process exit was not confirmed.'].filter(Boolean).join(' ')};
+        if(cleanup)options.onActivity?.({type:'process_cleanup',...cleanup,at:new Date().toISOString()});
+        // Release inherited pipe handles even if a child did not close them.
+        p.stdout?.destroy();p.stderr?.destroy();p.stdin?.destroy();p.unref();
+        resolve({code,signal,stdout,stderr,timedOut,...(stopReason?{stopReason}:{}),...(cleanup?{processCleanup:cleanup}:{})});
+      })().catch(reject);
+    };
+    p.once('error',error=>{stderr+=error.message;settle(p.exitCode,p.signalCode);});
+    p.once('close',(code,signal)=>settle(code,signal));
+    // exit is sufficient to start a short pipe-drain grace, then finalize.
+    p.once('exit',(code,signal)=>{if(!hardStop)hardStop=setTimeout(()=>settle(code,signal),250);});
+    options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
+    if(options.timeoutMs)timer=setTimeout(()=>{timedOut=true;stop('deadline_exceeded');},options.timeoutMs);
+    if(options.completion)watch=setInterval(()=>{if(probing||finishing||stopReason||grace)return;probing=true;void Promise.resolve(options.completion!()).then(completed=>{if(completed&&!finishing&&!stopReason&&!grace)grace=setTimeout(()=>stop('completed'),options.completionGraceMs??1500);}).catch(()=>{/* Session telemetry is optional. */}).finally(()=>{probing=false;});},250);
+  });
 }

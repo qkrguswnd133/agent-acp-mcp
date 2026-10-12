@@ -60,6 +60,8 @@ export interface ProviderStatus {
 }
 
 export interface ProviderRunResult {
+  completion?: unknown;
+  processCleanup?: unknown;
   selection?: import('./model-settings.js').RunSelection;
   observation?: {model:SettingObservation;effort:SettingObservation};
   provider: ProviderName;

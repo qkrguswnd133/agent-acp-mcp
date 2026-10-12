@@ -43,3 +43,9 @@ Use local fixture tests for an installation check that must avoid provider/model
 
 The standalone monitor reads status separately and does not route model tasks. Global instructions cannot repair missing CLI installations, incorrect gateway paths, or unsupported runtime versions.
 
+
+## Gateway 2.5.3 lifecycle and cleanup
+
+Use agent_job_wait with timeout_seconds <= 25; legacy larger values are capped. A wait timeout/abort is not job cancellation. If the transport disconnects, query the same persisted job ID after reconnecting; do not replay it. A host may forcibly terminate the gateway despite drain handling. Inspect completion, processCleanup, childCleanedUp, partial output and handoff before starting replacement implementation. Never assume CPU inactivity when stallEvidence.cpuIdle is unavailable.
+
+Failed/cancelled committed worktrees may be cleaned only after actual ancestry integration into original HEAD, verified=true, idle_confirmed=true, a factual verification_summary, and fresh idle checks. Patch equivalence does not apply to those failures. Preview first. Opt into remove_ignored_artifacts=true only for intended disposable Git-ignored files; review removedIgnoredPaths including partial failures. Modified/untracked files, links, nested repositories and unmerged commits stay protected. Prefer Gradle --no-daemon and retain the gateway-provided GRADLE_USER_HOME; report remaining processes instead of terminating unrelated processes.

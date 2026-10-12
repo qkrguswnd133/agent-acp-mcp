@@ -29,3 +29,9 @@ test('interrupted ownership fails closed on missing, malformed and unreadable pr
 test('real ownership check never accepts a currently alive owner PID',async()=>{
  await assert.rejects(()=>verifyInterruptedOwnership({ownerPid:process.pid,workspacePaths:input.workspacePaths}),/owner process is still alive/);
 });
+test('reviewed terminal jobs allow a live gateway but reject remaining workspace writers and unknown ownership',()=>{
+ const finished=(entries:ProcessSnapshotEntry[])=>assertInterruptedOwnershipAbsent(input,[...self,processEntry(42,1,'node gateway.js','node.exe'),...entries],'win32',100,true);
+ assert.doesNotThrow(()=>finished([processEntry(77,42,'codex -C C:\\other-repo','codex.exe')]));
+ assert.throws(()=>finished([processEntry(77,42,'codex -C C:\\worktrees\\one\\repo','codex.exe')]),/references/);
+ assert.throws(()=>finished([processEntry(77,42,null,'codex.exe')]),/unreadable/);
+});

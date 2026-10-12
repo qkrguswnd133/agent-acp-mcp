@@ -56,7 +56,7 @@ export class AgentRouter{
     const statuses=await this.statuses(force);const providers:any={};
     const catalogs=Object.fromEntries(await Promise.all(names.map(async name=>[name,statuses[name].enabled?await this.catalog(name,force):unavailableCatalog(name,'Provider disabled.')])));
     for(const name of names){const status=statuses[name];const reason=blockedReason(status,host,name,allowSelf);providers[name]={...status,modelCatalog:catalogs[name],quota:{...status.quota,resetsAt:status.quota.resetsAt??null,retryAfter:status.quota.retryAfter??null,limitKind:status.quota.limitKind??(status.quota.state==='exhausted'?'quota_exhausted':null)},callable:!reason,blocked_reason:reason??null,selfProvider:name===host.host};}
-    return {server:'agent-acp-mcp',version:'2.5.2',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
+    return {server:'agent-acp-mcp',version:'2.5.3',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
   }
   async plan(spec:string|undefined,host:HostDetection,forceStatus=false,override?:boolean){
     if(isDelegatedProcess())throw Error('NESTED_DELEGATION_BLOCKED: delegated provider sessions cannot invoke this gateway');
@@ -110,6 +110,7 @@ export class AgentRouter{
         try{result=await this.adapter(name).run(kind,{...input,deadlineAt,max_runtime_minutes:(deadlineAt-now())/60_000},controller.signal,{onActivity:event=>{try{hooks?.onActivity?.({provider:name,...event});}catch{}}});}
         catch(e){result=selectionFailure(name,e,settings.get(name)!.selection);}
         result=withSelection(result,settings.get(name)!.selection);
+        if(kind==='agent_implement'&&!result.error&&result.childCleanedUp===false)result={...result,error:'Provider turn finished but child process cleanup is unconfirmed; review remaining processes before continuing implementation',errorKind:'process_cleanup_unconfirmed'};
         if(check())result={...result,providerError:result.error??null,providerErrorKind:result.errorKind??null,error:stopped==='cancelled'?'Cancelled':'Task runtime deadline exceeded',errorKind:stopped};
         if(kind==='agent_implement'&&result.error)result={...result,handoff:{requiresWorkspaceReview:true,cwd:input.cwd,allowedPaths:input.allowed_paths??[input.cwd],kind,reason:result.errorKind??'task_error',sessionId:result.sessionId??'unavailable',nextAction:'review_workspace_before_continuing',changes:'unverified'}};
         return {...result,execution:executionEvidence(result)};

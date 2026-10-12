@@ -347,3 +347,85 @@ test('patch equivalence refuses uncovered commits and merge histories',async()=>
   }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
  }
 });
+
+async function ignoredFixture(){
+ const {root,repo}=await fixture();
+ await fs.writeFile(path.join(repo,'.gitignore'),'build/\n.gradle/\n');await git(repo,'add','.');await git(repo,'commit','-m','ignore build outputs');
+ const {worktree:w}=await createManagedWorktree({cwd:repo,task:'ignored build fixture'},randomUUID());
+ await fs.mkdir(path.join(w.path,'build','nested'),{recursive:true});await fs.mkdir(path.join(w.path,'.gradle'));
+ await fs.writeFile(path.join(w.path,'build','nested','한글 output.txt'),'build output');await fs.writeFile(path.join(w.path,'.gradle','cache.bin'),'cache');
+ return {root,repo,w};
+}
+async function disposeIgnoredFixture(root:string,repo:string,w:ManagedWorktree){
+ if(await fs.stat(w.path).catch(()=>undefined)){
+  // This helper owns only the isolated fixture directories created above.
+  for(const dir of ['build','.gradle'])await fs.rm(path.join(w.path,dir),{recursive:true,force:true});
+  await git(w.path,'restore','--staged','--worktree','.');
+  await fs.unlink(path.join(w.path,'untracked.txt')).catch(()=>{});
+  await git(repo,'worktree','remove',w.path);
+ }
+ await fs.rm(root,{recursive:true,force:true});
+}
+test('explicit ignored-artifact cleanup previews without deleting, then reports only deleted ignored paths',async()=>{
+ const {root,repo,w}=await ignoredFixture();
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'implemented');await git(w.path,'add','file.txt');await git(w.path,'commit','-m','implementation');await git(repo,'merge','--ff-only',w.branch);
+  const defaultPreview=await cleanupManagedWorktree(w,'HEAD','verified',{dryRun:true});assert.equal(defaultPreview.eligible,false);
+  const preview=await cleanupManagedWorktree(w,'HEAD','verified',{dryRun:true,removeIgnoredArtifacts:true});assert.equal(preview.eligible,true,preview.reason);
+  assert.deepEqual(preview.ignoredArtifactPaths,['.gradle/cache.bin','build/nested/한글 output.txt']);assert.equal(preview.removedIgnoredPaths,undefined);
+  assert.equal(await fs.readFile(path.join(w.path,'build','nested','한글 output.txt'),'utf8'),'build output');
+  const result=await cleanupManagedWorktree(w,'HEAD','verified',{removeIgnoredArtifacts:true});assert.equal(result.state,'removed');
+  assert.deepEqual(new Set(result.removedIgnoredPaths),new Set(['.gradle/cache.bin','build/nested/한글 output.txt','build/nested/','.gradle/','build/']));
+  assert.equal(await fs.readFile(path.join(repo,'file.txt'),'utf8'),'implemented');assert.equal(await fs.stat(w.path).catch(()=>undefined),undefined);
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+test('ignored-artifact option preserves artifacts for unmerged commits and missing verification',async()=>{
+ const {root,repo,w}=await ignoredFixture();
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'unmerged');await git(w.path,'add','file.txt');await git(w.path,'commit','-m','unmerged');
+  await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','verified',{removeIgnoredArtifacts:true}),/not merged/);
+  assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');
+  await git(repo,'merge','--ff-only',w.branch);
+  await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','',{removeIgnoredArtifacts:true}),/verification summary/);
+  assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+test('ignored-artifact option cannot discard tracked changes, staged changes or unignored files',async()=>{
+ const {root,repo,w}=await ignoredFixture();
+ try{
+  for(const staged of [false,true]){
+   await fs.writeFile(path.join(w.path,'file.txt'),'keep tracked');if(staged)await git(w.path,'add','file.txt');
+   await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true}),/modified, untracked/);
+   assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');await git(w.path,'restore','--staged','--worktree','file.txt');
+  }
+  await fs.writeFile(path.join(w.path,'untracked.txt'),'keep untracked');
+  assert.equal((await cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,dryRun:true})).eligible,false);
+  assert.equal(await fs.readFile(path.join(w.path,'untracked.txt'),'utf8'),'keep untracked');assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+test('ignored-artifact cleanup refuses a junction and a nested repository before removing any artifact',async()=>{
+ for(const kind of ['junction','repository']){
+  const {root,repo,w}=await ignoredFixture(),outside=path.join(root,'outside'),entry=path.join(w.path,'build','external');
+  try{
+   await fs.mkdir(outside);await fs.writeFile(path.join(outside,'keep.txt'),'external');
+   if(kind==='junction')await fs.symlink(outside,entry,'junction');else{await fs.mkdir(entry);await git(entry,'init');await fs.writeFile(path.join(entry,'keep.txt'),'nested');}
+   const preview=await cleanupManagedWorktree(w,'','',{dryRun:true,removeIgnoredArtifacts:true});assert.equal(preview.eligible,false);
+   await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true}),/Unsafe ignored|symlink|nested repository/);
+   assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');assert.equal(await fs.readFile(path.join(outside,'keep.txt'),'utf8'),'external');
+  }finally{if(kind==='junction')await fs.unlink(entry).catch(()=>{});await disposeIgnoredFixture(root,repo,w);}
+ }
+});
+test('partial ignored-artifact deletion failure reports deleted paths and retains worktree and branch',async t=>{
+ const {root,repo,w}=await ignoredFixture(),unlink=fs.unlink.bind(fs);
+ try{
+  t.mock.method(fs,'unlink',async(target:Parameters<typeof fs.unlink>[0])=>{
+   if(String(target).endsWith('한글 output.txt'))throw Object.assign(Error('Fixture locked artifact'),{code:'EBUSY'});
+   return unlink(target);
+  });
+  await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true}),(error:any)=>{
+   assert.match(error.message,/locked artifact/);assert.deepEqual(error.removedIgnoredPaths,['.gradle/cache.bin']);assert.deepEqual(error.ignoredArtifactPaths,['.gradle/cache.bin','build/nested/한글 output.txt']);return true;
+  });
+  assert.equal(await git(w.path,'rev-parse','HEAD'),w.baseCommit);assert.equal(await git(repo,'rev-parse',w.branch),w.baseCommit);
+  assert.equal(await fs.readFile(path.join(w.path,'build','nested','한글 output.txt'),'utf8'),'build output');
+ }finally{t.mock.restoreAll();await disposeIgnoredFixture(root,repo,w);}
+});

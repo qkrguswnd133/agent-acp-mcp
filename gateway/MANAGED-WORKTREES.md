@@ -1,5 +1,7 @@
 # Managed worktrees for parallel implementation
 
+2.5.3 adds reviewed failed/cancelled cleanup and opt-in ignored artifact removal. See [Job lifecycle](JOB-LIFECYCLE.md) for exact checks, remaining-process evidence and bounded waiting. Failed/cancelled committed jobs require actual ancestry, `verified=true`, `idle_confirmed=true` and a verification summary; they cannot use patch equivalence. `remove_ignored_artifacts=true` returns `removedIgnoredPaths` without deleting ordinary untracked changes or links.
+
 `agent_implement` accepts:
 
 - `workspace_mode: auto` (default): use the original cwd unless an active overlapping job blocks implementation; then create a separate worktree.

@@ -1,4 +1,6 @@
 import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {runCodexCommand} from '../codex-execution.js';
 import {spawnPlan} from '../process.js';
 import {codexShellEnvironment,codexShellFailure} from '../codex-shell.js';
 import {home,resolveExecutable,runCommand,safeChildEnv,findExecutableInChildDirs,type LaunchCommand} from '../process.js';
@@ -106,7 +108,7 @@ function parseEvents(stdout:string){
    if(completed&&!terminalError){terminalError=message;terminalEvidence=evidence;}else if(!streamError){streamError=message;streamEvidence=evidence;}
   }
  }catch{/* A malformed line is not assistant text and must not become a fallback response. */}}
- return {text:texts.join('\n'),threadId,usage,error:terminalError??(completed?undefined:streamError),errorEvidence:terminalEvidence??(completed?undefined:streamEvidence),model,effort,commandExecutions:[...commands.values()]};
+ return {text:texts.join('\n'),threadId,usage,completed,error:terminalError??(completed?undefined:streamError),errorEvidence:terminalEvidence??(completed?undefined:streamEvidence),model,effort,commandExecutions:[...commands.values()]};
 }
 
 export class CodexProvider implements ProviderAdapter{
@@ -164,24 +166,30 @@ export class CodexProvider implements ProviderAdapter{
  private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
   const args=codexExecutionArgs(writable);if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
-  const shellEnvironment=await codexShellEnvironment(providerChildEnv());
-  const r=await runCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity});
+  const gradleUserHome=writable?path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'gradle',randomUUID()):undefined;
+  const shellEnvironment=await codexShellEnvironment(providerChildEnv(gradleUserHome?{GRADLE_USER_HOME:gradleUserHome}:{}));
+  const r=await runCodexCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity},runStartedAt);
   statusCache=undefined;const parsed=parseEvents(r.stdout);
   const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt);
+  if(!parsed.text&&session.completed&&session.text)parsed.text=session.text;
+  if(parsed.usage==='unavailable'&&session.usage)parsed.usage=session.usage;
   const runtime=codexRuntimeMetadata(parsed.model,parsed.effort,session);
+  const executionMetadata={completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradleUserHome?{gradleUserHome}:{})};
   const shellExecution={selectedShell:shellEnvironment.shell??null,...codexShellFailure(parsed.commandExecutions)};
-  if(r.code!==0||parsed.error){
-   const error=parsed.error??(r.stderr.trim()||`Codex exited with code ${r.code}`);
+  const interrupted=interruptionKind(r.timedOut,signal);
+  const confirmedCompletion=parsed.completed||session.completed;
+  if((r.code!==0&&!(r.stopReason==='completed'&&confirmedCompletion))||parsed.error||interrupted){
+   const error=parsed.error??(interrupted==='deadline_exceeded'?'Codex execution deadline exceeded':interrupted==='cancelled'?'Codex execution cancelled':r.stderr.trim()||`Codex exited with code ${r.code}`);
    const classification=classifyProviderError(parsed.errorEvidence??r.stderr);
-   const interrupted=interruptionKind(r.timedOut,signal),errorKind=interrupted??classification.errorKind;
+   const errorKind=interrupted??classification.errorKind;
    if(!interrupted&&classification.limitKind){
     try{await quota.markLimited('codex',classification,'Codex CLI reported a runtime limit.',Date.now());}catch{/* Cache telemetry cannot replace the CLI result. */}
    }
-   return {provider:'codex',text:parsed.text,error,errorKind,shellExecution,limitKind:classification.limitKind??null,resetsAt:classification.resetsAt??null,retryAfter:classification.retryAfter??null,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions};
+   return {provider:'codex',text:parsed.text,error,errorKind,shellExecution,...executionMetadata,limitKind:classification.limitKind??null,resetsAt:classification.resetsAt??null,retryAfter:classification.retryAfter??null,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.stdout};
   }
-  if(shellExecution.error)return {provider:'codex',text:parsed.text,error:shellExecution.error,errorKind:'shell_launch_failed',shellExecution,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions};
+  if(shellExecution.error)return {provider:'codex',text:parsed.text,error:shellExecution.error,errorKind:'shell_launch_failed',shellExecution,...executionMetadata,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions};
   try{await quota.markAvailable('codex','runtime_success',runStartedAt);}catch{/* Cache telemetry cannot replace the CLI result. */}
-  return {provider:'codex',text:parsed.text,error:null,errorKind:null,shellExecution,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.stdout};
+  return {provider:'codex',text:parsed.text,error:null,errorKind:null,shellExecution,...executionMetadata,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.stdout};
  }
  async cliStatus(){return this.status(true);}
  async update(){return {provider:'codex',updated:false,supported:false,reason:'Codex update is installation-dependent (Desktop/native/npm). Update Codex outside the gateway, then agent_cli_status will re-detect the version.'};}

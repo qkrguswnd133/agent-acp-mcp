@@ -20,13 +20,13 @@ after(async()=>{if(previousStorage===undefined)delete process.env.AGENT_MCP_WORK
 const delay=(n:number)=>new Promise(r=>setTimeout(r,n));
 async function root(t:any){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'job-operations-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));return dir;}
 async function fixtureGit(cwd:string,...args:string[]){return (await exec(await resolveGitExecutable(),['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args],{cwd,windowsHide:true})).stdout.trim();}
-async function maintenanceFixture(t:any,ownershipVerifier?:typeof verifyInterruptedOwnership){
+async function maintenanceFixture(t:any,ownershipVerifier?:typeof verifyInterruptedOwnership,finishedVerifier?:ConstructorParameters<typeof JobManager>[4]){
  const dir=await root(t),repo=path.join(dir,'repo'),jobs=path.join(dir,'jobs');await fs.mkdir(repo);await fs.mkdir(jobs);
  await fixtureGit(repo,'init');await fs.mkdir(path.join(repo,'nested'));await fs.writeFile(path.join(repo,'nested','base.txt'),'base');await fixtureGit(repo,'add','.');await fixtureGit(repo,'commit','-m','base');
  const id=randomUUID(),created=await createManagedWorktree({cwd:path.join(repo,'nested'),task:'fixture'},id),file=path.join(jobs,id+'.json');
  const record={job_id:id,kind:'agent_implement',cwd:created.input.cwd,ownerPid:process.pid,status:'completed',startedAt:'2020-01-01T00:00:00Z',lastActivityAt:'2020-01-01T00:00:00Z',finishedAt:'2020-01-01T00:00:01Z',worktree:created.worktree,activity:{cwd:created.input.cwd,event:'historical'},result:{error:null,results:[{provider:'grok',sessionId:'historical-session',cwd:created.input.cwd,text:'completed'}]}};
  await fs.writeFile(file,JSON.stringify(record));
- const m=new JobManager(jobs,async()=>{throw Error('No replay');},undefined,ownershipVerifier);
+ const m=new JobManager(jobs,async()=>{throw Error('No replay');},undefined,ownershipVerifier,finishedVerifier);
  return {dir,repo,jobs,id,file,record,m,w:created.worktree};
 }
 async function disposeFixture(f:Awaited<ReturnType<typeof maintenanceFixture>>){
@@ -40,6 +40,57 @@ test('wait returns completion or timeout and aborting the wait never cancels the
  assert.equal((await m.wait(job.job_id,0)).wait.timed_out,true);assert.equal(taskSignal.aborted,false);
  const abort=new AbortController();const waiting=m.wait(job.job_id,3,false,abort.signal);abort.abort();assert.equal((await waiting).wait.cancelled,true);assert.equal(taskSignal.aborted,false);
  const completed=m.wait(job.job_id,3);release({error:null,text:'done'});assert.equal((await completed).wait.completed,true);await m.close();
+});
+test('legacy long waits are capped and transport drain preserves accepted work',async t=>{
+ const dir=await root(t);let finish!:(value:any)=>void,signal!:AbortSignal;
+ const m=new JobManager(path.join(dir,'jobs'),async(_k,_i,s)=>{signal=s;return new Promise(resolve=>finish=resolve);});
+ const started=await m.start('agent_ask',{cwd:dir,task:'fixture'});while(!finish)await delay(1);
+ const abort=new AbortController();abort.abort();const snapshot=await m.wait(started.job_id,60,false,abort.signal);
+ assert.equal(snapshot.wait.effective_timeout_seconds,25);assert.equal(snapshot.wait.requested_timeout_seconds,60);assert.equal(signal.aborted,false);
+ let drained=false;const draining=m.drain().then(()=>{drained=true;});await delay(10);assert.equal(drained,false);assert.equal(signal.aborted,false);
+ await assert.rejects(m.start('agent_ask',{cwd:dir,task:'new'}),/shutting down/);
+ finish({error:null,text:'final',usage:{totalTokens:42}});await draining;
+ assert.equal((await m.status(started.job_id)).status,'completed');assert.equal((await m.status(started.job_id)).result.usage.totalTokens,42);
+});
+test('foreign owner stalled and terminal evidence use persisted activity rather than gateway identity',async t=>{
+ const dir=await root(t),jobs=path.join(dir,'jobs'),id=randomUUID();await fs.mkdir(jobs);
+ const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true,stdio:'ignore'});t.after(()=>child.kill());
+ const old=new Date(Date.now()-30000).toISOString();
+ await fs.writeFile(path.join(jobs,id+'.json'),JSON.stringify({job_id:id,kind:'agent_implement',cwd:dir,ownerPid:child.pid,status:'running',lastActivityAt:old,runtimeEvidence:{codexTurnCompletedAt:old}}));
+ const m=new JobManager(jobs,async()=>{throw Error('no replay');},10);
+ const s=await m.status(id);assert.equal(s.owner_available,false);assert.equal(s.stalled_suspected,true);assert.equal(s.stallEvidence.turnCompletedWithoutFurtherOutput,true);assert.equal(s.stallEvidence.cpuIdle,'unavailable');
+ await m.close();
+});
+test('failed and cancelled merged commits require verification and fresh idle checks while preserving job history',async t=>{
+ for(const status of ['failed','cancelled']){
+  let scans=0;const f=await maintenanceFixture(t,undefined,async()=>{scans++;return {processScan:'passed',checkedAt:new Date().toISOString(),ownerMayServeOtherJobs:true};});
+  const record={...f.record,status,result:{error:'historical failure',usage:{totalTokens:12},childCleanedUp:true}};
+  await fs.writeFile(f.file,JSON.stringify(record));
+  try{
+   await fs.writeFile(path.join(f.w.path,'nested/base.txt'),'changed');await fixtureGit(f.w.path,'add','.');await fixtureGit(f.w.path,'commit','-m','work');
+   await assert.rejects(f.m.cleanupWorktree(f.id,'HEAD','reviewed',{verified:true,idleConfirmed:true,allowPatchEquivalent:true}),/not merged/);assert.equal(scans,0);
+   await fixtureGit(f.repo,'merge','--ff-only',f.w.branch);
+   await assert.rejects(f.m.cleanupWorktree(f.id,'HEAD','reviewed',{verified:true}),/idle_confirmed/);
+   await assert.rejects(f.m.cleanupWorktree(f.id,'HEAD','',{verified:true,idleConfirmed:true}),/verification_summary/);
+   await assert.rejects(f.m.cleanupWorktree(f.id,'HEAD','reviewed',{idleConfirmed:true}),/verified=true/);
+   const denied=new JobManager(f.jobs,async()=>{},undefined,undefined,async()=>{throw Error('provider still owns workspace');});
+   try{await assert.rejects(denied.cleanupWorktree(f.id,'HEAD','reviewed',{verified:true,idleConfirmed:true}),/still owns/);}finally{await denied.close();}
+   const preview=await f.m.cleanupWorktree(f.id,'HEAD','reviewed',{dryRun:true});assert.ok('requires_idle_confirmation' in preview&&preview.requires_idle_confirmation);assert.equal(scans,1);
+   const done=await f.m.cleanupWorktree(f.id,'HEAD','merged, tested and idle',{verified:true,idleConfirmed:true});assert.equal(done.worktree.state,'removed');
+   const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,status);assert.deepEqual(saved.result,record.result);assert.equal(saved.worktreeIdleCheck.parentConfirmed,true);
+  }finally{await disposeFixture(f);}
+ }
+});
+test('job cleanup explicitly removes ignored artifacts and persists exact deleted paths',async t=>{
+ const f=await maintenanceFixture(t);
+ try{
+  await fs.writeFile(path.join(f.w.path,'.gitignore'),'build/\n');await fixtureGit(f.w.path,'add','.');await fixtureGit(f.w.path,'commit','-m','ignore build');await fixtureGit(f.repo,'merge','--ff-only',f.w.branch);
+  await fs.mkdir(path.join(f.w.path,'build'));await fs.writeFile(path.join(f.w.path,'build/result.bin'),'generated');
+  await assert.rejects(f.m.cleanupWorktree(f.id,'HEAD','tested',{verified:true}),/ignored/);
+  const preview=await f.m.cleanupWorktree(f.id,'HEAD','tested',{dryRun:true,removeIgnoredArtifacts:true});assert.ok('ignoredArtifactPaths' in preview.worktree);assert.deepEqual(preview.worktree.ignoredArtifactPaths,['build/result.bin']);
+  const done=await f.m.cleanupWorktree(f.id,'HEAD','tested',{verified:true,removeIgnoredArtifacts:true});assert.ok(done.worktree.removedIgnoredPaths?.includes('build/result.bin'));
+  assert.ok(JSON.parse(await fs.readFile(f.file,'utf8')).worktree.removedIgnoredPaths.includes('build/result.bin'));
+ }finally{await disposeFixture(f);}
 });
 test('wait observes another live process completing its persisted job',async t=>{
  const dir=await root(t),jobs=path.join(dir,'jobs'),id=randomUUID();await fs.mkdir(jobs);

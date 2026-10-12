@@ -35,7 +35,7 @@ function repositoryLeaf(repository:string){
 export interface ManagedWorktree {
  originalCwd:string; repository:string; path:string; branch:string; baseCommit:string;
  sourceHadChanges:boolean; state:'preserved'|'removed'; integrationCommit?:string; integrationMethod?:'ancestor'|'patch-equivalent'; verificationSummary?:string; createdAt?:string; storageRoot?:string; recoveryBranchPreserved?:boolean;
- recordDisposition?:'forgotten';forgottenAt?:string;
+ recordDisposition?:'forgotten';forgottenAt?:string;removedIgnoredPaths?:string[];
 }
 async function git(cwd:string,args:string[]){
  const env=safeChildEnv({GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0'});
@@ -154,7 +154,7 @@ export async function inspectManagedWorktree(value:ManagedWorktree,options:Inspe
   commitCount:Number(await git(target,['rev-list','--count',value.baseCommit+'..'+head])),empty:head===value.baseCommit,commitEmpty:head===value.baseCommit,cleanEmpty:head===value.baseCommit&&!changes&&health.checkoutState==='complete',integratedIntoOriginalHead,...health,...(options.includeDiskSize?await diskUsage(target):{}),
   nextAction:health.checkoutState!=='complete'?'Tracked files are missing. Ordinary cleanup and migration are blocked; inspect the preserved branch and use explicit recovery only for a metadata-only checkout.':head===value.baseCommit&&!changes?'Clean empty worktree can be removed once the job is idle.':'Parent must review, commit, integrate, test, then call agent_worktree_cleanup. No automatic merge or deletion.'};
 }
-export interface CleanupOptions {dryRun?:boolean;emptyOnly?:boolean;allowPatchEquivalent?:boolean}
+export interface CleanupOptions {dryRun?:boolean;emptyOnly?:boolean;allowPatchEquivalent?:boolean;removeIgnoredArtifacts?:boolean}
 /** Forget metadata only after proving every managed Git/filesystem reference is
  * absent. An inaccessible repository or any remaining object fails closed. */
 export async function forgetManagedWorktree(value:ManagedWorktree,summary:string,dryRun=true){
@@ -168,7 +168,7 @@ export async function forgetManagedWorktree(value:ManagedWorktree,summary:string
  if(!summary.trim())throw Error('Forgetting a missing worktree requires a verification summary');
  return {...value,state:'removed' as const,recordDisposition:'forgotten' as const,forgottenAt:new Date().toISOString(),verificationSummary:summary,recordOnly:true};
 }
-export interface CleanupResult extends ManagedWorktree {dryRun?:boolean;eligible?:boolean;reason?:string;empty?:boolean;tipCommit?:string}
+export interface CleanupResult extends ManagedWorktree {dryRun?:boolean;eligible?:boolean;reason?:string;empty?:boolean;tipCommit?:string;ignoredArtifactPaths?:string[]}
 export async function cleanupManagedWorktree(value:ManagedWorktree,integrationRef:string,verificationSummary:string,options:CleanupOptions={}):Promise<CleanupResult>{
  if(value.state==='removed')return {...value,...(options.dryRun?{dryRun:true,eligible:true}:{})};
  try{return await cleanupChecked(value,integrationRef,verificationSummary,options);}
@@ -179,7 +179,7 @@ async function cleanupChecked(value:ManagedWorktree,integrationRef:string,verifi
  if(!await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))throw Error('Worktree path is missing; branch and registration preserved for manual inspection');
  await verifyRegistration(value,target,repository);
  if((await checkoutHealth(target)).checkoutState!=='complete')throw Error('Worktree checkout is damaged or partial (tracked files missing); ordinary cleanup refused, branch preserved');
- if(await git(target,['status','--porcelain','--untracked-files=all','--ignored']))throw Error('Worktree has modified, untracked or ignored files; preserved. Review/commit changes and remove generated artifacts before cleanup.');
+ if(await git(target,['status','--porcelain','--untracked-files=all',...(options.removeIgnoredArtifacts?[]:['--ignored'])]))throw Error('Worktree has modified, untracked or ignored files; preserved. Review/commit changes and explicitly opt in to removing ignored artifacts before cleanup.');
  const tip=await git(target,['rev-parse','HEAD']);
  const empty=tip===value.baseCommit;
  if(options.emptyOnly&&!empty)throw Error('Only empty worktrees (tip equals base commit) can be cleaned for this job; preserved');
@@ -196,17 +196,86 @@ async function cleanupChecked(value:ManagedWorktree,integrationRef:string,verifi
    integrationMethod='patch-equivalent';
   }
  }
- if(options.dryRun)return {...value,dryRun:true,eligible:true,empty,tipCommit:tip,...(integrated?{integrationCommit:integrated,integrationMethod}:{})};
+ // Build the deletion plan only after integration/verification eligibility. A
+ // dry-run validates the same paths, without deleting even an empty directory.
+ const artifacts=options.removeIgnoredArtifacts?await ignoredArtifactPlan(target):[];
+ const ignoredArtifactPaths=artifacts.map(item=>item.relative);
+ if(options.dryRun)return {...value,dryRun:true,eligible:true,empty,tipCommit:tip,...(options.removeIgnoredArtifacts?{ignoredArtifactPaths}:{}),...(integrated?{integrationCommit:integrated,integrationMethod}:{})};
  // Minimize the external-Git race between eligibility and removal. Parent locking
  // serializes gateway jobs; these checks also catch manual ref/checkout changes.
  if(await git(target,['symbolic-ref','HEAD'])!=='refs/heads/'+value.branch||await git(target,['rev-parse','HEAD'])!==tip)throw Error('Worktree branch or tip changed during cleanup; preserved');
  if(integrated&&await git(repository,['rev-parse','HEAD'])!==integrated)throw Error('Original HEAD changed during cleanup; preserved');
+ const removedIgnoredPaths:string[]=[];
+ try{
+ if(options.removeIgnoredArtifacts){
+  // Recheck non-ignored changes immediately before the first deletion. Files
+  // becoming tracked or redirected during cleanup are also checked per-file.
+  if(await git(target,['status','--porcelain','--untracked-files=all']))throw Error('Worktree changed during cleanup; preserved');
+  await removeIgnoredArtifactPlan(target,artifacts,removedIgnoredPaths);
+  if(await git(target,['status','--porcelain','--untracked-files=all','--ignored']))throw Error('Worktree changed or contains additional artifacts during cleanup; preserved');
+ }
  // Git refuses dirty worktrees; never use force or recursive filesystem deletion.
  await git(repository,['worktree','remove',target]);
  // Delete exactly the verified reference; do not delete a branch changed concurrently.
  try{await git(repository,['update-ref','-d','refs/heads/'+value.branch,tip]);}catch{throw Error(`Worktree removed but branch ${value.branch} changed or could not be removed; branch preserved.`);}
  if(current&&!(await fs.readdir(container)).length)await fs.rmdir(container).catch(()=>{});
- return {...value,state:'removed' as const,...(integrated?{integrationCommit:integrated,integrationMethod,verificationSummary}:{})};
+ return {...value,state:'removed' as const,...(options.removeIgnoredArtifacts?{ignoredArtifactPaths,removedIgnoredPaths:[...(value.removedIgnoredPaths??[]),...removedIgnoredPaths]}:{}),...(integrated?{integrationCommit:integrated,integrationMethod,verificationSummary}:{})};
+ }catch(error){
+  // The job layer persists this audit even if a locked artifact or concurrent
+  // change stops cleanup after earlier files were removed.
+  if(options.removeIgnoredArtifacts)throw Object.assign(error instanceof Error?error:Error(String(error)),{ignoredArtifactPaths,removedIgnoredPaths:[...(value.removedIgnoredPaths??[]),...removedIgnoredPaths]});
+  throw error;
+ }
+}
+
+interface IgnoredArtifact {relative:string;dev:number;ino:number;size:number;mtimeMs:number}
+async function safeArtifactPath(root:string,relative:string){
+ const parts=relative.split('/');
+ if(!relative||path.isAbsolute(relative)||parts.some(p=>!p||p==='.'||p==='..'||/^\.git$/i.test(p)||p.includes('\\')||p.includes('\0')||(process.platform==='win32'&&(/[:<>"|?*]/.test(p)||/[. ]$/.test(p)))))throw Error('Unsafe ignored artifact path; preserved: '+relative);
+ let target=root;
+ // Do not follow any link/junction, including ancestors of a Git-reported file.
+ for(const part of parts){
+  target=path.join(target,part);
+  const stat=await fs.lstat(target);
+  if(stat.isSymbolicLink()||await fs.realpath(target)!==target||!within(root,target))throw Error('Ignored artifact traverses a symlink, junction or redirected path; preserved: '+relative);
+ }
+ return target;
+}
+async function ignoredArtifactPlan(root:string):Promise<IgnoredArtifact[]>{
+ const names=(await git(root,['ls-files','--others','--ignored','--exclude-standard','-z'])).split('\0').filter(Boolean);
+ const result:IgnoredArtifact[]=[];
+ for(const relative of names){
+  const target=await safeArtifactPath(root,relative),stat=await fs.lstat(target);
+  // Nested repositories are listed as directories; never recursively walk or
+  // remove them. Plain files only also excludes devices, sockets and pipes.
+  if(!stat.isFile())throw Error('Ignored artifact is not a regular file (nested repository or special file); preserved: '+relative);
+  await assertIgnoredUntracked(root,relative);
+  result.push({relative,dev:stat.dev,ino:stat.ino,size:stat.size,mtimeMs:stat.mtimeMs});
+ }
+ return result;
+}
+async function assertIgnoredUntracked(root:string,relative:string){
+ if(await git(root,['--literal-pathspecs','ls-files','--cached','-z','--',relative]))throw Error('Ignored artifact is tracked; preserved: '+relative);
+ await git(root,['check-ignore','-q','--',relative]).catch(()=>{throw Error('Artifact is no longer ignored by Git; preserved: '+relative);});
+}
+async function removeIgnoredArtifactPlan(root:string,artifacts:IgnoredArtifact[],removed:string[]){
+ const directories=new Set<string>();
+ for(const artifact of artifacts){
+  await assertIgnoredUntracked(root,artifact.relative);
+  const target=await safeArtifactPath(root,artifact.relative),stat=await fs.lstat(target);
+  if(!stat.isFile()||stat.dev!==artifact.dev||stat.ino!==artifact.ino||stat.size!==artifact.size||stat.mtimeMs!==artifact.mtimeMs)throw Error('Ignored artifact changed during cleanup; preserved: '+artifact.relative);
+  await fs.unlink(target);removed.push(artifact.relative);
+  for(let parent=path.posix.dirname(artifact.relative);parent!=='.';parent=path.posix.dirname(parent))directories.add(parent);
+ }
+ for(const relative of [...directories].sort((a,b)=>b.split('/').length-a.split('/').length)){
+  const target=await safeArtifactPath(root,relative);
+  // Only remove Git-ignored directories that are still empty. rmdir refuses
+  // unexpected new files; it never follows links or deletes a populated tree.
+  if((await fs.readdir(target)).length)continue;
+  const ignored=await git(root,['check-ignore','-q','--',relative+'/']).then(()=>true,()=>false);
+  if(!ignored)continue;
+  await fs.rmdir(target);removed.push(relative+'/');
+ }
 }
 
 async function verifyPatchEquivalent(repository:string,base:string,tip:string,integrated:string){
