@@ -8,6 +8,20 @@ import {AgentRouter} from '../src/router.js';
 import type {ProviderAdapter,ProviderName,ProviderStatus,ProviderRunResult,RunInput} from '../src/types.js';
 const host={host:'codex' as const,clientName:'codex-mcp-client'};
 const input={cwd:process.cwd(),task:'fixture',provider:'auto',max_runtime_minutes:1};
+test('successful unknown cleanup is a warning for every provider and requests parent review without failing the turn',async()=>{
+ for(const provider of ['grok','claude','codex'] as const){
+  const first=adapter(provider,async()=>({provider,text:'complete',error:null,usage:{totalTokens:7},childCleanedUp:false,processCleanup:{verified:false,trackedPids:[1234],remainingPids:[]}}));
+  const r=await new AgentRouter([first]).run('agent_implement',selectedInput({...input,provider,allow_self_provider:true}),host);
+  assert.equal(r.error,null);assert.equal(r.outcome,'success');assert.equal(r.successCount,1);assert.equal(r.failureCount,0);assert.equal(r.results[0].processCleanupState,'unverified');assert.match(r.results[0].processCleanupWarning!,/no remaining process/);assert.equal(r.handoff?.requiresWorkspaceReview,true);
+ }
+});
+test('unknown cleanup stops later implementation with an explicit review skip, preserving the successful provider result',async()=>{
+ let calls=0;const grok=adapter('grok',async()=>({provider:'grok',text:'complete',error:null,childCleanedUp:false,processCleanup:{verified:false,remainingPids:[]}}));
+ const claude=adapter('claude',async()=>{calls++;return {provider:'claude',text:'must not run'};});
+ const r=await new AgentRouter([grok,claude]).run('agent_implement',selectedInput({...input,provider:'grok,claude'}),host);
+ assert.equal(calls,0);assert.equal(r.results[0].error,null);assert.equal(r.successCount,1);assert.equal(r.failureCount,0);assert.equal(r.outcome,'partial_success');assert.equal(r.errorKind,'process_cleanup_review_required');assert.match(r.error!,/providers were skipped/);assert.doesNotMatch(r.error!,/NO_PROVIDER_RESULT/);assert.equal(r.skipped[0].reason,'process_cleanup_review_required');
+});
+
 test('completed turn with unconfirmed children stops later implementation and preserves evidence',async()=>{
  let second=0;
  const first=adapter('grok',async()=>({provider:'grok',text:'finished code',error:null,childCleanedUp:false,processCleanup:{verified:false,remainingPids:[1234]},usage:{totalTokens:7}}));

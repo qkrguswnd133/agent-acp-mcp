@@ -1,3 +1,4 @@
+import {resolveUserStateRoot} from './runtime.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -71,7 +72,7 @@ export class ClaudeUsageReader {
   private memory?:Cache;private readonly pending=new Map<string,Promise<ClaudeUsageStatus>>();
   constructor(options:ClaudeUsageOptions={}) {
     this.fetcher=options.fetch??fetch;this.clock=options.now??Date.now;
-    this.file=options.file??path.join(process.env.AGENT_MCP_STATE_DIR??path.join(os.homedir(),'.agent-acp-mcp'),'claude-usage.json');
+    this.file=options.file??path.join(resolveUserStateRoot(),'claude-usage.json');
     this.credentials=options.readCredentials??(async()=>JSON.parse(await fs.readFile(path.join(process.env.CLAUDE_CONFIG_DIR??path.join(os.homedir(),'.claude'),'.credentials.json'),'utf8')));
     this.refreshCredentials=options.refreshCredentials;
   }

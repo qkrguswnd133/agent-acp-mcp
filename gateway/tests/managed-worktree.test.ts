@@ -18,6 +18,15 @@ after(async()=>{if(priorStorage===undefined)delete process.env.AGENT_MCP_WORKTRE
 async function git(cwd:string,...args:string[]){return (await exec(await resolveGitExecutable(),['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args],{cwd,windowsHide:true})).stdout.trim();}
 async function fixture(name='repo'){const root=await fs.mkdtemp(path.join(os.tmpdir(),'managed-worktree-test-'));const repo=path.join(root,name);await fs.mkdir(repo);await git(repo,'init');await fs.writeFile(path.join(repo,'file.txt'),'base');await git(repo,'add','.');await git(repo,'commit','-m','base');return {root,repo};}
 async function finish(m:JobManager,id:string){for(let i=0;i<200;i++){const job=await m.status(id);if(['completed','failed','cancelled'].includes(job.status))return job;await new Promise(r=>setTimeout(r,10));}throw Error('Fixture did not finish');}
+test('managed worktree registration preserves Unicode and spaces with either Git porcelain format',async()=>{
+ const {root,repo}=await fixture('한글 repository');
+ const {worktree:w}=await createManagedWorktree({cwd:repo,task:'Unicode registration fixture'},randomUUID());
+ try{
+  const inspected=await inspectManagedWorktree(w);assert.ok('exists' in inspected&&inspected.exists);assert.ok('cleanEmpty' in inspected&&inspected.cleanEmpty);
+  assert.equal((await cleanupManagedWorktree(w,'','')).state,'removed');
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
 test('managed isolation rejects implicit dirty base, maps scope, preserves edits and removes only merged clean work',async()=>{
  const {root,repo}=await fixture();
  await fs.writeFile(path.join(repo,'dirty.txt'),'original only');
@@ -360,8 +369,11 @@ async function disposeIgnoredFixture(root:string,repo:string,w:ManagedWorktree){
  if(await fs.stat(w.path).catch(()=>undefined)){
   // This helper owns only the isolated fixture directories created above.
   for(const dir of ['build','.gradle'])await fs.rm(path.join(w.path,dir),{recursive:true,force:true});
-  await git(w.path,'restore','--staged','--worktree','.');
+  // Git 2.25 needs an explicit source when restoring both index and worktree;
+  // otherwise a staged fixture change can remain staged despite exit code 0.
+  await git(w.path,'restore','--source=HEAD','--staged','--worktree','.');
   await fs.unlink(path.join(w.path,'untracked.txt')).catch(()=>{});
+  assert.equal(await git(w.path,'status','--porcelain','--untracked-files=all','--ignored'),'','Fixture must be clean before removing its worktree');
   await git(repo,'worktree','remove',w.path);
  }
  await fs.rm(root,{recursive:true,force:true});
@@ -396,7 +408,7 @@ test('ignored-artifact option cannot discard tracked changes, staged changes or 
   for(const staged of [false,true]){
    await fs.writeFile(path.join(w.path,'file.txt'),'keep tracked');if(staged)await git(w.path,'add','file.txt');
    await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true}),/modified, untracked/);
-   assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');await git(w.path,'restore','--staged','--worktree','file.txt');
+   assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');await git(w.path,'restore','--source=HEAD','--staged','--worktree','file.txt');
   }
   await fs.writeFile(path.join(w.path,'untracked.txt'),'keep untracked');
   assert.equal((await cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,dryRun:true})).eligible,false);

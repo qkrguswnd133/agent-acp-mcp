@@ -15,6 +15,8 @@ for(const component of ['gateway','monitor']) {
 export const releaseTag = `v${releaseVersion}`;
 export const repository = 'qkrguswnd133/agent-acp-mcp';
 export const archiveName = `Agent-ACP-MCP-Windows-${releaseVersion}.zip`;
+export const linuxArchiveName = `Agent-ACP-MCP-Linux-${releaseVersion}.tar.gz`;
+export const releaseAssets=[archiveName,'update-manifest.json','update-manifest.sig',`${archiveName}.sha256`,linuxArchiveName,'linux-update-manifest.json','linux-update-manifest.sig',`${linuxArchiveName}.sha256`];
 export const forbiddenNames = /(^|[\\/])(?:\.env(?:\..*)?|\.git|state|work|configuration|logs?|sessions?|credentials?|auth|cache|\.codex|\.claude|\.grok)([\\/]|$)/i;
 const sensitivePatterns = [
   {name:'personal Windows path', regex:/[A-Za-z]:[\\/]Users[\\/](?!YOUR_NAME\b|USERNAME\b|<[^>]+>)[^\\/\s"']+/i},
@@ -106,7 +108,7 @@ export async function scanFirstParty(roots,{skipRelativeFiles=[]}={}) {
     for(const rel of files) {
       if(skipped.has(rel)) continue;
       if(forbiddenNames.test(rel)) { findings.push(`${rel}: excluded filename`); continue; }
-      if(!/\.(?:js|mjs|cjs|ts|json|md|ps1|toml|css|html|txt)$/i.test(rel)) continue;
+      if(!/\.(?:js|mjs|cjs|ts|json|md|ps1|sh|toml|css|html|txt)$/i.test(rel)&&rel!=='agent-acp') continue;
       const content=await fs.readFile(stat.isFile()?root:path.join(root,...rel.split('/')),'utf8');
       for(const pattern of sensitivePatterns) if(pattern.regex.test(content)) findings.push(`${rel}: ${pattern.name}`);
     }

@@ -18,8 +18,10 @@ test('Codex turn.completed settles a CLI that keeps running and preserves output
  assert.ok(activity.some(item=>item.type==='codex_turn_completed'));assert.ok(Date.now()-started<18000);
 });
 test('Final agent message alone never counts as successful completion; deadline retains partial output',async()=>{
+ const started=Date.now();
  const result=await runCodexCommand(process.execPath,['-e',event({type:'item.completed',item:{type:'agent_message',text:'partial report'}})+hang],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:400});
  assert.equal(result.stopReason,'deadline_exceeded');assert.equal(result.timedOut,true);assert.equal(result.completion.confirmed,false);assert.match(result.stdout,/partial report/);
+ assert.ok(Date.now()-started<20000,'Deadline settlement exceeded bounded process cleanup');
 });
 test('Abort settles a running child, preserving output without requiring clean exit',async()=>{
  const controller=new AbortController();let sent=false;const started=Date.now();

@@ -57,3 +57,16 @@ button:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outli
 @media(max-height:420px){main{padding-top:10px}.heading p{display:none}.status{margin-top:8px;min-height:44px;padding-top:7px;padding-bottom:7px}.versions{margin-top:8px}.version-heading,.version-row{padding-top:5px;padding-bottom:5px}.release-meta{margin-top:6px}.actions{margin-top:8px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 @media(forced-colors:active){:root{--background:Canvas;--surface:Canvas;--text:CanvasText;--muted:CanvasText;--line:CanvasText;--accent:Highlight;--accent-hover:Highlight;--accent-text:HighlightText;--error:CanvasText;--error-background:Canvas;--success:CanvasText}#indicator{border:1px solid CanvasText}button,.status,.versions,.disclosure,#recovery{forced-color-adjust:auto}}
+.disclosure[hidden]{display:none}
+.wsl summary small{float:right;font-weight:400;color:var(--muted)}
+.wsl-body{border-top:1px solid var(--line);padding:6px 12px 10px}
+.wsl-message{margin:2px 0 6px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}.wsl-message:empty{display:none}
+.wsl-targets{list-style:none;margin:0;padding:0}.wsl-targets:empty{display:none}
+.wsl-target{padding:7px 0}.wsl-target+.wsl-target{border-top:1px solid var(--line)}
+.wsl-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.wsl-head strong{font-weight:600;min-width:0;overflow-wrap:anywhere}
+.wsl-state{flex:none;font-size:12px;color:var(--muted)}.wsl-state.running{color:var(--success)}
+.wsl-target p{margin:2px 0 0;font-size:12px;overflow-wrap:anywhere}.wsl-meta,.wsl-phase{color:var(--muted)}.wsl-error{color:var(--error)}
+.wsl-progress{display:block;width:100%;height:6px;margin-top:5px;accent-color:var(--accent)}
+.wsl-actions,.wsl-tools{display:flex;justify-content:flex-end;gap:6px;margin-top:6px}
+.wsl-actions button,.wsl-tools button{min-height:28px;padding:3px 10px;font-size:12px}
+@media(forced-colors:active){.wsl-state.running,.wsl-error{color:CanvasText}.wsl-target button:disabled,.wsl-tools button:disabled{opacity:1;color:GrayText;border-color:GrayText}}

@@ -1,0 +1,20 @@
+# Merge into the Linux user's ~/.codex/config.toml. Replace every USERNAME
+# and /absolute/path/to/node with actual Linux paths. Do not use node.exe.
+[mcp_servers.agent]
+command = "/absolute/path/to/node"
+args = ["/home/USERNAME/.local/share/agent-acp-mcp/dist/src/index.js"]
+
+[mcp_servers.agent.env]
+# Host identity is negotiated over MCP; there is no manual host override.
+AGENT_MCP_STATE_DIR = "/home/USERNAME/.local/state/agent-acp-mcp"
+# Preserve an existing custom state directory when upgrading.
+ALLOW_SELF_PROVIDER = "false"
+CLAUDE_MODEL = "auto"
+CLAUDE_EFFORT = "auto"
+CODEX_MODEL = "auto"
+CODEX_EFFORT = "auto"
+GROK_MODEL = "auto"
+GROK_EFFORT = "auto"
+# auto requires the parent to choose explicit model/effort via agent_models.
+# Common effort names: low, medium, high, xhigh. Availability varies by model;
+# use agent_models as the source of truth, not this illustrative list.

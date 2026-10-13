@@ -1,3 +1,4 @@
+import {resolveUserStateRoot} from '../runtime.js';
 import path from 'node:path';
 import {unavailableCatalog} from '../model-catalog.js';
 import {runGrok} from '../acp.js';
@@ -5,13 +6,13 @@ import {getWeeklyUsage,getGrokAccountStatus} from '../billing.js';
 import {ensureHealth} from '../health.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
 import {childEnv,grokLaunch,resetGrokLaunch} from '../runtime.js';
-import {home,runCommand} from '../process.js';
+import {runCommand} from '../process.js';
 import {QuotaCache} from '../quota-cache.js';
 import {classifyProviderError, type LimitClassification} from '../limits.js';
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
 const kindMap:Record<AgentKind,string>={agent_ask:'grok_ask',agent_review:'grok_review',agent_investigate:'grok_investigate',agent_implement:'grok_implement'};
-const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'grok-quota.json'));
+const quota=new QuotaCache(path.join(resolveUserStateRoot(),'grok-quota.json'));
 
 export function quotaFromWeekly(value:any){
   if(value?.status!=='available')return {state:'unknown' as const,source:value?.source??'unavailable',note:value?.refreshError};

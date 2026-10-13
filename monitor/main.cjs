@@ -5,6 +5,7 @@ const {createUpdater,resolveGatewayRoot}=require('./update/service.cjs');
 const {updateAction}=require('./update/action.cjs');
 const {createUpdateFlow}=require('./ui/update-flow.js');
 const {createLoginItem}=require('./login-item.cjs');
+const {createWslUpdates}=require('./update/wsl.cjs');
 const appVersion=app.getVersion();
 const smoke=process.argv.includes('--smoke');
 const verifyLive=process.argv.includes('--verify-live');
@@ -29,6 +30,8 @@ const monitorDirectory=path.dirname(process.execPath);
 const gatewayRoot=resolveGatewayRoot(monitorDirectory);
 const updater=createUpdater({stateDir,monitorDirectory,gatewayDirectory:fs.existsSync(gatewayRoot)?gatewayRoot:undefined,appVersion});
 let barProgressOpen=false,completionTimer,collapseTimer,barProgressHeight=52,barWidth=460,updateRun;
+const wslUpdates=createWslUpdates({stateDir,platform:smoke||verifyLive?'disabled':process.platform,blocked:()=>!!updateRun||installing||!!updater.getState().pending});
+wslUpdates.onChange(value=>{if(updates&&!updates.isDestroyed())updates.webContents.send('wsl-update-state',value);});
 const updateUiState=value=>{const action=updateAction(value);return {...value,updateAction:{...action,active:action.active||!!updateRun,canStart:action.canStart&&!updateRun},barProgressOpen};};
 function publishUpdate(value){
   barWidth=updateAction(value).available?484:460;
@@ -43,6 +46,7 @@ const sharedUpdateFlow=createUpdateFlow({updateDownload:()=>updater.download(),u
 function checkUpdates(force=false){return updateRun?Promise.resolve(updater.getState()):updater.check(force);}
 function runUpdate(){if(!updateRun){updateRun=sharedUpdateFlow.run().finally(()=>{updateRun=undefined;publishUpdate(updater.getState());});}return updateRun;}
 async function installUpdate(){
+  if(wslUpdates.isDispatching())return {started:false,reason:'WSL 요청을 처리 중입니다. 잠시 후 다시 시도하세요.'};
   if(installing||updater.getState().pending)return {started:false,reason:'설치가 이미 진행 중입니다.'};
   installing=true;clearInterval(refreshTimer);refreshTimer=undefined;
   let result;
@@ -127,6 +131,10 @@ ipcMain.on('refresh',event=>{if(trusted(event))void refresh();});
 ipcMain.on('menu',event=>{if(trusted(event))menu();});
 ipcMain.on('open-updates',event=>{if(trusted(event))openUpdates();});
 ipcMain.handle('update-state',event=>trusted(event)?updateUiState(updater.getState()):null);
+ipcMain.handle('wsl-state',event=>updateTrusted(event)?wslUpdates.getState():null);
+ipcMain.handle('wsl-refresh',event=>updateTrusted(event)?wslUpdates.refresh():null);
+ipcMain.handle('wsl-probe',(event,id)=>updateTrusted(event)?wslUpdates.probe(id):null);
+ipcMain.handle('wsl-update',(event,id)=>updateTrusted(event)?wslUpdates.update(id):null);
 ipcMain.on('dismiss-update-progress',event=>{if(!bar||bar.isDestroyed()||event.sender!==bar.webContents||updateAction(updater.getState()).active)return;barProgressOpen=false;clearTimeout(completionTimer);publishUpdate(updater.getState());});
 ipcMain.handle('update-check',event=>updateTrusted(event)?checkUpdates(true):null);
 ipcMain.handle('update-run',event=>updateTrusted(event)?runUpdate():null);
@@ -146,7 +154,7 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
     const icon=nativeImage.createFromPath(path.join(__dirname,'assets','tray.png'));tray=new Tray(icon);tray.setToolTip('Agent Monitor · 사용량 모니터');tray.on('click',()=>bar.isVisible()?(closePanel(),bar.hide()):show());tray.on('right-click',menu);
     await Promise.all([bar,panel].map(win=>win.webContents.isLoading()?new Promise(resolve=>win.webContents.once('did-finish-load',resolve)):Promise.resolve()));
     show();
-    if(!smoke&&!verifyLive){await updater.load();installing=!!updater.getState().pending;const recentResult=updater.getState().result;if(recentResult?.status==='success'&&Date.now()-Date.parse(recentResult.finishedAt)<60000){barProgressOpen=true;publishUpdate(updater.getState());completionTimer=setTimeout(()=>{barProgressOpen=false;publishUpdate(updater.getState());},3500);}void checkUpdates();releaseTimer=setInterval(()=>void checkUpdates(),6*60*60*1000);updateTimer=setInterval(async()=>{try{const pending=updater.getState().pending;await updater.pollResult();const current=updater.getState();if(pending&&!current.pending&&!(current.result?.operationId===pending.operationId&&current.result.status==='success')){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}}catch{}},2000);}
+    if(!smoke&&!verifyLive){await updater.load();installing=!!updater.getState().pending;const recentResult=updater.getState().result;if(recentResult?.status==='success'&&Date.now()-Date.parse(recentResult.finishedAt)<60000){barProgressOpen=true;publishUpdate(updater.getState());completionTimer=setTimeout(()=>{barProgressOpen=false;publishUpdate(updater.getState());},3500);}void checkUpdates();void wslUpdates.refresh();releaseTimer=setInterval(()=>{void checkUpdates();void wslUpdates.refresh();},6*60*60*1000);updateTimer=setInterval(async()=>{try{const pending=updater.getState().pending;await updater.pollResult();const current=updater.getState();if(pending&&!current.pending&&!(current.result?.operationId===pending.operationId&&current.result.status==='success')){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}}catch{}},2000);}
     hoverTimer=setInterval(()=>hoverStep(screen.getCursorScreenPoint()),80);
     if(smoke){clearInterval(hoverTimer);await runSmoke();}
     else if(verifyLive){
@@ -160,7 +168,7 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
     }else if(!installing){void refresh();refreshTimer=setInterval(()=>void refresh(),60000);}
   }).catch(error=>{console.error(error);app.exit(1);});
 }
-app.on('before-quit',event=>{if(quitting)return;event.preventDefault();quitting=true;clearInterval(refreshTimer);clearInterval(updateTimer);clearInterval(releaseTimer);clearInterval(hoverTimer);clearTimeout(moveTimer);clearTimeout(completionTimer);clearTimeout(collapseTimer);savePosition();failPending('앱 종료');tray?.destroy();void stopBackend().finally(()=>app.quit());});
+app.on('before-quit',event=>{if(quitting)return;event.preventDefault();quitting=true;clearInterval(refreshTimer);clearInterval(updateTimer);clearInterval(releaseTimer);clearInterval(hoverTimer);clearTimeout(moveTimer);clearTimeout(completionTimer);clearTimeout(collapseTimer);savePosition();wslUpdates.close();failPending('앱 종료');tray?.destroy();void stopBackend().finally(()=>app.quit());});
 async function runSmoke(){
   const assert=require('node:assert/strict');const out=process.env.AGENT_MONITOR_SMOKE_DIR||path.join(__dirname,'work');fs.mkdirSync(out,{recursive:true});const forcedDpi=Number(process.argv.find(arg=>arg.startsWith('--force-device-scale-factor='))?.split('=')[1]);
   try{
@@ -277,7 +285,16 @@ async function runSmoke(){
     assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#recovery-paths li').textContent"),'C:/Temp/sample-project.backup');
     fs.writeFileSync(path.join(out,'update-rollback-failed.png'),await captureReady(updates));
     openUpdates('history');await new Promise(r=>setTimeout(r,40));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#github-disclosure').open && document.querySelector('#local-disclosure').open"),true);
-    fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted','login item fake API','updater light/dark and states'],uiScaleEmulation:forcedDpi>1?{method:'Electron --force-device-scale-factor',factor:forcedDpi,observed:dpr}:{method:'Electron webContents.setZoomFactor',factors:scales,observed:dpr},stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
+    fixtureUpdate.result=null;fixtureUpdate.error=null;fixtureUpdate.phase='idle';await sendUpdate();
+    const wslFixture={available:true,status:'available',busy:false,targets:[{id:'Ubuntu',name:'Ubuntu',running:true,installed:true,version:'2.5.3',gatewayVersion:'2.5.3',latestVersion:'2.6.0',phase:'checked',canUpdate:true},{id:'Debian',name:'Debian',running:false,installed:null,phase:'stopped',canUpdate:false}]};
+    updates.webContents.send('wsl-update-state',wslFixture);await new Promise(r=>setTimeout(r,80));
+    await updates.webContents.executeJavaScript("document.querySelector('#wsl-section').open=true;document.querySelector('#wsl-section').scrollIntoView()");
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('[data-wsl-key=\"probe:Debian\"]').disabled"),false);
+    assert.equal(await updates.webContents.executeJavaScript("document.querySelector('[data-wsl-key=\"update:Ubuntu\"]').disabled"),false);
+    for(const theme of ['light','dark']){nativeTheme.themeSource=theme;for(const scale of scales){updates.webContents.setZoomFactor(scale);await new Promise(r=>setTimeout(r,100));assert.ok(await updates.webContents.executeJavaScript('document.documentElement.scrollWidth-document.documentElement.clientWidth<=1'));fs.writeFileSync(path.join(out,`wsl-${theme}-${Math.round(scale*100)}.png`),await captureReady(updates));}}
+    wslFixture.busy=true;wslFixture.targets[0].phase='verifying';wslFixture.targets[0].progress={received:50,total:100,unit:'percent'};updates.webContents.send('wsl-update-state',wslFixture);await new Promise(r=>setTimeout(r,50));assert.match(await updates.webContents.executeJavaScript("document.querySelector('#wsl-targets').innerText"),/50%/);
+    for(const status of ['unavailable','disabled','empty']){updates.webContents.send('wsl-update-state',{available:status==='empty',status,targets:[],busy:false});await new Promise(r=>setTimeout(r,40));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#wsl-targets').children.length"),0);}
+    fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted','login item fake API','updater light/dark and states','WSL absent/stopped/installed/progress states'],uiScaleEmulation:forcedDpi>1?{method:'Electron --force-device-scale-factor',factor:forcedDpi,observed:dpr}:{method:'Electron webContents.setZoomFactor',factors:scales,observed:dpr},stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
   }catch(error){console.error(error);app.exit(1);}
 }
 

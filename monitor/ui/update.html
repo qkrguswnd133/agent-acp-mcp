@@ -37,6 +37,14 @@
   <div class="actions"><button id="update" class="primary" type="button" disabled>업데이트</button><button id="cancel" type="button" hidden>취소</button></div>
   <progress id="progress" aria-label="다운로드 진행률" hidden></progress><p id="progress-label" class="progress-label" aria-live="polite"></p>
 
+  <details id="wsl-section" class="disclosure wsl" hidden>
+    <summary><span>WSL Gateway</span><small id="wsl-badge"></small></summary>
+    <div class="wsl-body">
+      <p id="wsl-message" class="wsl-message" role="status" aria-live="polite"></p>
+      <ul id="wsl-targets" class="wsl-targets" aria-label="WSL 배포판 목록"></ul>
+      <div class="wsl-tools"><button id="wsl-refresh" type="button" aria-label="WSL 배포판 목록 새로고침, 중지된 배포판은 시작하지 않음">목록 새로고침</button></div>
+    </div>
+  </details>
   <details id="changelog-disclosure" class="disclosure"><summary>변경 사항</summary><div id="notes"></div></details>
   <div id="history-section">
     <details id="github-disclosure" class="disclosure"><summary>GitHub 릴리스 기록</summary><div id="github-history" class="history"></div></details>

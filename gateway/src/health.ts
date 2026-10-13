@@ -3,7 +3,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {Readable,Writable} from 'node:stream';
 import {client,ndJsonStream,type ClientConnection} from '@agentclientprotocol/sdk';
-import {root,childEnv,active,terminate,shuttingDown,grokLaunch,grokLaunchFingerprint,resetGrokLaunch} from './runtime.js';
+import {root,stateRoot,childEnv,active,terminate,shuttingDown,grokLaunch,grokLaunchFingerprint,resetGrokLaunch} from './runtime.js';
 import {runCommand,spawnPlan,type LaunchCommand} from './process.js';
 import {modelPolicy,effortPolicy} from './config.js';
 import {grokCatalog,catalogTtlMs,type ModelCatalog} from './model-catalog.js';
@@ -25,7 +25,7 @@ export function markUnhealthy(reason:string){if(memory){memory={...memory,health
 const fingerprint=grokLaunchFingerprint;
 async function probe(launch:LaunchCommand){
  if(shuttingDown)throw Error('Bridge is shutting down');
- const cwd=path.join(root,'work/health');await fs.mkdir(cwd,{recursive:true});
+ const cwd=path.join(process.platform==='linux'?stateRoot:root,'work/health');await fs.mkdir(cwd,{recursive:true});
  const args=['agent','--no-leader','--agent-profile',path.join(root,'profiles/read.md'),'stdio'];
  const invocation=spawnPlan(launch,args,cwd);
  const p=spawn(invocation.command,invocation.args,{cwd,env:childEnv,windowsHide:true,windowsVerbatimArguments:invocation.windowsVerbatimArguments,shell:false,stdio:['pipe','pipe','pipe']});active.add(p);p.stderr.on('data',()=>{});
@@ -56,7 +56,7 @@ export async function ensureHealth(force=false):Promise<Health>{
  if(inFlight)return inFlight;
  recheck=false;
  inFlight=(async()=>{
-  let prior:Health|undefined;try{prior=JSON.parse(await fs.readFile(path.join(root,'state/health.json'),'utf8'));}catch{}
+  let prior:Health|undefined;try{prior=JSON.parse(await fs.readFile(path.join(stateRoot,'health.json'),'utf8'));}catch{}
   const base:Health={healthy:false,version:'unavailable',fingerprint:fp,checkedAt:new Date().toISOString(),model:'unavailable',effort:'unavailable',notices:[]};
   try{
     resetGrokLaunch();
@@ -76,8 +76,8 @@ export async function ensureHealth(force=false):Promise<Health>{
     if(base.mcpSelfTest===false)throw Error('MCP discovery/self-test failed');
     base.healthy=true;
   }catch(e){base.reason=(e as Error).message;base.notices.push('MCP path is unhealthy. Use verified Grok Build CLI fallback; do not replay partial edits automatically.');}
-  if(!shuttingDown){await fs.mkdir(path.join(root,'state'),{recursive:true}).catch(()=>{});
-  await fs.writeFile(path.join(root,'state/health.json'),JSON.stringify(base,null,2)).catch(()=>{});}
+  if(!shuttingDown){await fs.mkdir(stateRoot,{recursive:true}).catch(()=>{});
+  await fs.writeFile(path.join(stateRoot,'health.json'),JSON.stringify(base,null,2)).catch(()=>{});}
   memory=base;memoryPolicy=policy;return base;
  })();
  try{return await inFlight;}finally{inFlight=undefined;}

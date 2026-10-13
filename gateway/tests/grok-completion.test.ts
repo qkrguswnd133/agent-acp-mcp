@@ -77,8 +77,9 @@ test('hanging Grok telemetry cannot hold or replace an already completed task',a
  const start=Date.now(),result:any=await runGrok('grok_review',selectedInput({cwd,task:'fixture'},'grok'),undefined,undefined,deps);
  assert.ok(Date.now()-start<4000);assert.equal(result.error,null);assert.match(result.text,/partial answer/);assert.equal(result.sessionId,'completion-fixture');assert.equal(result.usage,'unavailable');assert.equal(result.weekly.status,'unavailable');assert.equal(result.weeklyBefore.status,'unavailable');assert.equal(result.observation.effort.value,'xhigh');
 });
-test('Grok implementation and client terminals share a job-isolated Gradle home',async t=>{
+test('Grok implementation and client terminals reuse the configured user Gradle cache',async t=>{
  const {cwd,deps}=await fixture(t,'terminal');deps.timing!.cleanupMs=7000;
+ const previous=process.env.GRADLE_USER_HOME;process.env.GRADLE_USER_HOME=path.join(cwd,'existing-gradle-cache');t.after(()=>{if(previous===undefined)delete process.env.GRADLE_USER_HOME;else process.env.GRADLE_USER_HOME=previous;});
  const result:any=await runGrok('grok_implement',selectedInput({cwd,task:'fixture'},'grok'),undefined,undefined,deps);
- assert.equal(result.error,null);assert.ok(result.gradleUserHome.startsWith(path.join(cwd,'state','gradle')+path.sep));assert.ok(result.text.includes(result.gradleUserHome));assert.ok(result.commandExecutions[0].output.includes(result.gradleUserHome));assert.equal(result.commandExecutions[0].exitCode,0);
+ assert.equal(result.error,null);assert.equal(result.gradleUserHome,path.join(cwd,'existing-gradle-cache'));assert.ok(result.text.includes(result.gradleUserHome));assert.ok(result.commandExecutions[0].output.includes(result.gradleUserHome));assert.equal(result.commandExecutions[0].exitCode,0);assert.equal(result.gradle.policy,'reuse_user_cache');assert.equal(result.gradle.createdByGateway,false);assert.equal(result.gradle.cleanup.removedBytes,0);await assert.rejects(fs.stat(path.join(cwd,'state','gradle')));
 });

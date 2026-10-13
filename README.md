@@ -1,6 +1,21 @@
 # Agent ACP MCP
 
-Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. 게이트웨이는 Codex, Claude Code, Grok Build의 로그인된 CLI를 하나의 `agent_*` 도구 집합으로 연결합니다. Monitor는 각 provider의 상태와 사용량을 따로 표시하고, 서명된 GitHub 릴리스 업데이트를 확인합니다.
+Windows x64 및 Linux용 MCP 게이트웨이와 Windows 독립 실행형 Agent Monitor입니다. 게이트웨이는 Codex, Claude Code, Grok Build의 로그인된 CLI를 하나의 `agent_*` 도구 집합으로 연결합니다. WSL은 일반 Linux와 동일한 설치·업데이트 경로를 사용합니다. Monitor는 각 provider의 상태와 사용량을 표시하고, 서명된 GitHub 릴리스 업데이트를 확인합니다.
+
+## Linux / WSL
+
+배포/Gateway **2.6.0**, Monitor **1.3.0**부터 Linux 전용 서명 패키지를 제공합니다. Linux에는 Gateway와 CLI 업데이터를 설치하며 Windows Monitor나 PowerShell을 설치하지 않습니다. Linux Node.js 22.12 이상이 필요합니다. x64는 Ubuntu 20.04의 실제 Linux 실행 환경에서 검증했으며 arm64 패키지 구조는 지원하지만 실기기 검증은 하지 않았습니다.
+
+최초 설치·기존 수동 설치의 전환은 [Linux 설치 설명](distribution/linux/README.md)을 따르세요. 전환 후 다음 명령을 사용합니다.
+
+```sh
+~/.local/bin/agent-acp status --json
+~/.local/bin/agent-acp update --check
+~/.local/bin/agent-acp update
+~/.local/bin/agent-acp rollback
+```
+
+Windows Monitor의 업데이트 창에는 **WSL Gateway** 목록이 있습니다. WSL 없음·비활성·배포판 없음·실행/중지·Gateway 미설치를 구분합니다. 꺼진 배포판은 **시작하고 확인**을 눌러야 시작하며 Gateway를 자동 설치하지 않습니다. Linux 업데이터를 한 번 등록한 뒤 각 배포판의 업데이트를 실행할 수 있습니다. Linux 업데이트는 Monitor를 닫아도 계속되며, Windows와 Linux 설치·인증·작업 기록은 각각 보존됩니다.
 
 ## 설치
 
@@ -14,6 +29,8 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 
 ## 업데이트
 
+**2.6.0 추가 수정:** 일부 프로세스 정리 검사 실패와 실제 잔존 PID를 구분해 정상 작업이 실패로 바뀌는 문제를 고칩니다. 정리 시에는 Parent 확인과 최신 PID·작업공간 검사를 요구합니다. 세 provider 모두 기존 Gradle 캐시를 재사용하고, 빌드 산출물은 Parent가 정리하도록 안내합니다. 기존 작업별 Gradle 폴더는 자동 삭제하지 않습니다. [상세 동작과 제한](gateway/JOB-LIFECYCLE.md)을 확인하세요.
+
 **2.5.3 실행 종료 개선:** Claude·Grok·Codex 완료 신호를 실시간 감지하고, 종료 지연·마감·취소 시 부분 결과와 사용량을 보존합니다. MCP 대기는 최대 25초이며 연결 종료는 수락된 작업의 취소로 변환하지 않습니다. 검증·병합된 실패/취소 작업 정리와 명시적 ignored 산출물 삭제를 지원합니다. [작업 수명 및 정리](gateway/JOB-LIFECYCLE.md)를 확인하세요. Monitor는 1.2.1을 유지합니다.
 
 **2.5.2 작업 보존 개선:** 새 worktree는 `%USERPROFILE%\.agent-acp\worktrees`에 보관합니다. 기존 TEMP worktree는 자동 이동하지 않으며, 명시적 이동·손상 복구 도구와 3일 이상 보관 경고를 제공합니다. 검증된 cherry-pick 결과의 정리는 선택적으로 patch 동등성을 확인합니다. 리뷰 본문은 64 KiB를 넘어도 그대로 반환하고 명령 로그를 줄입니다. Windows Codex용 portable PowerShell 7.6.6을 함께 배포하며 개인·시스템 PowerShell 설치는 변경하지 않습니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)와 [설정 설명](distribution/README.md)을 확인하세요.
@@ -25,6 +42,14 @@ Monitor에서 새 릴리스를 확인하고 현재 설치된 구성요소를 함
 업데이트 기능이 없는 기존 사용자는 최신 ZIP의 `Update.ps1`을 한 번 실행해야 합니다. **v2.2.0 / Monitor 1.1.0도 압축 해제 오류가 있으므로 v2.2.1 ZIP의 `Update.ps1`로 한 번 업데이트하세요.** 수정된 Monitor 1.1.1부터는 `··· → 업데이트 확인`에서 변경 사항을 보고 **업데이트** 버튼 하나로 설치할 수 있습니다. 업데이트 창은 Windows 라이트·다크 테마를 따르며 배포, MCP Gateway, Monitor의 현재·최신 버전을 각각 표시합니다. 설치 영수증이 없는 기존 배포 번호는 **미확인**으로 표시합니다.
 
 ## 개발 및 릴리스
+
+릴리스는 Windows 자산 4개와 Linux 자산 4개를 함께 게시합니다. Windows manifest 형식은 유지하며 Linux는 별도 manifest와 서명을 사용합니다. 깨끗하게 커밋한 소스에 대해 Linux에서 다음 검증을 먼저 실행합니다. WSL에서도 동일한 명령이며 `<checkout>`은 같은 소스 커밋의 Linux 절대 경로입니다.
+
+```sh
+node <checkout>/scripts/run-linux-validation.mjs --suite all --report <checkout>/build/linux-validation.json
+```
+
+검증은 별도 HOME·상태·worktree·npm 경로에서 실행합니다. 이 검증 영수증이 소스 커밋과 일치해야 아래 Windows 빌드 및 게시 검증을 통과합니다. Linux 단독 패키징은 `node distribution/linux/build-release.mjs --signing-key /absolute/private-key.pem`으로 실행할 수 있습니다. 비공개 서명 키는 저장소 밖에 둡니다.
 
 2.5.2에서는 `agent_worktree_forget`으로 경로·브랜치·Git 등록이 모두 사라진 항목만 활성 목록에서 제외할 수 있습니다. 작업 결과와 로그는 남습니다. `interrupted` cleanup은 프로세스 검사와 Parent의 `idle_confirmed`를 요구하며, 미반영 커밋·수정 파일은 계속 보존합니다.
 

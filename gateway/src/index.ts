@@ -3,9 +3,11 @@ import {serveStdio} from '@modelcontextprotocol/server/stdio';
 import {Client,InMemoryTransport} from '@modelcontextprotocol/client';
 import {z} from 'zod/v4';
 import path from 'node:path';
-import {root,shutdown} from './runtime.js';
+import {root,stateRoot,shutdown} from './runtime.js';
 import {active} from './runtime.js';
 import {MaintenanceGate} from './maintenance.js';
+import {GatewayRegistry} from './gateway-registry.js';
+import {assertLinuxStateMigrated} from './state-paths.js';
 import {setMcpSelfTest} from './health.js';
 import {JobManager} from './jobs.js';
 import {detectHost} from './host.js';
@@ -16,8 +18,9 @@ import {ClaudeProvider} from './providers/claude.js';
 import {CodexProvider} from './providers/codex.js';
 import type {AgentKind,RunInput} from './types.js';
 
+assertLinuxStateMigrated(root,stateRoot);
 const router=new AgentRouter([new GrokProvider(),new ClaudeProvider(),new CodexProvider()]);
-const jobs=new JobManager(path.join(root,'state/jobs'),(kind,input,signal,hooks)=>{
+const jobs=new JobManager(path.join(stateRoot,'jobs'),(kind,input,signal,hooks)=>{
   const host=(input as any).__host;if(!host)throw Error('HOST_UNKNOWN: job was created without MCP client identity');
   return router.run(kind as AgentKind,input,host,signal,hooks);
 });
@@ -50,7 +53,7 @@ const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringif
 const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...((e as any)?.removedIgnoredPaths?{removedIgnoredPaths:(e as any).removedIgnoredPaths}:{}),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.5.3'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.6.0'});
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
@@ -71,11 +74,11 @@ function createServer(){
    inputSchema:z.object({job_id:z.string().uuid(),include_disk_size:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },tracked(async({job_id,include_disk_size})=>{try{return reply(await jobs.worktreeStatus(job_id,include_disk_size));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_cleanup',{
-   description:'Safely remove idle managed worktrees. Supply job_id or up to 50 job_ids. dry_run previews eligibility without deleting. Clean empty worktrees (tip=base) need no integration/verification, including failed/cancelled jobs. Nonempty work requires completed or explicitly reviewed failed/cancelled/interrupted job, parent verified=true and verification_summary, clean target; remove_ignored_artifacts optionally deletes only Git-ignored regular files and records removed paths, and tip merged into current original HEAD (or opt-in verified patch equivalence). Unrelated original edits do not block cleanup. Failed/cancelled committed work requires actual tip ancestry (not patch equivalence), verified=true, idle_confirmed=true and verification_summary. Interrupted apply additionally requires idle_confirmed=true, a verification summary and fresh Windows ownership checks. Bulk results preserve every skipped reason. Never force deletes.',
-   inputSchema:z.object({job_id:z.string().uuid().optional(),job_ids:z.array(z.string().uuid()).min(1).max(50).optional(),dry_run:z.boolean().default(false),remove_ignored_artifacts:z.boolean().default(false).describe('Delete only Git-ignored regular files after every cleanup gate passes. Never remove tracked changes, ordinary untracked files, links or nested repositories. Return removedIgnoredPaths.'),integration_ref:z.string().min(1).default('HEAD'),allow_patch_equivalent:z.boolean().default(false).describe('Accept cherry-picked commits only when every commit is covered and the current original HEAD still matches all touched paths. Merge commits are refused.'),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional().describe('Interrupted cleanup requires fresh Windows ownership checks, parent idle confirmation and a summary. Nonempty targets still require verified=true and integrated commits.'),verification_summary:z.string().max(4000).default('')}).refine(v=>!!v.job_id!==!!v.job_ids,'Supply either job_id or job_ids'),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+   description:'Safely remove idle managed worktrees. Supply job_id or up to 50 job_ids. dry_run previews eligibility without deleting. Clean empty worktrees (tip=base) need no integration/verification, including failed/cancelled jobs. Nonempty work requires completed or explicitly reviewed failed/cancelled/interrupted job, parent verified=true and verification_summary, clean target; remove_ignored_artifacts optionally deletes only Git-ignored regular files and records removed paths, and tip merged into current original HEAD (or opt-in verified patch equivalence). Unrelated original edits do not block cleanup. Failed/cancelled committed work requires actual tip ancestry (not patch equivalence), verified=true, idle_confirmed=true and verification_summary. Interrupted apply additionally requires idle_confirmed=true, a verification summary and fresh Windows/Linux ownership checks. Unverified child cleanup requires idle_confirmed, a summary, and fresh tracked-PID/workspace checks even for successful jobs. Live or uninspectable processes block cleanup. Bulk results preserve every skipped reason. Never force deletes.',
+   inputSchema:z.object({job_id:z.string().uuid().optional(),job_ids:z.array(z.string().uuid()).min(1).max(50).optional(),dry_run:z.boolean().default(false),remove_ignored_artifacts:z.boolean().default(false).describe('Delete only Git-ignored regular files after every cleanup gate passes. Never remove tracked changes, ordinary untracked files, links or nested repositories. Return removedIgnoredPaths.'),integration_ref:z.string().min(1).default('HEAD'),allow_patch_equivalent:z.boolean().default(false).describe('Accept cherry-picked commits only when every commit is covered and the current original HEAD still matches all touched paths. Merge commits are refused.'),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional().describe('Interrupted cleanup requires fresh Windows/Linux ownership checks, parent idle confirmation and a summary. Nonempty targets still require verified=true and integrated commits.'),verification_summary:z.string().max(4000).default('')}).refine(v=>!!v.job_id!==!!v.job_ids,'Supply either job_id or job_ids'),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
  },tracked(async({job_id,job_ids,dry_run,remove_ignored_artifacts,integration_ref,allow_patch_equivalent,verified,idle_confirmed,verification_summary})=>{try{const options={dryRun:dry_run,removeIgnoredArtifacts:remove_ignored_artifacts,verified:verified===true,allowPatchEquivalent:allow_patch_equivalent,idleConfirmed:idle_confirmed};return reply(job_ids?await jobs.cleanupWorktrees(job_ids,integration_ref,verification_summary,options):await jobs.cleanupWorktree(job_id!,integration_ref,verification_summary,options));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_forget',{
-   description:'Forget only a stale worktree listing after proving its filesystem path, branch and Git registration are all absent. Never removes files, branches, registrations, job results or artifacts. Marks the record forgotten and hides it from the active inventory; include_removed=true still shows its audit metadata. Default dry_run=true. Apply requires verified=true and a summary. Interrupted jobs also require idle_confirmed=true and fresh successful Windows ownership checks.',
+   description:'Forget only a stale worktree listing after proving its filesystem path, branch and Git registration are all absent. Never removes files, branches, registrations, job results or artifacts. Marks the record forgotten and hides it from the active inventory; include_removed=true still shows its audit metadata. Default dry_run=true. Apply requires verified=true and a summary. Jobs with unverified child cleanup also require idle_confirmed, a summary, and fresh tracked-PID/workspace checks. Interrupted jobs also require idle_confirmed=true and fresh successful Windows/Linux ownership checks.',
    inputSchema:z.object({job_id:z.string().uuid(),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional(),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
  },tracked(async({job_id,dry_run,verified,idle_confirmed,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,'forget',{dryRun:dry_run,verified,idleConfirmed:idle_confirmed,summary:verification_summary}));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_list',{
@@ -83,12 +86,12 @@ function createServer(){
    inputSchema:z.object({offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(50),include_removed:z.boolean().default(false),include_disk_size:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },tracked(async({offset,limit,include_removed,include_disk_size})=>{try{return reply(await jobs.listWorktrees(offset,limit,include_removed,include_disk_size));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_migrate',{
-   description:'Move an idle managed worktree with git worktree move into persistent storage. Default dry_run=true. Interrupted Windows jobs need absent-owner/process checks, plus parent idle_confirmed=true and verification_summary before apply. Inspect the worktree and remaining processes first; unknown or active ownership blocks. Does not automatically migrate existing worktrees. Updates gateway metadata; start a new provider session after moving because historical provider paths cannot be rewritten.',
+   description:'Move an idle managed worktree with git worktree move into persistent storage. Default dry_run=true. Interrupted jobs need absent-owner/process checks, plus parent idle_confirmed=true and verification_summary before apply. Inspect the worktree and remaining processes first; unknown or active ownership blocks. Does not automatically migrate existing worktrees. Updates gateway metadata; start a new provider session after moving because historical provider paths cannot be rewritten.',
    inputSchema:z.object({job_id:z.string().uuid(),dry_run:z.boolean().default(true),target_root:z.string().min(1).optional(),idle_confirmed:z.literal(true).optional().describe('Parent confirms review found no remaining writer after interrupted ownership; cannot override process checks.'),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
  },tracked(async({job_id,dry_run,target_root,idle_confirmed,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,'migrate',{dryRun:dry_run,targetRoot:target_root,idleConfirmed:idle_confirmed,summary:verification_summary}));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_worktree_recover',{
    description:'Recover an idle metadata-only checkout whose tracked files are all missing and index unchanged. Default restore repopulates files from HEAD. remove restores then removes the checkout while preserving its branch. Refuses partial/missing/sparse checkouts. Default dry_run=true; apply requires verified=true and a parent summary acknowledging missing files. Uncommitted lost content cannot be recovered from Git.',
-   inputSchema:z.object({job_id:z.string().uuid(),action:z.enum(['restore','remove']).default('restore'),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional().describe('Required for interrupted-job apply alongside fresh successful Windows ownership checks and parent workspace/process review.'),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+   inputSchema:z.object({job_id:z.string().uuid(),action:z.enum(['restore','remove']).default('restore'),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional().describe('Required for interrupted-job apply alongside fresh successful Windows/Linux ownership checks and parent workspace/process review.'),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
  },tracked(async({job_id,action,dry_run,verified,idle_confirmed,verification_summary})=>{try{return reply(await jobs.worktreeMaintenance(job_id,action,{dryRun:dry_run,verified,idleConfirmed:idle_confirmed,summary:verification_summary}));}catch(e){return errorReply(e);}}));
  server.registerTool('agent_job_status',{
    description:'Read background job progress and final provider results. Poll while queued/running/cancelling. Check outcome, successCount, failureCount, skipped, and handoff even when some providers succeeded. Outcome success means provider turn execution, not verified completion criteria. Inspect execution.commands, completionCriteria, processExit and processWarnings separately. implementationProgress warns when observed reading continues without writes/commands; parent should review scope/next step, never automatically cancel or replay. Missing telemetry is unavailable. Failed implementations require parent workspace review before continuing.',
@@ -124,6 +127,9 @@ function closeBridge(cancel=true){if(cancel&&closing)void jobs.close();return cl
 maintenance=new MaintenanceGate(root,()=>jobs.isIdle()&&inFlight===0&&active.size===0,()=>{void closeBridge().finally(()=>process.exit(0));});
 jobs.setMaintenanceCheck(()=>maintenance.assertAvailable());
 maintenance.start();
+const registry=new GatewayRegistry(root,stateRoot,()=>jobs.isIdle()&&inFlight===0&&active.size===0);
+registry.start();
+process.on('exit',()=>{registry.stop();maintenance.stop();});
 // A host request timeout may disconnect stdio. It must not become job_cancel.
 // Remain alive until accepted jobs persist their terminal result/deadline.
 process.stdin.on('end',()=>{void closeBridge(false).finally(()=>process.exit(0));});
@@ -131,11 +137,11 @@ process.stdout.on('error',error=>{if((error as NodeJS.ErrnoException).code==='EP
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.5.3'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.6.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.5.3',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.6.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

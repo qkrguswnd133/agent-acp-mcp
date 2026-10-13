@@ -5,6 +5,14 @@ import {Policy} from '../src/policy.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {classifyProcessCleanup} from '../src/process-cleanup.js';
+
+test('terminal inventory failure or timeout does not misreport unverified PIDs as alive',async()=>{
+ for(const mode of ['failure','timeout']){
+  const terminal=new TestTerminal(process.execPath,['-e','console.log("VERIFIED_TEST_OUTPUT")'],process.cwd(),Date.now()+5000,new AbortController().signal,()=>{},undefined,1024,{cleanupMs:10,track:()=>({knownPids:()=>[1900000000],cancelCleanup:()=>{},cleanup:async()=>{if(mode==='failure')throw Error('inventory failed');return new Promise(()=>{});}})});
+  await terminal.done;assert.equal(terminal.record.exitCode,0);assert.deepEqual(terminal.record.processCleanup?.remainingPids,[]);assert.deepEqual(terminal.record.processCleanup?.unverifiedPids,[1900000000]);assert.equal(classifyProcessCleanup(terminal.record).state,'unverified');assert.match(terminal.record.output,/VERIFIED_TEST_OUTPUT/);
+ }
+});
 test('implementation default shell and Windows batch wrappers execute local verification',async()=>{
  const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'terminal shell fixture '));
  try{

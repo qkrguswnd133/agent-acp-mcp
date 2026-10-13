@@ -2,10 +2,41 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {safeChildEnv} from './process.js';
+import fs from 'node:fs/promises';
 
 const execute=promisify(execFile);
 export interface ProcessSnapshotEntry {pid:number;parentPid:number;name:string;commandLine:string|null;cwd?:string}
 export interface InterruptedOwnershipInput {ownerPid:number;workspacePaths:string[]}
+
+/** Read-only inventory of this account's Linux processes, equally applicable
+ * to WSL. A disappearing process is absent; inaccessible live data is unknown. */
+export async function linuxOwnershipSnapshot(procRoot='/proc',uid=process.getuid?.()):Promise<ProcessSnapshotEntry[]>{
+ if(uid===undefined)throw Error('Linux process owner UID is unavailable');
+ const directories=(await fs.readdir(procRoot)).filter(name=>/^\d+$/.test(name));
+ const result:ProcessSnapshotEntry[]=[];let cursor=0;
+ await Promise.all(Array.from({length:Math.min(12,directories.length)},async()=>{
+  while(cursor<directories.length){const name=directories[cursor++],folder=path.join(procRoot,name);
+   try{
+    if((await fs.stat(folder)).uid!==uid)continue;
+    const stat=await fs.readFile(path.join(folder,'stat'),'utf8'),end=stat.lastIndexOf(')'),start=stat.indexOf('('),fields=stat.slice(end+1).trim().split(/\s+/);
+    if(start<0||end<start||!stat.startsWith(name+' (')||!/^\d+$/.test(fields[1]??''))throw Error('Invalid Linux process identity');
+    // A zombie has no running userspace or open workspace files.
+    if(fields[0]==='Z'||fields[0]==='X')continue;
+    const commandLine=(await fs.readFile(path.join(folder,'cmdline'))).toString('utf8').replace(/\0/g,' ').trim();
+    let cwd:string|undefined;
+    try{cwd=await fs.readlink(path.join(folder,'cwd'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){if(!await fs.stat(folder).catch(()=>undefined))continue;}throw error;}
+    result.push({pid:Number(name),parentPid:Number(fields[1]),name:stat.slice(start+1,end),commandLine:commandLine||null,cwd});
+   }catch(error){
+    const code=(error as NodeJS.ErrnoException).code;
+    if(['ENOENT','ESRCH'].includes(code??'')&&!await fs.stat(folder).catch(()=>undefined))continue;
+    if(code==='EACCES'||code==='EPERM')throw Object.assign(Error(`Linux process ownership inventory is unavailable: permission denied for PID ${name}; preserved`),{code:'PROCESS_OWNERSHIP_PERMISSION_DENIED',pid:Number(name)});
+    throw Error('Linux process ownership inventory is unavailable or incomplete; preserved');
+   }
+  }
+ }));
+ if(!result.length)throw Error('Linux process ownership inventory is empty; preserved');
+ return result;
+}
 
 /** Read-only OS inventory, matching the Windows updater's process source. */
 export async function processOwnershipSnapshot():Promise<ProcessSnapshotEntry[]>{
@@ -22,6 +53,7 @@ export async function processOwnershipSnapshot():Promise<ProcessSnapshotEntry[]>
    return {pid:value.ProcessId,parentPid:value.ParentProcessId,name:value.Name,commandLine:value.CommandLine};
   });
  }
+ if(process.platform==='linux')return linuxOwnershipSnapshot();
  throw Error('Interrupted worktree ownership inspection is unsupported on this platform; preserved');
 }
 
@@ -45,20 +77,20 @@ export function assertInterruptedOwnershipAbsent(input:InterruptedOwnershipInput
  for(const item of processes){
   if(selfLineage.has(item.pid)||(finished&&item.pid===input.ownerPid))continue;
   if(item.cwd&&references(item.cwd)||item.commandLine&&references(item.commandLine))throw Error(`Process ${item.pid} still references the interrupted workspace; preserved`);
-  if(!item.commandLine?.trim()&&/^(?:node|grok|claude|codex|pwsh|powershell|cmd|bash|sh|python(?:\d+(?:\.\d+)?)?|git)(?:\.exe)?$/i.test(item.name))throw Error(`Process ${item.pid} has unreadable command data; interrupted workspace ownership is unknown`);
+  if(!item.commandLine?.trim()&&/^(?:node|grok|claude|codex|pwsh|powershell|cmd|bash|sh|python(?:\d+(?:\.\d+)?)?|git|java|gradle)(?:\.exe)?$/i.test(item.name))throw Error(`Process ${item.pid} has unreadable command data; interrupted workspace ownership is unknown`);
  }
 }
 
 /** A terminal persisted job may belong to a live gateway serving other jobs.
  * JobManager checks terminal records/locks and child cleanup before this scan;
  * do not confuse the gateway's lifetime with this job's provider lifetime. */
-export async function verifyFinishedOwnership(input:InterruptedOwnershipInput){
+export async function verifyFinishedOwnership(input:InterruptedOwnershipInput):Promise<{processScan:'passed';checkedAt:string;ownerMayServeOtherJobs:true;ownerAbsent?:true;processScanScope?:string}>{
  const snapshot=await processOwnershipSnapshot().catch(()=>{throw Error('Process ownership inventory unavailable; reviewed worktree preserved');});
  assertInterruptedOwnershipAbsent(input,snapshot,process.platform,process.pid,true);
- return {processScan:'passed' as const,checkedAt:new Date().toISOString(),ownerMayServeOtherJobs:true};
+ return {processScan:'passed' as const,checkedAt:new Date().toISOString(),ownerMayServeOtherJobs:true,processScanScope:process.platform==='linux'?'current_uid':'system_inventory'};
 }
 
-export async function verifyInterruptedOwnership(input:InterruptedOwnershipInput){
+export async function verifyInterruptedOwnership(input:InterruptedOwnershipInput):Promise<{ownerAbsent:true;processScan:'passed';checkedAt:string;processScanScope?:string}>{
  if(!Number.isSafeInteger(input.ownerPid)||input.ownerPid<1)throw Error('Interrupted job owner identity is unknown; preserved');
  try{process.kill(input.ownerPid,0);throw Error('Interrupted job owner process is still alive; preserved');}
  catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}
@@ -66,5 +98,5 @@ export async function verifyInterruptedOwnership(input:InterruptedOwnershipInput
  // A PID reused during the inventory must not turn into permission to mutate.
  try{process.kill(input.ownerPid,0);throw Error('Interrupted job owner appeared during inspection; preserved');}
  catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}
- return {ownerAbsent:true as const,processScan:'passed' as const,checkedAt:new Date().toISOString()};
+ return {ownerAbsent:true as const,processScan:'passed' as const,checkedAt:new Date().toISOString(),processScanScope:process.platform==='linux'?'current_uid':'system_inventory'};
 }

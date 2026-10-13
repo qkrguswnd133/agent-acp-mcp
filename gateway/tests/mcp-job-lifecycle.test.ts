@@ -87,7 +87,7 @@ else if(args[0]==='app-server'){
   for(let i=0;i<200;i++){if(await fs.stat(marker).catch(()=>undefined))return job;await delay(50);}
   assert.fail('Mock Codex exec did not start: '+JSON.stringify(await call('agent_job_status',{job_id:job.job_id}))+'; '+stderr);
  };
- return {child,exited,request,notify,call,start,gateway,stderr:()=>stderr};
+ return {child,exited,request,notify,call,start,gateway,stateRoot:process.platform==='linux'?path.join(root,'runtime-state'):path.join(gateway,'state'),stderr:()=>stderr};
 }
 
 function assertSuccessful(job:any){
@@ -112,5 +112,5 @@ test('actual MCP stdin EOF drains accepted work and persists success before gate
  assert.equal((await b.call('agent_job_status',{job_id:job.job_id})).status,'running');
  b.child.stdin.end();
  const exit=await bounded(b.exited,20000,'Gateway did not exit after draining');assert.equal(exit.code,0,b.stderr());
- const stored=JSON.parse(await fs.readFile(path.join(b.gateway,'state','jobs',job.job_id+'.json'),'utf8'));assertSuccessful(stored);assert.ok(terminal.has(stored.status));
+ const stored=JSON.parse(await fs.readFile(path.join(b.stateRoot,'jobs',job.job_id+'.json'),'utf8'));assertSuccessful(stored);assert.ok(terminal.has(stored.status));
 });

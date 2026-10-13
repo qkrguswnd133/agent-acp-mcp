@@ -98,6 +98,7 @@ try {
     } finally { $zip.Dispose() }
 } finally { $stream.Dispose() }
 Node @((Join-Path $repository 'scripts\finalize-release.mjs'),$SigningKey,$PublishedAt)
+Node @((Join-Path $repository 'distribution\linux\build-release.mjs'),'--gateway-dir',(Join-Path $payload 'gateway'),'--out',$output,'--signing-key',$SigningKey,'--published-at',$PublishedAt)
 if (-not $SkipTests) { Node @((Join-Path $repository 'tests\Smoke-Release.mjs'),$output) }
 if ((CleanSourceCommit) -ne $sourceCommit) { throw 'Source commit changed during release build.' }
 Node @((Join-Path $repository 'scripts\write-provenance.mjs'),([string](-not $SkipTests)).ToLowerInvariant(),$sourceCommit)

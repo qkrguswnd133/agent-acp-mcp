@@ -35,3 +35,72 @@ function render(value){
 window.monitor.onUpdate(render);window.monitor.updateState().then(render);
 $('check').addEventListener('click',()=>window.monitor.updateCheck().catch(()=>{current={...current,error:'업데이트 확인 요청에 실패했습니다.'};render(current);}));
 $('update').addEventListener('click',()=>void flow.run());$('cancel').addEventListener('click',()=>flow.cancel());
+const wslStatuses=['unavailable','disabled','empty','available','error'];
+const wslPhaseLabels={idle:'대기 중',stopped:'중지됨',checking:'확인 중',checked:'확인 완료',starting:'배포판 시작 중',downloading:'다운로드 중',verifying:'검증 중',installing:'설치 중',updating:'업데이트 중',done:'완료',complete:'완료',completed:'완료',current:'최신 버전',up_to_date:'최신 버전',available:'업데이트 있음',ready:'준비됨',installed:'설치됨',not_installed:'미설치',blocked:'설치 보류',success:'완료',rolled_back:'복구 완료',rollback_failed:'수동 복구 필요',failed:'실패',error:'오류',cancelled:'취소됨'};
+const wslSettled=['','idle','stopped','checked','done','complete','completed','current','up_to_date','available','ready','installed','not_installed','blocked','success','rolled_back','rollback_failed','failed','error','cancelled'];
+const wslNotices={unavailable:'WSL을 찾을 수 없습니다. WSL이 설치되어 있지 않거나 사용할 수 없습니다. 이 창에서는 WSL을 자동으로 설치하지 않습니다.',disabled:'WSL 기능이 꺼져 있습니다. Windows에서 WSL을 직접 켠 뒤 목록을 새로고침하세요.',empty:'설치된 WSL 배포판이 없습니다. 배포판을 직접 설치한 뒤 목록을 새로고침하세요. 자동으로 설치하지 않습니다.',error:'WSL 상태를 확인하지 못했습니다. 다시 시도하세요.'};
+const wsl={state:null,pending:false,error:'',lastKey:null,buttons:new Map(),unsubscribe:null};
+const wslApi=()=>typeof window.monitor?.wslState==='function';
+function wslText(value,max=300){return typeof value==='string'?value.trim().slice(0,max):'';}
+function normalizeWslTarget(target){
+  const progress=target.progress,total=Number(progress?.total),received=Number(progress?.received);
+  return {id:target.id,name:wslText(target.name,80)||target.id.slice(0,80),running:target.running===true,installed:typeof target.installed==='boolean'?target.installed:null,version:wslText(target.version,64)||null,latestVersion:wslText(target.latestVersion,64)||null,phase:wslText(target.phase,32).toLowerCase(),
+    progress:Number.isFinite(total)&&total>0&&Number.isFinite(received)&&received>=0?{received:Math.min(received,total),total,unit:progress?.unit==='percent'?'percent':'bytes'}:null,error:wslText(target.error)||null,message:wslText(target.message)||null,canUpdate:target.canUpdate===true,gatewayVersion:wslText(target.gatewayVersion,64)||null};
+}
+function normalizeWslState(value){
+  if(!value||typeof value!=='object')return null;
+  let status=wslStatuses.includes(value.status)?value.status:value.available===false?'unavailable':'error';
+  const targets=['available','error'].includes(status)&&Array.isArray(value.targets)?value.targets.filter(target=>target&&typeof target.id==='string'&&target.id).slice(0,32).map(normalizeWslTarget):[];
+  if(status==='available'&&!targets.length)status='empty';
+  return {status,message:wslText(value.message)||null,targets,busy:value.busy===true};
+}
+function wslBusy(){return wsl.pending||wsl.state?.busy===true;}
+function wslButton(label,aria,key,disabled,handler,title){
+  const button=document.createElement('button');button.type='button';button.textContent=label;button.setAttribute('aria-label',aria);button.disabled=disabled;button.dataset.wslKey=key;if(title)button.title=title;
+  button.addEventListener('click',handler);wsl.buttons.set(key,button);return button;
+}
+function wslLine(parent,className,text){const line=document.createElement('p');line.className=className;line.textContent=text;parent.append(line);return line;}
+function wslTargetRow(target,busy){
+  const row=document.createElement('li'),head=document.createElement('div'),name=document.createElement('strong'),state=document.createElement('span');
+  row.className='wsl-target';head.className='wsl-head';name.textContent=target.name;state.className=target.running?'wsl-state running':'wsl-state';state.textContent=target.running?'실행 중':'중지됨';head.append(name,state);row.append(head);
+  const install=target.installed===true?'Gateway 설치됨':target.installed===false?'Gateway 설치되지 않음':'Gateway 설치 여부 확인 전';
+  wslLine(row,'wsl-meta',`${install} · 현재 ${target.version||'알 수 없음'} · 최신 ${target.latestVersion||'알 수 없음'}`);
+  if(target.gatewayVersion)wslLine(row,'wsl-meta',`MCP Gateway ${target.gatewayVersion}`);
+  const phase=target.phase,active=!wslSettled.includes(phase);
+  if(phase&&phase!=='idle')wslLine(row,'wsl-phase',wslPhaseLabels[phase]||phase);
+  if(target.progress){const bar=document.createElement('progress');bar.className='wsl-progress';bar.max=target.progress.total;bar.value=target.progress.received;bar.setAttribute('aria-label',`${target.name} 진행률`);row.append(bar);wslLine(row,'wsl-meta',target.progress.unit==='percent'?`${Math.round(target.progress.received)}%`:`${Math.floor(target.progress.received/1048576)} / ${Math.ceil(target.progress.total/1048576)} MB`);}
+  if(target.error)wslLine(row,'wsl-error',target.error);
+  if(target.message)wslLine(row,'wsl-meta',target.message);
+  if(target.installed===false)wslLine(row,'wsl-meta','Gateway를 자동으로 설치하지 않습니다. 직접 설치한 뒤 다시 확인하세요.');
+  else if(!target.running)wslLine(row,'wsl-meta','배포판이 중지되어 있습니다. 확인하려면 직접 시작해야 합니다.');
+  const actions=document.createElement('div');actions.className='wsl-actions';
+  const disabled=busy||active,key='probe:'+target.id;
+  actions.append(wslButton(target.running?'확인':'시작하고 확인',target.running?`${target.name} Gateway 상태 확인`:`${target.name} 배포판을 시작하고 Gateway 상태 확인`,key,disabled,()=>void wslRun(key,'wslProbe',target.id),target.running?'':'중지된 배포판을 시작합니다'));
+  if(target.installed===true){const updateKey='update:'+target.id;actions.append(wslButton('업데이트',`${target.name} Gateway 업데이트`,updateKey,disabled||!target.running||!target.canUpdate,()=>void wslRun(updateKey,'wslUpdate',target.id)));}
+  row.append(actions);return row;
+}
+function renderWsl(){
+  const section=$('wsl-section');if(!section)return;
+  section.hidden=!wslApi();if(section.hidden)return;
+  wsl.buttons=new Map();const state=wsl.state,busy=wslBusy();
+  $('wsl-badge').textContent=!state?'확인 중':state.status==='available'?`배포판 ${state.targets.length}개 · 실행 ${state.targets.filter(target=>target.running).length}`:state.status==='unavailable'?'WSL 없음':state.status==='disabled'?'WSL 꺼짐':state.status==='empty'?'배포판 없음':'오류';
+  $('wsl-message').textContent=wsl.error||(!state?'WSL 상태를 확인하는 중입니다.':state.message||wslNotices[state.status]||'');
+  $('wsl-targets').replaceChildren();for(const target of state?.targets||[])$('wsl-targets').append(wslTargetRow(target,busy));
+  wsl.buttons.set('refresh',$('wsl-refresh'));$('wsl-refresh').disabled=busy;
+}
+async function wslRun(key,method,...args){
+  const fn=window.monitor?.[method];if(wsl.pending||typeof fn!=='function')return;
+  wsl.pending=true;wsl.lastKey=key;wsl.error='';renderWsl();
+  try{const next=normalizeWslState(await fn.apply(window.monitor,args));if(next)wsl.state=next;else wsl.error='WSL 응답을 해석하지 못했습니다.';}
+  catch{wsl.error='WSL 요청에 실패했습니다. 다시 시도하세요.';}
+  finally{
+    wsl.pending=false;renderWsl();
+    const button=wsl.buttons.get(wsl.lastKey),active=document.activeElement;if(button&&!button.disabled&&(!active||active===document.body))button.focus();
+  }
+}
+if(wslApi()){
+  $('wsl-refresh').addEventListener('click',()=>void wslRun('refresh','wslRefresh'));
+  if(typeof window.monitor.onWslUpdate==='function'){const unsubscribe=window.monitor.onWslUpdate(value=>{const next=normalizeWslState(value);if(next){wsl.state=next;renderWsl();}});if(typeof unsubscribe==='function')wsl.unsubscribe=unsubscribe;}
+  window.addEventListener?.('pagehide',()=>wsl.unsubscribe?.());
+  renderWsl();void wslRun('state','wslState');
+}

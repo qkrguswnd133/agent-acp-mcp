@@ -1,5 +1,15 @@
 # 설치, 업데이트, 릴리스
 
+## 2.6.0 Linux / WSL 업데이트
+
+현재 배포/Gateway는 **2.6.0**, Windows Monitor는 **1.3.0**입니다. Windows 설치 방식은 그대로이며 Linux·WSL은 [별도 Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치합니다. Windows용 ZIP이나 Node 모듈 폴더를 임의 복사하지 말고 `Agent-ACP-MCP-Linux-*.tar.gz`와 서명된 Linux manifest를 사용하세요.
+
+Linux의 기본 프로그램 경로는 `~/.local/share/agent-acp-mcp`, 상태 경로는 `~/.local/state/agent-acp-mcp`입니다. 기존 MCP 설정에 `AGENT_MCP_STATE_DIR`이 있으면 첫 설치의 `--state-dir`에 동일한 **절대 경로**를 지정하세요. 기존 작업·설정은 충돌 시 덮어쓰지 않으며 백업을 보존합니다. 구버전 Gateway는 먼저 MCP 연결을 해제해야 합니다. 사용자 CLI와 로그인 정보는 변경하지 않습니다.
+
+Monitor 업데이트 창의 WSL 목록은 설치된 배포판을 확인하며 실행 중인 배포판만 자동 조회합니다. 사용자가 명시적으로 선택한 배포판만 시작하거나 업데이트합니다. WSL이 없는 Windows PC에서는 WSL 관련 설치나 설정이 필요하지 않습니다. 일반 Linux PC에서는 Windows 없이 `agent-acp update`를 직접 사용합니다.
+
+릴리스 게시 전에 커밋한 소스를 Linux Node 24로 `scripts/run-linux-validation.mjs --suite all --report <checkout>/build/linux-validation.json` 검증하세요. 이후 기존 `Publish-Release.ps1` 명령이 Windows/Linux의 서명된 자산 8개를 함께 검증·게시합니다. `tests/Smoke-Linux.mjs --package-dir <release-assets>`는 Linux에서 실제 배포 패키지를 격리 설치해 검증하는 추가 검사입니다.
+
 ## 2.5.3 작업 종료·정리 변경
 
 배포/Gateway **2.5.3**, Monitor **1.2.1**입니다. 기존 업데이트 방법을 사용하며 적용 후 MCP를 재연결하세요. 모델·effort와 self-provider 설정, 로그인 방식은 그대로 유지됩니다. 설치본 `src`를 직접 수정하지 말고 새 배포의 실행 코드와 문서를 함께 업데이트하세요.

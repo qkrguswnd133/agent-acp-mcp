@@ -19,13 +19,13 @@ test('Claude JSON result without a trailing newline terminates a hanging CLI',as
  assert.equal(result.stopReason,'completed');assert.equal(result.completion.confirmed,true);assert.equal(result.terminalResult?.result,'한글 result');assert.deepEqual(result.terminalResult?.usage,{input_tokens:9});assert.ok(result.processCleanup);
 });
 test('Final-looking Claude prose is not a completion signal and deadline remains effective',async()=>{
- const result=await runClaudeCommand(process.execPath,['-e',`process.stdout.write('Everything is finished.');${hanging}`],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:350});
- assert.equal(result.stopReason,'deadline_exceeded');assert.equal(result.completion.confirmed,false);assert.equal(result.stdout,'Everything is finished.');
+ const started=Date.now(),result=await runClaudeCommand(process.execPath,['-e',`process.stdout.write('Everything is finished.');${hanging}`],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:350});
+ assert.equal(result.stopReason,'deadline_exceeded');assert.equal(result.completion.confirmed,false);assert.equal(result.stdout,'Everything is finished.');assert.ok(Date.now()-started<20_000);
 });
 
 async function fixture(source:string,run:(provider:any,root:string)=>Promise<void>){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'claude-completion-')),command=path.join(root,process.platform==='win32'?'cli.cmd':'cli.sh');
- const env={CLAUDE_CLI:command,CLAUDE_CONFIG_DIR:root,AGENT_MCP_STATE_DIR:path.join(root,'state'),CLAUDE_MODEL:'auto',CLAUDE_EFFORT:'auto'};
+ const env={CLAUDE_CLI:command,CLAUDE_CONFIG_DIR:root,AGENT_MCP_STATE_DIR:path.join(root,'state'),CLAUDE_MODEL:'auto',CLAUDE_EFFORT:'auto',GRADLE_USER_HOME:path.join(root,'existing-gradle-cache')};
  const previous=new Map(Object.keys(env).map(key=>[key,process.env[key]]));
  try{
   await fs.writeFile(path.join(root,'cli.mjs'),`import fs from 'node:fs';import path from 'node:path';const args=process.argv.slice(2);const id=args[args.indexOf('--session-id')+1];const transcript=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','fixture',id+'.jsonl');fs.mkdirSync(path.dirname(transcript),{recursive:true});${source}`);
@@ -40,7 +40,7 @@ test('Hanging Claude successful result preserves model, effort, usage, session a
  async(provider,root)=>{
   const result=await provider.execute('agent_implement',selectedInput({cwd:root,task:'fixture',max_runtime_minutes:1},'claude'));
   assert.equal(result.error,null);assert.equal(result.text,'Complete answer');assert.equal(result.model,'claude-observed');assert.equal(result.effort,'high');assert.deepEqual(result.usage,{input_tokens:31,output_tokens:4});assert.equal(result.completion.confirmed,true);assert.equal(result.processExit.stopReason,'completed');assert.ok(result.processCleanup);assert.equal(typeof result.childCleanedUp,'boolean');
-  const invocation=JSON.parse(await fs.readFile(path.join(root,'env.json'),'utf8'));assert.equal(invocation.cwd,root);assert.equal(invocation.args[invocation.args.indexOf('--output-format')+1],'json');assert.equal(invocation.args.includes('--no-session-persistence'),false);assert.equal(invocation.gradle,path.join(root,'state','gradle',result.sessionId));assert.equal(await fs.readFile(path.join(root,'projects','fixture',result.sessionId+'.jsonl'),'utf8').then(text=>JSON.parse(text).cwd),root);
+  const invocation=JSON.parse(await fs.readFile(path.join(root,'env.json'),'utf8'));assert.equal(invocation.cwd,root);assert.equal(invocation.args[invocation.args.indexOf('--output-format')+1],'json');assert.equal(invocation.args.includes('--no-session-persistence'),false);assert.equal(invocation.gradle,path.join(root,'existing-gradle-cache'));assert.equal(result.gradle.policy,'reuse_user_cache');assert.equal(result.gradle.cleanup.removedBytes,0);await assert.rejects(fs.stat(path.join(root,'state','gradle')));assert.equal(await fs.readFile(path.join(root,'projects','fixture',result.sessionId+'.jsonl'),'utf8').then(text=>JSON.parse(text).cwd),root);
  }
 ));
 test('Hanging Claude error result stays a quota failure and retains transcript partial output',()=>fixture(
@@ -49,7 +49,7 @@ test('Hanging Claude error result stays a quota failure and retains transcript p
 ));
 test('Claude cancellation retains attributable partial transcript metadata after malformed JSON',()=>fixture(
  `${transcriptSource}process.stdout.write('{"type":"result"');${hanging}`,
- async(provider,root)=>{const controller=new AbortController();const result=await provider.execute('agent_implement',selectedInput({cwd:root,task:'fixture',max_runtime_minutes:1},'claude'),controller.signal,{onActivity:(event:any)=>{if(event.type==='stdout')controller.abort();}});assert.equal(result.errorKind,'cancelled');assert.equal(result.text,'Partial transcript answer');assert.equal(result.model,'claude-observed');assert.equal(result.effort,'high');assert.deepEqual(result.usage,{input_tokens:17,output_tokens:2});assert.equal(result.completion.confirmed,false);assert.ok(result.processCleanup);}
+ async(provider,root)=>{const controller=new AbortController(),started=Date.now();const result=await provider.execute('agent_implement',selectedInput({cwd:root,task:'fixture',max_runtime_minutes:1},'claude'),controller.signal,{onActivity:(event:any)=>{if(event.type==='stdout')controller.abort();}});assert.equal(result.errorKind,'cancelled');assert.equal(result.text,'Partial transcript answer');assert.equal(result.model,'claude-observed');assert.equal(result.effort,'high');assert.deepEqual(result.usage,{input_tokens:17,output_tokens:2});assert.equal(result.completion.confirmed,false);assert.ok(result.processCleanup);assert.ok(Date.now()-started<20_000);}
 ));
 test('Claude cancellation after direct result preserves direct response instead of discarding it',()=>fixture(
  `process.stdout.write(JSON.stringify({type:'result',is_error:false,session_id:id,result:'Direct answer before cancel',effort:'low',usage:{input_tokens:11}}));${hanging}`,
@@ -57,5 +57,5 @@ test('Claude cancellation after direct result preserves direct response instead 
 ));
 test('Claude deadline preserves partial transcript result, telemetry and malformed raw stdout',()=>fixture(
  `${transcriptSource}process.stdout.write('{"type":"result"');${hanging}`,
- async(provider,root)=>{const result=await provider.execute('agent_implement',selectedInput({cwd:root,task:'fixture',max_runtime_minutes:0.01},'claude'));assert.equal(result.errorKind,'deadline_exceeded');assert.equal(result.text,'Partial transcript answer');assert.equal(result.model,'claude-observed');assert.deepEqual(result.usage,{input_tokens:17,output_tokens:2});assert.equal(result.rawEvents,'{"type":"result"');assert.equal(result.processExit.timedOut,true);}
+ async(provider,root)=>{const started=Date.now(),result=await provider.execute('agent_implement',selectedInput({cwd:root,task:'fixture',max_runtime_minutes:0.01},'claude'));assert.equal(result.errorKind,'deadline_exceeded');assert.equal(result.text,'Partial transcript answer');assert.equal(result.model,'claude-observed');assert.deepEqual(result.usage,{input_tokens:17,output_tokens:2});assert.equal(result.rawEvents,'{"type":"result"');assert.equal(result.processExit.timedOut,true);assert.ok(Date.now()-started<20_000);}
 ));

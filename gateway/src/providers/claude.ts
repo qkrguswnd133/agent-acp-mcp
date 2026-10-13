@@ -1,3 +1,5 @@
+import {resolveUserStateRoot} from '../runtime.js';
+import {gradleEnvironment,gradleTelemetry} from '../gradle-environment.js';
 import path from 'node:path';
 import {runClaudeCommand} from '../claude-execution.js';
 import {spawnPlan} from '../process.js';
@@ -5,7 +7,7 @@ import {readClaudeModels} from '../claude-model-catalog.js';
 import {accountStatus} from '../account.js';
 import {claudeModelMetadata} from '../claude-model.js';
 import {randomUUID} from 'node:crypto';
-import {home,runCommand,safeChildEnv,type LaunchCommand} from '../process.js';
+import {runCommand,safeChildEnv,type LaunchCommand} from '../process.js';
 import {resolveClaudeLaunch} from '../claude-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
 import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from '../model-settings.js';
@@ -18,7 +20,7 @@ import {getClaudeUsage} from '../claude-usage.js';
 import {claudeUsageAccountKey,refreshClaudeCredentials} from '../claude-auth-refresh.js';
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
-const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'claude-quota.json'));
+const quota=new QuotaCache(path.join(resolveUserStateRoot(),'claude-quota.json'));
 const modelCache=new CatalogCache();
 let cachedExecutable:LaunchCommand|undefined;
 // One resolved launcher serves status, auth refresh, run and update alike.
@@ -103,8 +105,8 @@ export class ClaudeProvider implements ProviderAdapter{
   const {model,effort,modelSource,effortSource}=resolveProviderSettings('claude',input);
   if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('--effort',effort);
   args.push('--strict-mcp-config','--mcp-config','{"mcpServers":{}}');
-  const gradleUserHome=writable?path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'gradle',generatedSessionId):undefined;
-  const r=await runClaudeCommand(command,args,{cwd:input.cwd,env:providerChildEnv({DISABLE_AUTOUPDATER:'1',...(gradleUserHome?{GRADLE_USER_HOME:gradleUserHome}:{})}),stdin:buildPrompt(kind,input,'Claude'),timeoutMs:(input.max_runtime_minutes??120)*60_000,signal,onActivity:hooks?.onActivity});
+  const gradle=writable?gradleEnvironment(input.cwd):undefined;
+  const r=await runClaudeCommand(command,args,{cwd:input.cwd,env:providerChildEnv({DISABLE_AUTOUPDATER:'1',...gradle?.env}),stdin:buildPrompt(kind,input,'Claude'),timeoutMs:(input.max_runtime_minutes??120)*60_000,signal,onActivity:hooks?.onActivity});
   const parsed=parseJson(r.stdout)??r.terminalResult;
   const interrupted=interruptionKind(r.timedOut,signal);
   const failed=(r.code!==0&&!(r.stopReason==='completed'&&r.completion.confirmed))||parsed?.is_error===true||!!interrupted;
@@ -115,7 +117,7 @@ export class ClaudeProvider implements ProviderAdapter{
   const telemetry=await readClaudeSessionTelemetry(input.cwd,sessionId);
   const {text:partialText,usage:transcriptUsage,model:transcriptModel,observedModels:transcriptModels,usageSource:transcriptUsageSource,usageScope:transcriptUsageScope,observedUsage,commandExecutions,...sessionEffort}=telemetry;
   const runtimeEffort=directEffort?{effort:directEffort,effortSource:'cli_result',observedEfforts:[directEffort],effortComplete:true}:sessionEffort;
-  const metadata={...claudeModelMetadata(parsed,transcriptModels??(transcriptModel?[transcriptModel]:[])),...runtimeEffort,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,sessionId,commandExecutions,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},rawEvents:r.stdout,...(gradleUserHome?{gradleUserHome}:{})};
+  const metadata={...claudeModelMetadata(parsed,transcriptModels??(transcriptModel?[transcriptModel]:[])),...runtimeEffort,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,sessionId,commandExecutions,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},rawEvents:r.stdout,...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,commandExecutions)}:{})};
   if(failed){
    const structured=parsed?.is_error===true?resultError(parsed,''):undefined;
    const error=structured??(interrupted==='deadline_exceeded'?'Claude execution deadline exceeded':interrupted==='cancelled'?'Claude execution cancelled':r.stderr.trim()||`Claude exited with code ${r.code}`);

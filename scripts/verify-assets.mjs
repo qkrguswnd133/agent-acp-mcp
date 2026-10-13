@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {archiveName,releaseNotes,releaseTag,releaseVersion,repository,sha256,verifyUpdateManifest} from './release-lib.mjs';
+import {archiveName,linuxArchiveName,releaseNotes,releaseTag,releaseVersion,repository,sha256,verifyUpdateManifest} from './release-lib.mjs';
+import {verifyManifest,parseArchive,verifyPackage} from '../distribution/linux/updater.mjs';
 
 const [directory,publicKey]=process.argv.slice(2);
 if(!directory||!publicKey) throw new Error('Usage: node scripts/verify-assets.mjs ASSET_DIRECTORY PUBLIC_KEY');
@@ -23,3 +24,13 @@ if(stat.size!==manifest.asset.size||digest!==manifest.asset.sha256) throw new Er
 const checksum=await fs.readFile(path.join(directory,`${archiveName}.sha256`),'utf8');
 if(checksum.trim()!==`${digest}  ${archiveName}`) throw new Error('Downloaded SHA256 sidecar mismatch');
 console.log(`Downloaded assets verified: ${archiveName} (${digest})`);
+const linuxBytes=await fs.readFile(path.join(directory,'linux-update-manifest.json'));
+const linuxSig=await fs.readFile(path.join(directory,'linux-update-manifest.sig'),'utf8');
+if(!/^[A-Za-z0-9+/]{86}==\r?\n?$/.test(linuxSig))throw Error('Linux signature encoding is invalid');
+const linuxManifest=verifyManifest(linuxBytes,linuxSig,await fs.readFile(publicKey),'x64');
+if(linuxManifest.version!==releaseVersion||linuxManifest.tag!==releaseTag||linuxManifest.components.gateway!==gateway.version||JSON.stringify(linuxManifest.notes.gateway)!==JSON.stringify(releaseNotes.gateway))throw Error('Linux manifest differs from source');
+const linuxArchive=await fs.readFile(path.join(directory,linuxArchiveName)),linuxDigest=await sha256(path.join(directory,linuxArchiveName));
+if(linuxArchive.length!==linuxManifest.asset.size||linuxDigest!==linuxManifest.asset.sha256)throw Error('Linux archive checksum/size mismatch');
+if((await fs.readFile(path.join(directory,linuxArchiveName+'.sha256'),'utf8')).trim()!==`${linuxDigest}  ${linuxArchiveName}`)throw Error('Linux checksum sidecar mismatch');
+verifyPackage(parseArchive(linuxArchive),linuxManifest);
+console.log(`Downloaded Linux assets verified: ${linuxArchiveName} (${linuxDigest})`);

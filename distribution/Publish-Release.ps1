@@ -18,8 +18,9 @@ $version = [string]$package.version
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid root release version.' }
 $tag = 'v'+$version
 $archive = 'Agent-ACP-MCP-Windows-'+$version+'.zip'
+$linuxArchive = 'Agent-ACP-MCP-Linux-'+$version+'.tar.gz'
 $repoName = 'qkrguswnd133/agent-acp-mcp'
-$assets = @($archive,'update-manifest.json','update-manifest.sig',($archive + '.sha256'))
+$assets = @($archive,'update-manifest.json','update-manifest.sig',($archive + '.sha256'),$linuxArchive,'linux-update-manifest.json','linux-update-manifest.sig',($linuxArchive + '.sha256'))
 $output = Join-Path $repository ('build\release\'+$tag)
 if (-not $NodeExecutable) { $NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source }
 if (-not $GhExecutable) { $GhExecutable = (Get-Command gh.exe -ErrorAction Stop).Source }
@@ -123,7 +124,7 @@ try {
             $notes = New-TemporaryFile
             $releaseManifest = Get-Content -LiteralPath (Join-Path $output 'update-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
             $bodyLines = @(
-                "Gateway $($releaseManifest.components.gateway) and Agent Monitor $($releaseManifest.components.monitor) for Windows x64.",
+                "Gateway $($releaseManifest.components.gateway) for Windows, Linux and WSL; Agent Monitor $($releaseManifest.components.monitor) for Windows x64.",
                 '',
                 'Gateway'
             )
@@ -133,6 +134,7 @@ try {
             $bodyLines += @(
                 '',
                 'Download the ZIP and verify its SHA-256 checksum before running Install.ps1 or Update.ps1. The monitor verifies the detached Ed25519 signature on update metadata and the ZIP checksum before offering an update.',
+                'Linux/WSL: use the Linux tar.gz and its separate signed manifest. Follow [Linux instructions](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md) for first installation, migration, agent-acp update and rollback. No Windows Monitor binary is installed inside Linux.',
                 '',
                 'Node.js 22.12+ x64 and separately installed, authenticated provider CLIs are required. No provider credentials are included.'
             )

@@ -8,14 +8,15 @@ import {resolveExecutable,spawnPlan,type LaunchCommand} from './process.js';
 import {permissionResponse} from './permission-response.js';
 import {workspaceConflict,workspaceConflictMessage} from './workspace-lock.js';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {gradleEnvironment,gradleTelemetry} from './gradle-environment.js';
 import {trackProcessTree,type ProcessCleanup} from './process-tree.js';
+import {withRootExitEvidence} from './process-cleanup.js';
 import {client,ndJsonStream, type ClientConnection, type ToolCallUpdate} from '@agentclientprotocol/sdk';
 import {Policy,canonical,within} from './policy.js';
 import {getSessionUsage,weeklyDelta} from './usage.js';
 import {getWeeklyUsage,forDelta} from './billing.js';
 import {LifecycleController, type LifecycleErrorKind} from './lifecycle.js';
-import {root,childEnv,active,terminate,shutdown,grokLaunch} from './runtime.js';
+import {root,stateRoot as runtimeStateRoot,childEnv,active,terminate,shutdown,grokLaunch} from './runtime.js';
 export {root,executable,childEnv,terminate,shutdown} from './runtime.js';
 import {ensureHealth,markUnhealthy} from './health.js';
 import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure,ModelSelectionError} from './model-settings.js';
@@ -79,11 +80,11 @@ export async function runGrok(kind:string,input:RunInput,signal?:AbortSignal,hoo
 }
 async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeof resolveProviderSettings>,signal?:AbortSignal,hooks?:RunHooks,deps:RunGrokDependencies={}) {
   const healthCheck=deps.ensureHealth??ensureHealth,weeklyUsage=deps.getWeeklyUsage??getWeeklyUsage,sessionUsage=deps.getSessionUsage??getSessionUsage;
-  const spawnChild=deps.spawn??spawn,terminateChild=deps.terminate??terminate,stateRoot=deps.stateRoot??path.join(root,'state'),resolveLaunch=deps.launch??grokLaunch;
+  const spawnChild=deps.spawn??spawn,terminateChild=deps.terminate??terminate,stateRoot=deps.stateRoot??runtimeStateRoot,resolveLaunch=deps.launch??grokLaunch;
   const cleanupMs=deps.timing?.cleanupMs??7000,telemetryMs=deps.timing?.telemetryMs??8000;
   const writable = kind === 'grok_implement';
-  const gradleUserHome=writable?path.join(stateRoot,'gradle',randomUUID()):undefined;
-  const taskEnv:NodeJS.ProcessEnv={...childEnv,...(gradleUserHome?{GRADLE_USER_HOME:gradleUserHome}:{})};
+  const gradle=writable?gradleEnvironment(input.cwd):undefined,gradleUserHome=gradle?.userHome;
+  const taskEnv:NodeJS.ProcessEnv={...childEnv,...gradle?.env};
   let launch:LaunchCommand|undefined;
   const earlyStopped=(kind:LifecycleErrorKind='cancelled',_model='unavailable',_effort='unavailable')=>({text:'',stopReason:'cancelled',error:kind==='deadline_exceeded'?'Task runtime deadline exceeded':'Cancelled',errorKind:kind,sessionId:'unavailable',model:'unavailable',effort:'unavailable',phase:'preflight',startedAt:new Date().toISOString(),lastActivityAt:null,exitCode:null,exitSignal:null,partialWork:{messageChunks:0,toolCalls:0,fsReads:0,fsWrites:0,terminalOperations:0},childCleanedUp:true});
   // Do not probe health or spawn a child for a queued task that has already stopped.
@@ -216,9 +217,10 @@ async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeo
       for(const key of Object.keys(env))if(key.startsWith('GIT_'))delete env[key];
       env.GIT_OPTIONAL_LOCKS='0';env.GIT_TERMINAL_PROMPT='0';
       for(const item of req.env??[]){if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(item.name)||item.value.includes('\0'))throw Error('Invalid terminal environment');env[item.name]=item.value;}
-      // Keep task-owned Gradle state isolated even if a terminal request tries
-      // to replace it. Shared user daemons must not become cleanup targets.
+      // Keep the configured cache across ACP terminals instead of allocating
+      // another empty cache. Shared user caches are never cleanup targets.
       if(gradleUserHome)env.GRADLE_USER_HOME=gradleUserHome;
+      if(gradle?.readOnlyDependencyCache)env.GRADLE_RO_DEP_CACHE=gradle.readOnlyDependencyCache;
       const terminal=new TestTerminal(safe.command,safe.args,terminalCwd,taskDeadlineAt,lifecycle.signal,()=>activity('terminal_activity'),env,Math.min(Math.max(req.outputByteLimit??1024*1024,1024),1024*1024));
       taskTerminals.add(terminal);const terminalId=String(++terminalCounter);terminals.set(terminalId,terminal);
       clientOperations.terminals++;partialWork.terminalOperations++;progress.commandsStarted++;activity('terminal_create');return {terminalId};
@@ -267,15 +269,15 @@ async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeo
     const terminalsStopped=boundedObservation(Promise.all([...taskTerminals].map(terminal=>terminal.stop('task_finished'))).then(()=>[...taskTerminals].every(terminal=>terminal.record.childCleanedUp!==false)),cleanupMs*2+500,()=>false);
     if(p){
       p.stdin.end();await new Promise<void>(resolve=>{if(p!.exitCode!==null||p!.signalCode!==null)return resolve();const timeout=setTimeout(resolve,deps.timing?.exitGraceMs??1500);p!.once('close',()=>{clearTimeout(timeout);resolve();});});
-      const cleanup=tree?boundedObservation(tree.cleanup(),cleanupMs,()=>{tree!.cancelCleanup();return {trackedPids:tree!.knownPids(),remainingPids:tree!.knownPids(),verified:false,note:'Grok process cleanup deadline reached; listed PIDs may still be running.'};}):Promise.resolve(undefined);
+      const cleanup=tree?boundedObservation(tree.cleanup(),cleanupMs,()=>{tree!.cancelCleanup();return {trackedPids:tree!.knownPids(),remainingPids:[],unverifiedPids:tree!.knownPids(),verified:false,note:'Grok process cleanup deadline reached; tracked PIDs could not be rechecked.'};}):Promise.resolve(undefined);
       [childCleanedUp,processCleanup]=await Promise.all([stopChild(),cleanup]);
       childCleanedUp=await terminalsStopped&&childCleanedUp;
-      if(p.pid&&p.exitCode===null&&p.signalCode===null){childCleanedUp=false;processCleanup={...(processCleanup??{trackedPids:[],remainingPids:[]}),verified:false,remainingPids:[...new Set([...(processCleanup?.remainingPids??[]),p.pid])],note:'Grok root process exit was not confirmed; inspect the remaining PIDs.'};}
+      if(p.pid&&p.exitCode===null&&p.signalCode===null){processCleanup=withRootExitEvidence(processCleanup??{trackedPids:[],remainingPids:[],verified:false},p.pid);if(processCleanup.remainingPids.includes(p.pid)||processCleanup.unverifiedPids?.includes(p.pid))childCleanedUp=false;}
       if(processCleanup?.remainingPids.length)childCleanedUp=false;
       p.stdin.destroy();p.stdout.destroy();p.stderr.destroy();p.unref();active.delete(p);
     }else await terminalsStopped;
     const cleanups=[processCleanup,...[...taskTerminals].map(terminal=>terminal.record.processCleanup)].filter((value):value is ProcessCleanup=>!!value);
-    if(cleanups.length)processCleanup={trackedPids:[...new Set(cleanups.flatMap(value=>value.trackedPids))],remainingPids:[...new Set(cleanups.flatMap(value=>value.remainingPids))],verified:childCleanedUp&&cleanups.every(value=>value.verified),scope:'observed_descendants',note:cleanups.map(value=>value.note).filter(Boolean).join(' ')};
+    if(cleanups.length)processCleanup={trackedPids:[...new Set(cleanups.flatMap(value=>value.trackedPids))],remainingPids:[...new Set(cleanups.flatMap(value=>value.remainingPids))],unverifiedPids:[...new Set(cleanups.flatMap(value=>value.unverifiedPids??[]))],verified:childCleanedUp&&cleanups.every(value=>value.verified),scope:'observed_descendants',note:cleanups.map(value=>value.note).filter(Boolean).join(' ')};
     if(processCleanup?.remainingPids.length)childCleanedUp=false;
     if(processCleanup)activity('process_cleanup',{...processCleanup});
     lifecycle.dispose(signal);locks.delete(lockId);phase='completed';
@@ -288,7 +290,7 @@ async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeo
   ]);
   // Resumed usage is cumulative: its primary model may belong to an earlier turn.
   const observedModel=!input.session_id&&usage!=='unavailable'&&usage.status==='available'&&usage.sessionId===sessionId&&typeof usage.primaryModelId==='string'&&usage.primaryModelId.trim()&&!['auto','default','unavailable'].includes(usage.primaryModelId)?usage.primaryModelId:undefined;
-  const result={processCleanup,gradleUserHome,completion:{confirmed:promptCompleted,source:promptCompleted?'acp_prompt_result':'unavailable',stopReason},text:resultText,stopReason,error:error??null,errorKind:errorKind??null,limitKind:limitClassification?.limitKind??null,resetsAt:limitClassification?.resetsAt??null,retryAfter:limitClassification?.retryAfter??null,sessionId:sessionId??'unavailable',model:observedModel??'unavailable',modelSource:observedModel?'grok_session_usage':'unavailable',effort:'unavailable',observation:{model:{value:observedModel??(verified?model:'unavailable'),source:observedModel?'grok_session_usage':verified?'acp_session_config':'unavailable',verified:!!observedModel},effort:{value:verified?effort:'unavailable',source:verified?'acp_session_config':'unavailable',verified:false}},requestedModel:requested.model,requestedEffort:requested.effort,requestedModelSource:requested.modelSource,requestedEffortSource:requested.effortSource,healthNotices:runNotices,healthCheckedAt:health.checkedAt,configVerified:verified,authentication:authenticated?'cached_token':'unavailable',apiKeyUsed:false,agentVersion,permissionsDenied:denied,permissionDenials,commandExecutions:[...taskTerminals].map(terminal=>terminal.record),parentVerification:{status:blockedCommands.length?'required':'not_reported',commands:blockedCommands,requiresWorkspaceReview:writable&&blockedCommands.length>0,note:'Listed blocked commands were not executed. Other observed commands are recorded in commandExecutions. Parent must review blocked commands before running them; absence of blocked commands does not prove tests passed.'},clientOperations,partialWork,startedAt,lastActivityAt,phase,failurePhase,endedPhase,exitCode,exitSignal,exitCodeMeaning:'acp_process_exit_not_command_or_task_result',processExit:processExit as ProcessExit|null,processWarnings:exitCode!==null&&exitCode!==0?['ACP process exited nonzero; inspect processExit phase. Task completion and command exits are reported separately.']:[],implementationProgress:{...progress},usage,weekly:after,weeklyBefore:before,weeklyDelta:weeklyDelta(forDelta(before),forDelta(after),startedAt),childCleanedUp};
+  const result={processCleanup,gradleUserHome,...(gradle?{gradle:gradleTelemetry(gradle,[...taskTerminals].map(terminal=>terminal.record))}:{}),completion:{confirmed:promptCompleted,source:promptCompleted?'acp_prompt_result':'unavailable',stopReason},text:resultText,stopReason,error:error??null,errorKind:errorKind??null,limitKind:limitClassification?.limitKind??null,resetsAt:limitClassification?.resetsAt??null,retryAfter:limitClassification?.retryAfter??null,sessionId:sessionId??'unavailable',model:observedModel??'unavailable',modelSource:observedModel?'grok_session_usage':'unavailable',effort:'unavailable',observation:{model:{value:observedModel??(verified?model:'unavailable'),source:observedModel?'grok_session_usage':verified?'acp_session_config':'unavailable',verified:!!observedModel},effort:{value:verified?effort:'unavailable',source:verified?'acp_session_config':'unavailable',verified:false}},requestedModel:requested.model,requestedEffort:requested.effort,requestedModelSource:requested.modelSource,requestedEffortSource:requested.effortSource,healthNotices:runNotices,healthCheckedAt:health.checkedAt,configVerified:verified,authentication:authenticated?'cached_token':'unavailable',apiKeyUsed:false,agentVersion,permissionsDenied:denied,permissionDenials,commandExecutions:[...taskTerminals].map(terminal=>terminal.record),parentVerification:{status:blockedCommands.length?'required':'not_reported',commands:blockedCommands,requiresWorkspaceReview:writable&&blockedCommands.length>0,note:'Listed blocked commands were not executed. Other observed commands are recorded in commandExecutions. Parent must review blocked commands before running them; absence of blocked commands does not prove tests passed.'},clientOperations,partialWork,startedAt,lastActivityAt,phase,failurePhase,endedPhase,exitCode,exitSignal,exitCodeMeaning:'acp_process_exit_not_command_or_task_result',processExit:processExit as ProcessExit|null,processWarnings:exitCode!==null&&exitCode!==0?['ACP process exited nonzero; inspect processExit phase. Task completion and command exits are reported separately.']:[],implementationProgress:{...progress},usage,weekly:after,weeklyBefore:before,weeklyDelta:weeklyDelta(forDelta(before),forDelta(after),startedAt),childCleanedUp};
   if(sessionId)await fs.writeFile(path.join(stateRoot,sessionId+'.usage.json'),JSON.stringify(result,null,2)).catch(()=>{});return result;
 }
 

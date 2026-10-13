@@ -1,5 +1,6 @@
+import {resolveUserStateRoot} from '../runtime.js';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {gradleEnvironment,gradleTelemetry} from '../gradle-environment.js';
 import {runCodexCommand} from '../codex-execution.js';
 import {spawnPlan} from '../process.js';
 import {codexShellEnvironment,codexShellFailure} from '../codex-shell.js';
@@ -20,7 +21,7 @@ import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks
 
 const modelCache=new CatalogCache();
 let cachedExecutable:LaunchCommand|undefined;let statusCache:{at:number,value:ProviderStatus}|undefined;let observedRuntimeBlock=false;
-const quota=new QuotaCache(path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'codex-quota.json'));
+const quota=new QuotaCache(path.join(resolveUserStateRoot(),'codex-quota.json'));
 export const codexNpmPackage:OfficialNpmPackage={name:'@openai/codex',binNames:['codex'],label:'Codex',defaultMinimumNode:16};
 /** --ignore-user-config also removes windows.sandbox. Without an explicit
  * Windows implementation, CLI 0.159.2 can downgrade workspace-write to read-only. */
@@ -166,15 +167,15 @@ export class CodexProvider implements ProviderAdapter{
  private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
   const args=codexExecutionArgs(writable);if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
-  const gradleUserHome=writable?path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'gradle',randomUUID()):undefined;
-  const shellEnvironment=await codexShellEnvironment(providerChildEnv(gradleUserHome?{GRADLE_USER_HOME:gradleUserHome}:{}));
+  const gradle=writable?gradleEnvironment(input.cwd):undefined;
+  const shellEnvironment=await codexShellEnvironment(providerChildEnv(gradle?.env??{}));
   const r=await runCodexCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity},runStartedAt);
   statusCache=undefined;const parsed=parseEvents(r.stdout);
   const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt);
   if(!parsed.text&&session.completed&&session.text)parsed.text=session.text;
   if(parsed.usage==='unavailable'&&session.usage)parsed.usage=session.usage;
   const runtime=codexRuntimeMetadata(parsed.model,parsed.effort,session);
-  const executionMetadata={completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradleUserHome?{gradleUserHome}:{})};
+  const executionMetadata={completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};
   const shellExecution={selectedShell:shellEnvironment.shell??null,...codexShellFailure(parsed.commandExecutions)};
   const interrupted=interruptionKind(r.timedOut,signal);
   const confirmedCompletion=parsed.completed||session.completed;

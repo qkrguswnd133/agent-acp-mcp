@@ -6,6 +6,7 @@ import {promisify} from 'node:util';
 import {resolveGitExecutable} from './git-read-policy.js';
 import {safeChildEnv} from './process.js';
 import {canonical,within} from './policy.js';
+import {readWorktreeRegistrations} from './git-worktree-list.js';
 import type {RunInput} from './types.js';
 
 const execute=promisify(execFile);
@@ -38,7 +39,7 @@ export interface ManagedWorktree {
  recordDisposition?:'forgotten';forgottenAt?:string;removedIgnoredPaths?:string[];
 }
 async function git(cwd:string,args:string[]){
- const env=safeChildEnv({GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0'});
+ const env=safeChildEnv({GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C'});
  const result=await execute(await resolveGitExecutable(),['-c','core.hooksPath='+path.join(os.tmpdir(),'agent-acp-disabled-hooks'),...args],{cwd,env,windowsHide:true,timeout:60000,maxBuffer:4*1024*1024});
  return args.includes('-z')?result.stdout:result.stdout.trim();
 }
@@ -113,9 +114,8 @@ async function verifyRegistration(value:ManagedWorktree,target:string,repository
  const common=async(cwd:string)=>fs.realpath(path.resolve(cwd,await git(cwd,['rev-parse','--git-common-dir'])));
  const [targetCommon,repositoryCommon]=await Promise.all([common(target),common(repository)]);
  if(targetCommon!==repositoryCommon)throw Error('Managed worktree Git repository changed; preserved');
- const registered=await git(repository,['worktree','list','--porcelain','-z']);
- const blocks=registered.split('\0\0');
- const matches=blocks.some(block=>{const lines=block.split('\0');return lines.some(line=>line.startsWith('worktree ')&&path.resolve(line.slice(9))===target)&&lines.includes('branch refs/heads/'+value.branch);});
+ const blocks=await readWorktreeRegistrations(args=>git(repository,args));
+ const matches=blocks.some(lines=>lines.some(line=>line.startsWith('worktree ')&&path.resolve(line.slice(9))===target)&&lines.includes('branch refs/heads/'+value.branch));
  if(!matches)throw Error('Worktree registration or branch changed; preserved');
  if(await git(target,['symbolic-ref','HEAD'])!=='refs/heads/'+value.branch)throw Error('Worktree branch changed; preserved');
 }
@@ -162,8 +162,8 @@ export async function forgetManagedWorktree(value:ManagedWorktree,summary:string
  if(await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))throw Error('Worktree path still exists; record preserved');
  const ref='refs/heads/'+value.branch;
  if((await git(repository,['for-each-ref','--format=%(refname)',ref])).split('\n').includes(ref))throw Error('Managed branch still exists; record preserved');
- const registration=await git(repository,['worktree','list','--porcelain','-z']);
- if(registration.split('\0\0').some(block=>block.split('\0').some(line=>line==='branch '+ref||(line.startsWith('worktree ')&&path.relative(path.resolve(line.slice(9)),target)===''))))throw Error('Git worktree registration still exists; record preserved');
+ const registration=await readWorktreeRegistrations(args=>git(repository,args));
+ if(registration.some(lines=>lines.some(line=>line==='branch '+ref||(line.startsWith('worktree ')&&path.relative(path.resolve(line.slice(9)),target)===''))))throw Error('Git worktree registration still exists; record preserved');
  if(dryRun)return {...value,dryRun:true,eligible:true,recordOnly:true};
  if(!summary.trim())throw Error('Forgetting a missing worktree requires a verification summary');
  return {...value,state:'removed' as const,recordDisposition:'forgotten' as const,forgottenAt:new Date().toISOString(),verificationSummary:summary,recordOnly:true};

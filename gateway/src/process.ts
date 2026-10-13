@@ -3,8 +3,10 @@ import {homedir} from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {trackProcessTree,type ProcessCleanup} from './process-tree.js';
+import {withRootExitEvidence} from './process-cleanup.js';
 
-export const home=process.env.USERPROFILE??process.env.HOME??homedir();
+export function processHome(platform:NodeJS.Platform=process.platform,env:NodeJS.ProcessEnv=process.env){return platform==='win32'?(env.USERPROFILE??env.HOME??homedir()):(env.HOME??homedir());}
+export const home=processHome();
 export const delegationKey='AGENT_ACP_MCP_DELEGATED';
 export function isDelegatedProcess(){return process.env[delegationKey]==='1';}
 export function providerChildEnv(extra:NodeJS.ProcessEnv={}):NodeJS.ProcessEnv{return {...safeChildEnv(extra),[delegationKey]:'1'};}
@@ -156,8 +158,8 @@ export async function runCommand(launch:LaunchCommand,args:string[],options:Comm
       if(lineBuffer){options.onStdoutLine?.(lineBuffer);lineBuffer='';}
       void (async()=>{
         let cleanup:ProcessCleanup|undefined;
-        if(tree){let bound:NodeJS.Timeout|undefined;cleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),remainingPids:tree.knownPids(),verified:false,note:'Process cleanup deadline reached; listed PIDs may still be running, ownership/exit verification is incomplete.'});},7000);})]);if(bound)clearTimeout(bound);}
-        if(cleanup&&p.pid&&p.exitCode===null&&p.signalCode===null)cleanup={...cleanup,verified:false,remainingPids:[...new Set([...cleanup.remainingPids,p.pid])],note:[cleanup.note,'Root process exit was not confirmed.'].filter(Boolean).join(' ')};
+        if(tree){let bound:NodeJS.Timeout|undefined;cleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Process cleanup deadline reached; listed PIDs have not been rechecked, ownership/exit verification is incomplete.'});},7000);})]);if(bound)clearTimeout(bound);}
+        if(cleanup&&p.pid&&p.exitCode===null&&p.signalCode===null)cleanup=withRootExitEvidence(cleanup,p.pid);
         if(cleanup)options.onActivity?.({type:'process_cleanup',...cleanup,at:new Date().toISOString()});
         // Release inherited pipe handles even if a child did not close them.
         p.stdout?.destroy();p.stderr?.destroy();p.stdin?.destroy();p.unref();

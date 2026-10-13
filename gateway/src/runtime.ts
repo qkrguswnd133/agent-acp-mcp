@@ -4,8 +4,11 @@ import fs from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {home,isBatchCommand,providerChildEnv,terminateProcess,type LaunchCommand} from './process.js';
 import {resolveNpmLaunch,type NpmLaunchOptions,type OfficialNpmPackage} from './npm-launch.js';
+import {installationStateDirectory,userStateDirectory} from './state-paths.js';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+export const stateRoot=installationStateDirectory(root);
+export function resolveUserStateRoot(){return process.platform==='linux'?installationStateDirectory(root):userStateDirectory();}
 export const executable = process.env.GROK_CLI || path.join(home,'.grok','bin',process.platform==='win32'?'grok.exe':'grok');
 /** @xai-official/grok's bin/grok is an extensionless node script that runs ~/.grok/bin/grok. */
 export const grokNpmPackage:OfficialNpmPackage={name:'@xai-official/grok',binNames:['grok'],label:'Grok',defaultMinimumNode:20};

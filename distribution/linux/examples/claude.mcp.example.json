@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "agent": {
+      "command": "/absolute/path/to/node",
+      "args": ["/home/USERNAME/.local/share/agent-acp-mcp/dist/src/index.js"],
+      "env": {
+        "AGENT_MCP_STATE_DIR": "/home/USERNAME/.local/state/agent-acp-mcp",
+        "ALLOW_SELF_PROVIDER": "false",
+        "CLAUDE_MODEL": "auto",
+        "CLAUDE_EFFORT": "auto",
+        "CODEX_MODEL": "auto",
+        "CODEX_EFFORT": "auto",
+        "GROK_MODEL": "auto",
+        "GROK_EFFORT": "auto"
+      }
+    }
+  }
+}

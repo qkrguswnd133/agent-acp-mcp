@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+# The installed launcher is generated with an absolute, validated Node path.
+BASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NODE=${AGENT_ACP_NODE:-node}
+exec "$NODE" "$BASE/updater.mjs" "$@"

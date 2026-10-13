@@ -1,0 +1,3 @@
+# Keep POSIX entrypoints executable through a Windows checkout mounted in WSL.
+distribution/linux/*.sh text eol=lf
+distribution/linux/agent-acp text eol=lf
