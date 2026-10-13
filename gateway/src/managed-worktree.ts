@@ -36,7 +36,7 @@ function repositoryLeaf(repository:string){
 export interface ManagedWorktree {
  originalCwd:string; repository:string; path:string; branch:string; baseCommit:string;
  sourceHadChanges:boolean; state:'preserved'|'removed'; integrationCommit?:string; integrationMethod?:'ancestor'|'patch-equivalent'; verificationSummary?:string; createdAt?:string; storageRoot?:string; recoveryBranchPreserved?:boolean;
- recordDisposition?:'forgotten';forgottenAt?:string;removedIgnoredPaths?:string[];
+ recordDisposition?:'forgotten';forgottenAt?:string;forgetAudit?:Record<string,unknown>;removedIgnoredPaths?:string[];
 }
 async function git(cwd:string,args:string[]){
  const env=safeChildEnv({GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C'});

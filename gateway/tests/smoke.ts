@@ -30,5 +30,7 @@ try{
  for(const name of ['agent_ask','agent_review','agent_investigate','agent_implement'])for(const key of ['model','effort','provider_options'])assert.ok(list.tools.find(t=>t.name===name)?.inputSchema.properties?.[key]);
  const legacy=await c.callTool({name:'agent_legacy_gradle_list',arguments:{}});assert.equal(legacy.isError,undefined);assert.ok(Array.isArray(JSON.parse((legacy.content as any[])[0].text).caches));
  assert.equal((list.tools.find(t=>t.name==='agent_legacy_gradle_cleanup')?.inputSchema.properties?.dry_run as any).default,true);
+ assert.equal((list.tools.find(t=>t.name==='agent_worktree_forget')?.inputSchema.properties?.acknowledge_process_warning as any).default,false);
+ assert.equal((list.tools.find(t=>t.name==='agent_worktree_forget')?.inputSchema.properties?.dry_run as any).default,true);
  console.log('TOOLS',list.tools.map(t=>t.name));console.log('STATUS',JSON.stringify(value));
 }finally{await c.close();}

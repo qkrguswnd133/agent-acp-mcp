@@ -1,0 +1,10 @@
+{
+  "gateway": [
+    "Gateway 2.6.2: forget을 파일 삭제 경로와 분리했습니다. 경로·브랜치·Git 등록이 모두 없는 작업은 PID 경고를 명시적으로 확인한 뒤 목록에서만 숨깁니다.",
+    "acknowledge_process_warning 옵션과 forgetAudit를 추가했습니다. 원래 작업 상태·사용량·PID 증거·결과 첨부는 보존하고 include_removed 조회에서 경고를 확인할 수 있습니다.",
+    "실행·기록 갱신 중인 작업, 동시 정리, 변경된 기록 및 남은 경로·참조는 계속 차단합니다. 물리적 cleanup의 PID 안전 검사는 유지합니다."
+  ],
+  "monitor": [
+    "Monitor 1.3.1 유지. Windows·Linux·WSL 업데이트를 통해 Gateway 수정본을 적용한 뒤 MCP를 재연결하세요."
+  ]
+}

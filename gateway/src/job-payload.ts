@@ -9,7 +9,7 @@ interface Artifact {path:string;bytes:number;sha256:string;format:'json';}
 const bytes=(value:unknown)=>Buffer.byteLength(JSON.stringify(value),'utf8');
 const digest=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const isRecord=(v:any):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp','processCleanup','processCleanupState','processCleanupWarning','runtimeEvidence','processEvidence','trackedPidCount','truncated','trackedPidsPath']);
+const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp','processCleanup','processCleanupState','processCleanupWarning','runtimeEvidence','processEvidence','trackedPidCount','truncated','trackedPidsPath','forgetAudit','processWarnings','processCleanupUnchanged','processWarningAcknowledged']);
 type PayloadScope='job'|'result'|'providers'|'provider'|'other';
 function markResponseLimit(job:any){
  if(job.payload?.schema===SCHEMA){
@@ -78,7 +78,7 @@ function compact(job:any){
    }
    const resultScope=scope==='result'||scope==='provider';
    const cleanup=field.endsWith('processCleanup')&&Array.isArray(value.trackedPids);
-   const required=(key:string)=>(scope==='job'&&(protectedKeys.has(key)||key==='result'))||(resultScope&&(protectedKeys.has(key)||key==='text'))||(cleanup&&['trackedPids','trackedPidCount','truncated','trackedPidsPath','verified','remainingPids','unverifiedPids'].includes(key));
+   const required=(key:string)=>(scope==='job'&&(protectedKeys.has(key)||key==='result'))||(resultScope&&(protectedKeys.has(key)||key==='text'))||(field==='worktree'&&key==='forgetAudit')||(field==='worktree.forgetAudit'&&['processWarnings','processCleanupUnchanged','processWarningAcknowledged','at'].includes(key))||(cleanup&&['trackedPids','trackedPidCount','truncated','trackedPidsPath','verified','remainingPids','unverifiedPids'].includes(key));
    const entries=Object.entries(value).filter(([key])=>field!==''||key!=='payload').sort(([a],[b])=>Number(required(b)||protectedKeys.has(b))-Number(required(a)||protectedKeys.has(a)));
    // Essential result fields cannot be displaced by a diagnostic-heavy object.
    const metadataLimit=field.endsWith('.usage')?24:protectedKeys.has(field.split('.').at(-1)!)?8:1;

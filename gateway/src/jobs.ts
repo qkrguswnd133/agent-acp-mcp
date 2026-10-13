@@ -25,7 +25,7 @@ function stallEvidence(job:Job,stallMs:number){
  const suspected=active&&idleMs!==null&&idleMs>stallMs;
  return {stalled_suspected:suspected,stallEvidence:{lastActivityAt:job.lastActivityAt??null,idleMs,thresholdMs:stallMs,turnCompletedAt:completedAt,turnCompletedWithoutFurtherOutput:active&&!!completedAt&&idleMs!==null&&idleMs>5000,cpuIdle:'unavailable',reasons:[...(suspected?['no_activity_beyond_threshold']:[]),...(active&&!!completedAt&&idleMs!==null&&idleMs>5000?['turn_completed_without_further_output']:[])],automaticCancellation:false}};
 }
-interface WorktreeMaintenanceOptions {dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string;idleConfirmed?:boolean}
+interface WorktreeMaintenanceOptions {dryRun?:boolean;targetRoot?:string;verified?:boolean;summary?:string;idleConfirmed?:boolean;acknowledgeProcessWarning?:boolean}
 export class JobManager {
   private active=new Map<string,Active>();
   private closing=false;
@@ -38,11 +38,11 @@ export class JobManager {
   setMaintenanceCheck(check:()=>void){this.maintenanceCheck=check;}
   isIdle(){return ![...this.active.values()].some(e=>!terminal.has(e.job.status)||e.finalizing)&&this.pendingStarts===0;}
   private file(id:string){if(!uuid.test(id))throw Error('Invalid job_id');return path.join(this.directory,id+'.json');}
-  private async save(job:Job){
+  private async save(job:Job,recordOnly?:{expected:string}){
     await fs.mkdir(this.directory,{recursive:true});
     const destination=this.file(job.job_id),tmp=destination+'.'+randomUUID()+'.tmp';
-    const stored=await persistJobPayload(job,this.directory);
-    try{await fs.writeFile(tmp,JSON.stringify(stored,null,2),'utf8');await fs.rename(tmp,destination);}finally{await fs.unlink(tmp).catch(()=>{});}
+    const stored=recordOnly?structuredClone(job):await persistJobPayload(job,this.directory);
+    try{await fs.writeFile(tmp,JSON.stringify(stored,null,2),'utf8');if(recordOnly&&await fs.readFile(destination,'utf8')!==recordOnly.expected)throw Error('Job record changed during forget; preserved');await fs.rename(tmp,destination);}finally{await fs.unlink(tmp).catch(()=>{});}
   }
   private persist(entry:Active){
     // Serialize writes; snapshot now so late progress cannot overwrite completion.
@@ -245,19 +245,65 @@ export class JobManager {
   worktreeMaintenance(id:string,action:'migrate'|'restore'|'remove'|'forget',options:WorktreeMaintenanceOptions={}){
     this.file(id);const result=this.starting.then(()=>this.worktreeMaintenanceExclusive(id,action,options));this.starting=result.catch(()=>{});return result;
   }
+  /** Record-only disposition. No process termination or workspace mutation is authorized here. */
+  private async forgetWorktreeExclusive(id:string,options:WorktreeMaintenanceOptions){
+    this.maintenanceCheck();
+    const file=this.file(id),dryRun=options.dryRun===true;
+    const lock=await fs.open(file+'.cleanup.lock','wx').catch(()=>{throw Error('Worktree maintenance already in progress; record preserved');});
+    try{
+      const stat=await fs.lstat(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw Error('Unsafe job record path; forget refused');
+      const before=await fs.readFile(file,'utf8'),stored=JSON.parse(before) as Job;
+      if(stored.job_id!==id||!stored.worktree)throw Error('Invalid job/worktree record; preserved');
+      const live=this.active.get(id);
+      const orphaned=['queued','running','cancelling'].includes(stored.status)&&!ownerAlive(stored.ownerPid);
+      if(!terminal.has(stored.status)&&!orphaned||live&&(!terminal.has(live.job.status)||live.finalizing))throw Error('Job must be finished and have no pending record finalization before forget');
+      if(stored.status==='interrupted'&&ownerAlive(stored.ownerPid))throw Error('Interrupted job owner may still update the record; forget refused');
+      if(stored.worktree.recordDisposition==='forgotten')return {job_id:id,worktree:stored.worktree,already_forgotten:true,record_only:true};
+      if(stored.worktree.state==='removed')throw Error('Job has no active managed worktree');
+      const full=await presentJobPayload(stored,{verbose:true,jobsDirectory:this.directory});
+      if(full.payload?.diagnostics)throw Error('Full job evidence unavailable; forget refused');
+      // Keep absence checks fail-closed, even when the caller acknowledges a PID warning.
+      const preview=await forgetManagedWorktree(stored.worktree,options.summary??'',true);
+      const evidence=classifyProcessCleanup(full.result),warnings:string[]=[];
+      let trackedProcessCheck:any;
+      if(orphaned)warnings.push('The Gateway record owner is absent; historical interrupted status and any child-process uncertainty remain preserved.');
+      if(evidence.reported&&evidence.state!=='verified')warnings.push('Historical provider cleanup remains '+evidence.state+'; forgetting the listing does not verify process cleanup.');
+      if(evidence.invalidPids)warnings.push('Historical tracked PID evidence is invalid; process state remains unknown.');
+      else if(evidence.trackedPids.length){
+        try{trackedProcessCheck=await this.trackedProcessesAbsent(evidence.trackedPids,{startedAt:stored.startedAt,finishedAt:stored.finishedAt,cleanupAt:evidence.cleanupAt??(full.runtimeEvidence?.processCleanup as any)?.at,trackedProcesses:evidence.trackedProcesses,rootPids:[...evidence.rootPids,...(Number.isSafeInteger(stored.ownerPid)&&stored.ownerPid>0?[stored.ownerPid]:[])],rootProcesses:evidence.rootProcesses,rootAnchorSource:'job_owner_and_observed_provider_roots'});}
+        catch(error){trackedProcessCheck=(error as any)?.processCheck??{processExitScan:'unknown',checkedAt:new Date().toISOString(),trackedPids:evidence.trackedPids,reason:error instanceof Error?error.message:String(error)};warnings.push('Current tracked process check is unresolved or observes live processes; inspect the retained PID evidence.');}
+      }
+      const audit={at:new Date().toISOString(),recordOnly:true,processCleanupUnchanged:true,processWarnings:warnings,trackedProcessCheck,processWarningAcknowledged:options.acknowledgeProcessWarning===true,verificationSummary:options.summary??''};
+      // Audit contains diagnostics, never a claim that the provider/children exited.
+      if(await fs.readFile(file,'utf8')!==before)throw Error('Job record changed during forget; preserved');
+      await forgetManagedWorktree(stored.worktree,options.summary??'',true);
+      if(dryRun)return {job_id:id,worktree:preview,dry_run:true,record_only:true,requires_process_warning_ack:warnings.length>0,processWarnings:warnings,trackedProcessCheck};
+      if(options.verified!==true||!options.summary?.trim())throw Error('Record-only forget requires verified=true and verification_summary');
+      if(warnings.length&&options.acknowledgeProcessWarning!==true)throw Object.assign(Error('Record-only forget requires acknowledge_process_warning=true; process cleanup remains unverified'),{processCheck:trackedProcessCheck,processWarnings:warnings});
+      this.maintenanceCheck();
+      if((orphaned||stored.status==='interrupted')&&ownerAlive(stored.ownerPid))throw Error('Job record owner appeared during forget; preserved');
+      const worktree=await forgetManagedWorktree(stored.worktree,options.summary,true);
+      const forgotten={...worktree,state:'removed' as const,recordDisposition:'forgotten' as const,forgottenAt:audit.at,verificationSummary:options.summary,recordOnly:true,forgetAudit:audit};
+      delete (forgotten as any).eligible;delete (forgotten as any).dryRun;
+      try{await this.save({...stored,worktree:forgotten},{expected:before});}catch(error){throw Error('Record-only forget metadata save failed; '+String(error));}
+      if(live)live.job.worktree=forgotten;
+      this.warningCache=undefined;
+      return {job_id:id,worktree:forgotten,record_only:true,processWarnings:warnings,trackedProcessCheck};
+    }finally{await lock.close();await fs.unlink(file+'.cleanup.lock').catch(()=>{});}
+  }
   private async worktreeMaintenanceExclusive(id:string,action:'migrate'|'restore'|'remove'|'forget',options:WorktreeMaintenanceOptions){
+    if(action==='forget')return this.forgetWorktreeExclusive(id,options);
     this.maintenanceCheck();let job=await this.readJob(id);const currentStatus=job.status;
     if((job as any).payload?.artifact){job=await presentJobPayload(job,{verbose:true,jobsDirectory:this.directory});if((job as any).payload?.diagnostics)throw Error('Full job evidence unavailable; maintenance refused');}
     job.status=currentStatus;
-    if(action==='forget'&&job.worktree?.recordDisposition==='forgotten')return {job_id:id,worktree:job.worktree,already_forgotten:true,record_only:true};
     if(!job.worktree||job.worktree.state==='removed')throw Error('Job has no active managed worktree');
     if(!terminal.has(job.status)||this.active.get(id)?.finalizing)throw Error('Job must be finished with confirmed idle ownership');
     const interrupted=job.status==='interrupted';
     const cleanupEvidence=classifyProcessCleanup(job.result),cleanupReview=unconfirmedChildCleanup(job.result);
     if(cleanupEvidence.invalidPids)throw Error('Provider child cleanup has invalid tracked PID evidence; preserved');
-    if(!interrupted&&cleanupReview&&(action!=='forget'||!options.idleConfirmed||!options.summary?.trim()))throw Error('Provider child cleanup is unconfirmed; record-only cleanup requires idle_confirmed=true, verification_summary and fresh process checks');
+    if(!interrupted&&cleanupReview)throw Error('Provider child cleanup is unconfirmed; physical maintenance remains blocked');
     if(interrupted&&!options.dryRun&&(!options.idleConfirmed||!options.summary?.trim()))throw Error('Interrupted maintenance requires idle_confirmed=true and a verification summary confirming no manually launched or untracked workspace writers');
-    if(action!=='migrate'&&!options.dryRun&&(!options.verified||!options.summary?.trim()))throw Error('Recovery or record-only cleanup requires verified=true and a verification summary');
+    if(action!=='migrate'&&!options.dryRun&&(!options.verified||!options.summary?.trim()))throw Error('Recovery requires verified=true and a verification summary');
     const recorded=interrupted?JSON.parse(await fs.readFile(this.file(id),'utf8')):undefined;
     if(recorded&&(recorded.job_id!==id||recorded.ownerPid!==job.ownerPid||recorded.cwd!==job.cwd))throw Error('Interrupted job record changed during inspection; preserved');
     const original=job.worktree,lockFile=this.file(id)+'.cleanup.lock';
@@ -275,7 +321,7 @@ export class JobManager {
       const ownershipInput={ownerPid:job.ownerPid,workspacePaths:[original.path,original.originalCwd,original.repository]};
       const idleCheck=await (interrupted?this.interruptedOwnership(ownershipInput):cleanupReview?this.finishedOwnership(ownershipInput):Promise.resolve(undefined)).catch(error=>{if(trackedProcessCheck&&error&&typeof error==='object')error.processCheck=trackedProcessCheck;throw error;});
       if(cleanupReview)trackedProcessCheck=await this.trackedProcessesAbsent(cleanupEvidence.trackedPids,processContext);
-      const result=action==='migrate'?await migrateManagedWorktree(original,{dryRun:options.dryRun,targetRoot:options.targetRoot}):action==='forget'?await forgetManagedWorktree(original,options.summary??'',!!options.dryRun):await recoverManagedWorktree(original,options.summary??'',{dryRun:options.dryRun,action});
+      const result=action==='migrate'?await migrateManagedWorktree(original,{dryRun:options.dryRun,targetRoot:options.targetRoot}):await recoverManagedWorktree(original,options.summary??'',{dryRun:options.dryRun,action});
       if(options.dryRun)return {job_id:id,worktree:result,dry_run:true,...(interrupted||cleanupReview?{requires_idle_confirmation:true,idleCheck,trackedProcessCheck,ownershipNote:'Process scan cannot identify every detached or manually launched writer; parent must confirm the workspace is idle before applying.'}:{})};
       const oldCwd=job.cwd;job.worktree=result;
       if(cleanupReview)(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:true,verificationSummary:options.summary};
@@ -288,7 +334,7 @@ export class JobManager {
         throw Error(`Worktree ${action} completed${action==='migrate'?' and rolled back':''}, but job metadata save failed: ${String(error)}`);
       }
       const entry=this.active.get(id);if(entry){entry.job.worktree=result;entry.job.cwd=job.cwd;if(action==='migrate')(entry.job as any).worktreeMigration=(job as any).worktreeMigration;}
-      this.warningCache=undefined;return {job_id:id,cwd:job.cwd,worktree:result,...(cleanupReview?{idleCheck,trackedProcessCheck}:{}),...(action==='migrate'?{restartRequired:true}:action==='forget'?{record_only:true}: {})};
+      this.warningCache=undefined;return {job_id:id,cwd:job.cwd,worktree:result,...(cleanupReview?{idleCheck,trackedProcessCheck}:{}),...(action==='migrate'?{restartRequired:true}:{})};
     }finally{if(lock){await lock.close();await fs.unlink(lockFile).catch(()=>{});}}
   }
   private warningCache?:{at:number;value:any};

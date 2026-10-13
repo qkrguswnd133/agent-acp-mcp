@@ -29,6 +29,8 @@ Windows Monitor의 업데이트 창에는 **WSL Gateway** 목록이 있습니다
 
 ## 업데이트
 
+**2.6.3 / Gateway 2.6.2 / Monitor 1.3.1:** `forget`을 파일 삭제와 분리했습니다. 경로·브랜치·Git 등록이 모두 없는 종료 작업은 PID 경고를 명시적으로 확인한 뒤 목록에서 숨길 수 있습니다. 원래 작업 상태·결과 첨부·PID 경고를 보존하며, `cleanup`의 프로세스 차단은 유지합니다.
+
 **2.6.2 / Gateway 2.6.1 / Monitor 1.3.1:** PID 생성 시각으로 재사용을 구분합니다. 정리·forget의 PID별 근거와 전체 추적 목록 위치를 표시하며, 옛 작업별 Gradle 홈의 목록·명시적 정리 도구를 추가했습니다. 확인 불가 상태는 계속 차단하고 기존 기록과 사용자 공용 캐시는 보존합니다. [동작과 사용법](gateway/JOB-LIFECYCLE.md#process-identity-and-historical-pid-reuse)을 확인하세요.
 
 **2.6.1 / Monitor 1.3.1:** WSL Gateway의 확인 완료 후 100% 게이지가 남는 오류를 수정했습니다. 실제 업데이트 진행 중에만 게이지를 표시합니다. Gateway는 2.6.0을 유지합니다.

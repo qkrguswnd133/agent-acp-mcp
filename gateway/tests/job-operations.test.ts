@@ -318,15 +318,48 @@ test('unknown cleanup refuses live or unverifiable PIDs, unavailable workspace s
  }finally{await disposeFixture(f);}
 });
 
-test('record-only forget after unknown cleanup requires explicit review plus fresh PID/workspace proof',async t=>{
- let scans=0;const f=await maintenanceFixture(t,undefined,async()=>{scans++;return {processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()};},async pids=>({processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:pids,absentPids:pids}));
+test('record-only forget keeps historical cleanup warnings and requires explicit acknowledgement',async t=>{
+ let scans=0;const f=await maintenanceFixture(t,undefined,async()=>{scans++;throw Error('Unrelated workspace scan must not gate record-only forget');},async pids=>({processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:pids,absentPids:pids}));
  const result={error:'historical result preserved',childCleanedUp:false,processCleanup:{verified:false,trackedPids:[77],remainingPids:[]}};
  await fs.writeFile(f.file,JSON.stringify({...f.record,status:'failed',result}));
  try{
   await fixtureGit(f.repo,'worktree','remove',f.w.path);await fixtureGit(f.repo,'branch','-d',f.w.branch);
-  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,summary:'reviewed'}),/idle_confirmed/);
-  const forgotten=await f.m.worktreeMaintenance(f.id,'forget',{verified:true,idleConfirmed:true,summary:'Path and refs absent; no writer remains'});assert.equal(forgotten.record_only,true);assert.equal(scans,1);
-  const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,'failed');assert.deepEqual(saved.result,result);assert.equal(saved.worktreeIdleCheck.trackedProcessCheck.processExitScan,'passed');
+  const preview:any=await f.m.worktreeMaintenance(f.id,'forget',{dryRun:true});assert.equal(preview.requires_process_warning_ack,true);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,idleConfirmed:true,summary:'reviewed'}),/acknowledge_process_warning/);
+  const forgotten:any=await f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'Path and refs absent; retain PID warning'});assert.equal(forgotten.record_only,true);assert.equal(scans,0);
+  const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,'failed');assert.deepEqual(saved.result,result);assert.equal(saved.worktree.forgetAudit.processCleanupUnchanged,true);assert.ok(saved.worktree.forgetAudit.processWarnings.length);assert.equal(saved.worktreeIdleCheck,undefined);
+ }finally{await disposeFixture(f);}
+});
+
+test('record-only forget accepts live or unknown PID warnings with acknowledgement and preserves lossless artifacts',async t=>{
+ for(const decision of ['alive','unknown']){
+  const proof={processExitScan:'blocked',checkedAt:new Date().toISOString(),checks:[{pid:77,decision,currentImageName:'fixture.exe',currentCreatedAt:'2020-01-01T00:00:00Z',recordedCreatedAt:null,reason:'Fixture '+decision}]};
+  const f=await maintenanceFixture(t,undefined,undefined,async()=>{throw Object.assign(Error('PID '+decision),{processCheck:proof});});
+  const original={...f.record,status:'failed',result:{error:'historical failure',usage:{totalTokens:42},rawEvents:'event'.repeat(30000),processCleanup:{verified:false,trackedPids:[77],remainingPids:[]}}};
+  const stored=await persistJobPayload(original,f.jobs);await fs.writeFile(f.file,JSON.stringify(stored));const artifact=path.join(f.jobs,stored.payload.artifact.path),artifactBefore=await fs.readFile(artifact);
+  try{
+   // While a checkout exists, the new option never bypasses absence or physical cleanup gates.
+   await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed',{dryRun:true,idleConfirmed:true,verified:true}),/PID/);
+   await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'reviewed'}),/path still exists/);
+   await fixtureGit(f.repo,'worktree','remove',f.w.path);await fixtureGit(f.repo,'branch','-d',f.w.branch);
+   const preview:any=await f.m.worktreeMaintenance(f.id,'forget',{dryRun:true});assert.deepEqual(preview.trackedProcessCheck,proof);
+   await f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'Only hide absent checkout; retain process warning'});
+   const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.deepEqual({...saved,worktree:stored.worktree},stored);assert.deepEqual(saved.worktree.forgetAudit.trackedProcessCheck,proof);assert.deepEqual(await fs.readFile(artifact),artifactBefore);
+   const status=await f.m.status(f.id,true);assert.deepEqual(status.result,original.result);assert.deepEqual(status.worktree.forgetAudit.trackedProcessCheck,proof);
+   assert.ok((await f.m.status(f.id)).worktree.forgetAudit.processWarnings.length);assert.equal((await f.m.listWorktrees()).total,0);assert.equal((await f.m.listWorktrees(0,50,true)).items[0].worktree.forgetAudit.processCleanupUnchanged,true);
+  }finally{await disposeFixture(f);}
+ }
+});
+
+test('forget blocks active/finalizing records, concurrent maintenance, and record changes during PID checks',async t=>{
+ const f=await maintenanceFixture(t,undefined,undefined,async pids=>{await fs.writeFile(f.file,JSON.stringify({...f.record,status:'running'}));return {processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:pids,absentPids:pids};});
+ try{
+  for(const status of ['queued','running','cancelling']){await fs.writeFile(f.file,JSON.stringify({...f.record,status}));await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}),/must be finished/);}
+  await fs.writeFile(f.file,JSON.stringify(f.record));(f.m as any).active.set(f.id,{job:f.record,finalizing:true});try{await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}),/finalization/);}finally{(f.m as any).active.delete(f.id);}
+  await fs.writeFile(f.file+'.cleanup.lock','other maintainer');await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{dryRun:true}),/already in progress/);assert.equal(await fs.readFile(f.file+'.cleanup.lock','utf8'),'other maintainer');await fs.unlink(f.file+'.cleanup.lock');
+  await fixtureGit(f.repo,'worktree','remove',f.w.path);await fixtureGit(f.repo,'branch','-d',f.w.branch);
+  await fs.writeFile(f.file,JSON.stringify({...f.record,result:{processCleanup:{verified:false,trackedPids:[77],remainingPids:[]}}}));
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'reviewed'}),/record changed/);assert.equal(JSON.parse(await fs.readFile(f.file,'utf8')).status,'running');
  }finally{await disposeFixture(f);}
 });
 
@@ -341,5 +374,33 @@ test('interrupted nonempty cleanup still requires integration and verified revie
   const unknown=new JobManager(f.jobs,async()=>{},undefined,async()=>{throw Error('ownership unknown');});
   try{await assert.rejects(()=>unknown.cleanupWorktree(f.id,'HEAD','reviewed',{idleConfirmed:true,verified:true}),/ownership unknown/);}finally{await unknown.close();}
   assert.ok(await fs.stat(f.w.path));assert.equal((await f.m.cleanupWorktree(f.id,'HEAD','Integrated and tested; no remaining writer',{idleConfirmed:true,verified:true})).worktree.state,'removed');
+ }finally{await disposeFixture(f);}
+});
+
+
+test('forget rechecks absent refs and refuses concurrent changes immediately before atomic record save',async t=>{
+ let f:Awaited<ReturnType<typeof maintenanceFixture>>;let mode='branch';
+ f=await maintenanceFixture(t,undefined,undefined,async pids=>{if(mode==='branch')await fixtureGit(f.repo,'branch',f.w.branch,f.w.baseCommit);return {processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:pids,absentPids:pids};});
+ const save=(f.m as any).save;
+ try{
+  await fixtureGit(f.repo,'worktree','remove',f.w.path);await fixtureGit(f.repo,'branch','-d',f.w.branch);
+  const stored={...f.record,result:{processCleanup:{verified:false,trackedPids:[77],remainingPids:[]}}};await fs.writeFile(f.file,JSON.stringify(stored));
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'reviewed'}),/branch still exists/);
+  assert.equal(JSON.parse(await fs.readFile(f.file,'utf8')).worktree.recordDisposition,undefined);await fixtureGit(f.repo,'branch','-d',f.w.branch);mode='save';
+  (f.m as any).save=async(job:any,options:any)=>{await fs.writeFile(f.file,JSON.stringify({...stored,error:'Concurrent writer evidence'}));return save.call(f.m,job,options);};
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'reviewed'}),/record changed/);assert.equal(JSON.parse(await fs.readFile(f.file,'utf8')).error,'Concurrent writer evidence');
+ }finally{(f.m as any).save=save;await disposeFixture(f);}
+});
+
+
+test('orphaned interrupted forget retains persisted status and requires warning acknowledgement',async t=>{
+ const f=await maintenanceFixture(t);
+ try{
+  await fixtureGit(f.repo,'worktree','remove',f.w.path);await fixtureGit(f.repo,'branch','-d',f.w.branch);
+  const record={...f.record,status:'running',ownerPid:2147483647};await fs.writeFile(f.file,JSON.stringify(record));
+  const preview:any=await f.m.worktreeMaintenance(f.id,'forget',{dryRun:true});assert.equal(preview.requires_process_warning_ack,true);
+  await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'forget',{verified:true,summary:'Owner absent'}),/acknowledge_process_warning/);
+  await f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'Record owner absent; preserve interrupted evidence'});
+  const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,'running');assert.equal((await f.m.status(f.id)).status,'interrupted');assert.ok(saved.worktree.forgetAudit.processWarnings.length);assert.equal((await f.m.listWorktrees()).total,0);
  }finally{await disposeFixture(f);}
 });
