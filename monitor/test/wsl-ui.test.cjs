@@ -40,10 +40,10 @@ const target=(patch={})=>({id:'Ubuntu',name:'Ubuntu',running:true,installed:true
 const buttons=app=>app.el('wsl-targets').all().filter(node=>node.tagName==='button');
 const button=(app,key)=>buttons(app).find(node=>node.dataset.wslKey===key);
 
-test('actual updater settled phases allow rechecking and numeric progress displays percent',async()=>{
- for(const phase of ['stopped','checked','complete','blocked','up_to_date','error']){
+test('settled phases allow rechecking and discard stale progress from the backend',async()=>{
+ for(const phase of ['stopped','checked','complete','blocked','up_to_date','error','failed','cancelled']){
   const app=boot(baseMonitor({wslState:async()=>state({targets:[target({phase,running:phase!=='stopped',progress:{received:50,total:100,unit:'percent'}})]})}));await flush();
-  assert.equal(button(app,'probe:Ubuntu').disabled,false,phase);assert.ok(app.el('wsl-targets').all().some(node=>node.textContent==='50%'));
+  assert.equal(button(app,'probe:Ubuntu').disabled,false,phase);assert.equal(app.el('wsl-targets').all().some(node=>node.tagName==='progress'||node.textContent==='50%'),false,phase);
  }
 });
 
@@ -125,6 +125,13 @@ test('backend progress events render phase, bounded progress and errors via text
   const texts=app.el('wsl-targets').texts();
   assert.ok(texts.includes('다운로드 중'));assert.ok(texts.includes('5 / 10 MB'));assert.ok(texts.includes('오류 <img src=x>'));
   assert.ok(buttons(app).every(node=>node.disabled),'backend busy disables all target actions');
+  push(state({busy:true,targets:[target({phase:'verifying',progress:{received:50,total:100,unit:'percent'}})]}));
+  assert.ok(app.el('wsl-targets').texts().includes('50%'));
+  for(const phase of ['checked','complete','checking','failed']){
+    push(state({targets:[target({phase,progress:{received:100,total:100,unit:'percent'}})]}));
+    assert.equal(app.el('wsl-targets').all().some(node=>node.tagName==='progress'),false,phase);
+    assert.equal(app.el('wsl-targets').texts().includes('100%'),false,phase);
+  }
   push(state({targets:[target({progress:{received:99,total:0}})]}));
   assert.equal(app.el('wsl-targets').all().some(node=>node.tagName==='progress'),false);
   assert.equal(button(app,'probe:Ubuntu').disabled,false);

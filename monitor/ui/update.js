@@ -38,6 +38,7 @@ $('update').addEventListener('click',()=>void flow.run());$('cancel').addEventLi
 const wslStatuses=['unavailable','disabled','empty','available','error'];
 const wslPhaseLabels={idle:'대기 중',stopped:'중지됨',checking:'확인 중',checked:'확인 완료',starting:'배포판 시작 중',downloading:'다운로드 중',verifying:'검증 중',installing:'설치 중',updating:'업데이트 중',done:'완료',complete:'완료',completed:'완료',current:'최신 버전',up_to_date:'최신 버전',available:'업데이트 있음',ready:'준비됨',installed:'설치됨',not_installed:'미설치',blocked:'설치 보류',success:'완료',rolled_back:'복구 완료',rollback_failed:'수동 복구 필요',failed:'실패',error:'오류',cancelled:'취소됨'};
 const wslSettled=['','idle','stopped','checked','done','complete','completed','current','up_to_date','available','ready','installed','not_installed','blocked','success','rolled_back','rollback_failed','failed','error','cancelled'];
+const wslProgressPhases=['starting','preparing','downloading','verifying','installing','updating'];
 const wslNotices={unavailable:'WSL을 찾을 수 없습니다. WSL이 설치되어 있지 않거나 사용할 수 없습니다. 이 창에서는 WSL을 자동으로 설치하지 않습니다.',disabled:'WSL 기능이 꺼져 있습니다. Windows에서 WSL을 직접 켠 뒤 목록을 새로고침하세요.',empty:'설치된 WSL 배포판이 없습니다. 배포판을 직접 설치한 뒤 목록을 새로고침하세요. 자동으로 설치하지 않습니다.',error:'WSL 상태를 확인하지 못했습니다. 다시 시도하세요.'};
 const wsl={state:null,pending:false,error:'',lastKey:null,buttons:new Map(),unsubscribe:null};
 const wslApi=()=>typeof window.monitor?.wslState==='function';
@@ -68,7 +69,7 @@ function wslTargetRow(target,busy){
   if(target.gatewayVersion)wslLine(row,'wsl-meta',`MCP Gateway ${target.gatewayVersion}`);
   const phase=target.phase,active=!wslSettled.includes(phase);
   if(phase&&phase!=='idle')wslLine(row,'wsl-phase',wslPhaseLabels[phase]||phase);
-  if(target.progress){const bar=document.createElement('progress');bar.className='wsl-progress';bar.max=target.progress.total;bar.value=target.progress.received;bar.setAttribute('aria-label',`${target.name} 진행률`);row.append(bar);wslLine(row,'wsl-meta',target.progress.unit==='percent'?`${Math.round(target.progress.received)}%`:`${Math.floor(target.progress.received/1048576)} / ${Math.ceil(target.progress.total/1048576)} MB`);}
+  if(target.progress&&wslProgressPhases.includes(phase)){const bar=document.createElement('progress');bar.className='wsl-progress';bar.max=target.progress.total;bar.value=target.progress.received;bar.setAttribute('aria-label',`${target.name} 진행률`);row.append(bar);wslLine(row,'wsl-meta',target.progress.unit==='percent'?`${Math.round(target.progress.received)}%`:`${Math.floor(target.progress.received/1048576)} / ${Math.ceil(target.progress.total/1048576)} MB`);}
   if(target.error)wslLine(row,'wsl-error',target.error);
   if(target.message)wslLine(row,'wsl-meta',target.message);
   if(target.installed===false)wslLine(row,'wsl-meta','Gateway를 자동으로 설치하지 않습니다. 직접 설치한 뒤 다시 확인하세요.');

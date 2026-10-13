@@ -14,7 +14,7 @@ function fixture({names=['Ubuntu','Stopped'],running=['Ubuntu'],installed=true,l
   assert.equal(args[0],'--distribution');assert.ok(names.includes(args[1]));assert.deepEqual(args.slice(2,5),['--exec','sh','-c']);const script=args[5];
   if(script.includes("'--background'"))return json({status:'started',operationId:id});
   if(script.includes("'operation'"))return json(final);
-  if(script.includes("'--check'"))return json({installed:true,currentVersion:'2.5.3',latestVersion:'2.6.0',canUpdate:true});
+  if(script.includes("'--check'"))return json({installed:true,currentVersion:'2.5.3',latestVersion:'2.6.0',canUpdate:true,phase:'checked',progress:100});
   return json({installed,legacy,version:installed?'2.5.3':null,canUpdate:false});
  };
  const timers={setTimeout:()=>({unref(){}}),clearTimeout(){}};
@@ -33,6 +33,7 @@ test('passive refresh probes only running distributions; explicit probe may star
  const f=fixture(),service=createWslUpdates({platform:'win32',...f});const state=await service.refresh();assert.equal(state.busy,false);assert.equal(state.targets[0].installed,true);assert.equal(state.targets[1].running,false);
  assert.ok(f.calls.filter(c=>c.args[0]==='--distribution').every(c=>c.args[1]==='Ubuntu'));
  const checked=await service.probe('Stopped');assert.ok(f.calls.some(c=>c.args[1]==='Stopped'));assert.equal(checked.targets[1].latestVersion,'2.6.0');assert.equal(checked.targets[1].canUpdate,true);
+ assert.equal(checked.targets[1].progress,null,'A completed version check must not leave a 100% gauge');
  const before=f.calls.length;await assert.rejects(service.probe('not-installed; touch /tmp/injected'),/선택/);assert.equal(f.calls.length,before);service.close();
 });
 test('missing Gateway or old registration is never silently installed',async()=>{
@@ -50,9 +51,9 @@ test('busy Windows installer and active Linux jobs block new target work',async(
 });
 
 test('Linux updater result protocol settles installed, up_to_date and error operations',async()=>{
- for(const status of ['installed','up_to_date','error']){
+ for(const status of ['installed','up_to_date','error','blocked','cancelled']){
   const f=fixture(),service=createWslUpdates({platform:'win32',...f});await service.refresh();await service.probe('Ubuntu');await service.update('Ubuntu');
   f.setFinal({status:'running',phase:'verifying',progress:50});await service.poll();assert.deepEqual(service.getState().targets[0].progress,{received:50,total:100,unit:'percent'});assert.equal(service.isBusy(),true);
-  f.setFinal({type:'result',status,phase:status==='error'?'failed':'complete',version:'2.6.0',progress:100,error:status==='error'?'Signature verification failed':undefined});await service.poll();assert.equal(service.isBusy(),false);if(status==='error')assert.match(service.getState().targets[0].error,/Signature/);else assert.equal(service.getState().targets[0].canUpdate,false);service.close();
+  f.setFinal({type:'result',status,phase:status==='error'?'failed':'complete',version:'2.6.0',progress:100,error:status==='error'?'Signature verification failed':undefined});await service.poll();assert.equal(service.isBusy(),false);assert.equal(service.getState().targets[0].progress,null);if(status==='error')assert.match(service.getState().targets[0].error,/Signature/);else if(status!=='cancelled')assert.equal(service.getState().targets[0].canUpdate,false);service.close();
  }
 });

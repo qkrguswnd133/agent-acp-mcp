@@ -2,6 +2,7 @@ const fs=require('node:fs'),path=require('node:path');
 const {execFile}=require('node:child_process'),{promisify}=require('node:util');
 const execute=promisify(execFile);
 const uuid=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const progressPhases=new Set(['starting','preparing','downloading','verifying','installing','updating']);
 const version=value=>typeof value==='string'&&/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value)?value:null;
 const message=value=>typeof value==='string'?value.slice(0,2000):undefined;
 function decode(value){if(!Buffer.isBuffer(value))return String(value??'').replace(/\0/g,'');const wide=value.length>1&&(value[0]===255&&value[1]===254||value.subarray(0,100).includes(0));return value.toString(wide?'utf16le':'utf8').replace(/^\uFEFF/,'').replace(/\0/g,'');}
@@ -22,7 +23,7 @@ function createWslUpdates({platform=process.platform,exec=execute,stateDir,block
  const getState=()=>structuredClone({...state,busy:busy||operations.size>0});
  const completedRefresh=()=>({...getState(),busy:operations.size>0});
  const publish=()=>{try{listener(getState());}catch{}};
- const patch=(id,fields)=>{state.targets=state.targets.map(target=>target.id===id?{...target,...fields}:target);publish();};
+ const patch=(id,fields)=>{if(fields.phase&&!progressPhases.has(fields.phase))fields={...fields,progress:null};state.targets=state.targets.map(target=>target.id===id?{...target,...fields}:target);publish();};
  const command=async(args,timeout=12000)=>exec('wsl.exe',args,{windowsHide:true,shell:false,timeout,maxBuffer:1024*1024,encoding:'buffer'});
  const inDistro=async(id,script,timeout=45000)=>{try{return parseOutput((await command(['--distribution',id,'--exec','sh','-c',script],timeout)).stdout);}catch(error){if(error.stdout){const value=parseOutput(error.stdout);if(['error','blocked','cancelled'].includes(value.status))return value;}throw error;}};
  const target=id=>{if(typeof id!=='string'||!state.targets.some(t=>t.id===id))throw Error('확인된 WSL 배포판을 선택하세요.');return state.targets.find(t=>t.id===id);};
