@@ -18,6 +18,7 @@ test('PID previews retain the full count, truncation marker and full-evidence fi
   const legacy=structuredClone(saved);delete legacy.runtimeEvidence.processCleanup.trackedPidCount;delete legacy.runtimeEvidence.processCleanup.truncated;delete legacy.processEvidence;
   const view=await presentJobPayload(legacy,{jobsDirectory:dir});assert.equal(view.runtimeEvidence.processCleanup.trackedPidCount,117);assert.equal(view.runtimeEvidence.processCleanup.truncated,true);assert.equal(view.processEvidence.file,saved.processEvidence.file);
   assert.deepEqual((await presentJobPayload(saved,{jobsDirectory:dir,verbose:true})).runtimeEvidence.processCleanup.trackedPids,pids);
+  await fs.unlink(saved.processEvidence.file);const unavailable=await presentJobPayload(legacy,{jobsDirectory:dir});assert.equal(unavailable.runtimeEvidence.processCleanup.trackedPidCount,null);assert.equal(unavailable.runtimeEvidence.processCleanup.truncated,true);assert.equal(unavailable.processEvidence.availability,'unavailable');
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
 test('artifact hydration retains migrated current cwd without rewriting provider history',async()=>{

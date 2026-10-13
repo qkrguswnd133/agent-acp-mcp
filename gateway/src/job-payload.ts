@@ -208,12 +208,12 @@ function addProcessReferences(job:any,jobsDirectory:string){
   if(!value||typeof value!=='object')return;
   if(field.endsWith('processCleanup')&&Array.isArray(value.trackedPids)){
    const unknown=job.payload?.diagnostics?.some((item:any)=>item.operation==='hydration');
-   found=true;value.trackedPidCount=Number.isSafeInteger(value.trackedPidCount)?value.trackedPidCount:unknown?null:value.trackedPids.length;
+   found=true;value.trackedPidCount=unknown?null:Number.isSafeInteger(value.trackedPidCount)?value.trackedPidCount:value.trackedPids.length;
    value.truncated=value.truncated===true||!!unknown||value.trackedPids.length<value.trackedPidCount;
    value.trackedPidsPath??=`${field}.trackedPids`;
   }
   for(const [key,item] of Object.entries(value))if(!['rawEvents','payload','processEvidence','fullList'].includes(key))visit(item,Array.isArray(value)?`${field}[${key}]`:field?`${field}.${key}`:key);
  };
- visit(job);if(found)job.processEvidence={file,source:expected?'artifact':'job_record',complete:!job.payload?.diagnostics,note:'Full tracked PID identities and cleanup evidence are in this file. Use verbose=true to hydrate an artifact.'};
+ visit(job);if(found)job.processEvidence={file,source:expected?'artifact':'job_record',availability:job.payload?.diagnostics?'unavailable':'not_rechecked',note:'Full tracked PID identities and cleanup evidence are in this file. Use verbose=true to hydrate an artifact.'};
  return job;
 }
