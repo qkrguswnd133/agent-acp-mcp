@@ -6,6 +6,15 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {JobManager} from '../src/jobs.js';
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+test('all providers retain completion evidence after later cleanup activity',async()=>{
+ for(const provider of ['claude','grok','codex']){
+  const {dir,input}=await fixture();const manager=new JobManager(path.join(dir,'jobs'),async(_kind,_input,_signal,hooks)=>{
+   hooks.onActivity({type:provider+'_turn_completed',provider});hooks.onActivity({type:'process_cleanup',provider,verified:true});return {error:null,text:'done'};
+  });
+  try{const started=await manager.start('agent_ask',input);const result=await done(manager,started.job_id);assert.ok(result.runtimeEvidence.turnCompletedAt);assert.equal(result.runtimeEvidence.completedProvider,provider);assert.equal(result.runtimeEvidence.processCleanup.verified,true);assert.equal(result.stalled_suspected,false);}
+  finally{await manager.close();await fs.rm(dir,{recursive:true,force:true});}
+ }
+});
 test('persisted progress warning is visible without cancelling or treating fresh activity as a stall',async()=>{
  const {dir}=await fixture(),id=randomUUID(),directory=path.join(dir,'jobs');await fs.mkdir(directory);
  const now=new Date().toISOString();

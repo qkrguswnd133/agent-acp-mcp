@@ -33,3 +33,8 @@ test('terminal reports missing executable without claiming an exit code',async()
  const terminal=new TestTerminal('nonexistent-test-executable-82762',[],process.cwd(),Date.now()+1000,new AbortController().signal,()=>{});
  await terminal.done;assert.equal(terminal.record.status,'spawn_failed');assert.ok(terminal.record.output.includes('ENOENT'));
 });
+test('terminal stop settles and retains output even when close and exit events never arrive',async()=>{
+ const started=Date.now();const terminal=new TestTerminal(process.execPath,['-e','console.log("PARTIAL_한글");setInterval(()=>{},1000)'],process.cwd(),Date.now()+400,new AbortController().signal,()=>{});
+ const child=(terminal as any).child,emit=child.emit.bind(child);child.emit=(name:string,...args:any[])=>name==='close'||name==='exit'?false:emit(name,...args);
+ await terminal.done;assert.equal(terminal.record.status,'deadline_exceeded');assert.match(terminal.record.output,/PARTIAL_한글/);assert.ok(Date.now()-started<18000);assert.ok(terminal.record.finishedAt);assert.ok(terminal.record.processCleanup);
+});

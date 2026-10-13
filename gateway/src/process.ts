@@ -124,7 +124,7 @@ export function spawnPlan(launch:LaunchCommand,args:readonly string[],cwd?:strin
   return {...invocation,windowsVerbatimArguments:batch};
 }
 
-export interface CommandOptions {cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void;onStdoutLine?:(line:string)=>void;completion?:()=>boolean|Promise<boolean>;completionGraceMs?:number;trackDescendants?:boolean;}
+export interface CommandOptions {cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void;onStdoutChunk?:(chunk:string)=>void;onStdoutLine?:(line:string)=>void;completion?:()=>boolean|Promise<boolean>;completionGraceMs?:number;trackDescendants?:boolean;}
 export async function runCommand(launch:LaunchCommand,args:string[],options:CommandOptions={}):Promise<CommandResult>{
   if(options.signal?.aborted)return {code:null,signal:null,stdout:'',stderr:'',timedOut:false,stopReason:'cancelled'};
   const invocation=spawnPlan(launch,args,options.cwd);
@@ -135,7 +135,7 @@ export async function runCommand(launch:LaunchCommand,args:string[],options:Comm
   let stdout='',stderr='',lineBuffer='',timedOut=false,stopReason:CommandResult['stopReason'];
   // StringDecoder in the stream preserves multi-byte text split across chunks.
   p.stdout?.setEncoding('utf8');p.stderr?.setEncoding('utf8');
-  p.stdout?.on('data',d=>{stdout+=String(d);lineBuffer+=String(d);const lines=lineBuffer.split(/\r?\n/);lineBuffer=lines.pop()??'';for(const line of lines)options.onStdoutLine?.(line);options.onActivity?.({type:'stdout',at:new Date().toISOString()});});
+  p.stdout?.on('data',d=>{stdout+=String(d);options.onStdoutChunk?.(String(d));lineBuffer+=String(d);const lines=lineBuffer.split(/\r?\n/);lineBuffer=lines.pop()??'';for(const line of lines)options.onStdoutLine?.(line);options.onActivity?.({type:'stdout',at:new Date().toISOString()});});
   p.stderr?.on('data',d=>{stderr+=String(d);options.onActivity?.({type:'stderr',at:new Date().toISOString()});});
   p.stdin?.on('error',()=>{/* EPIPE after a terminal event must not crash the host. */});
   if(options.stdin!==undefined){p.stdin?.end(options.stdin);}else p.stdin?.end();

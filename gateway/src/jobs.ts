@@ -20,7 +20,7 @@ interface CleanupOptions {dryRun?:boolean;verified?:boolean;emptyOnly?:boolean;a
 export const MAX_JOB_WAIT_SECONDS=25;
 function stallEvidence(job:Job,stallMs:number){
  const last=Date.parse(job.lastActivityAt),idleMs=Number.isFinite(last)?Math.max(0,Date.now()-last):null;
- const active=!terminal.has(job.status),completedAt=job.runtimeEvidence?.codexTurnCompletedAt??null;
+ const active=!terminal.has(job.status),completedAt=job.runtimeEvidence?.turnCompletedAt??job.runtimeEvidence?.codexTurnCompletedAt??null;
  const suspected=active&&idleMs!==null&&idleMs>stallMs;
  return {stalled_suspected:suspected,stallEvidence:{lastActivityAt:job.lastActivityAt??null,idleMs,thresholdMs:stallMs,turnCompletedAt:completedAt,turnCompletedWithoutFurtherOutput:active&&!!completedAt&&idleMs!==null&&idleMs>5000,cpuIdle:'unavailable',reasons:[...(suspected?['no_activity_beyond_threshold']:[]),...(active&&!!completedAt&&idleMs!==null&&idleMs>5000?['turn_completed_without_further_output']:[])],automaticCancellation:false}};
 }
@@ -96,7 +96,7 @@ export class JobManager {
       job.status='running';await this.persist(entry);
       job.result=await this.runner(job.kind,input,controller.signal,{onActivity:event=>{
         job.lastActivityAt=new Date().toISOString();job.activity=event;entry.dirty=true;
-        if(event.type==='codex_turn_completed')job.runtimeEvidence={...job.runtimeEvidence,codexTurnCompletedAt:job.lastActivityAt};
+        if(['codex_turn_completed','claude_turn_completed','grok_turn_completed'].includes(String(event.type)))job.runtimeEvidence={...job.runtimeEvidence,turnCompletedAt:job.lastActivityAt,completedProvider:event.provider??String(event.type).split('_')[0],...(event.type==='codex_turn_completed'?{codexTurnCompletedAt:job.lastActivityAt}:{})};
         if(event.type==='process_cleanup')job.runtimeEvidence={...job.runtimeEvidence,processCleanup:event};
       }});
       job.status=job.result.errorKind==='cancelled'?'cancelled':job.result.error?'failed':'completed';

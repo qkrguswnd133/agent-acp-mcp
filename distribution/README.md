@@ -4,7 +4,7 @@
 
 배포/Gateway **2.5.3**, Monitor **1.2.1**입니다. 기존 업데이트 방법을 사용하며 적용 후 MCP를 재연결하세요. 모델·effort와 self-provider 설정, 로그인 방식은 그대로 유지됩니다. 설치본 `src`를 직접 수정하지 말고 새 배포의 실행 코드와 문서를 함께 업데이트하세요.
 
-- Codex 완료 신호·마감·취소 처리에서 최종/부분 응답과 사용량을 보존합니다.
+- Claude·Grok·Codex 완료 신호·마감·취소 처리에서 최종/부분 응답과 사용량을 보존합니다.
 - `agent_job_wait`는 실제 최대 25초입니다. 기존 60초 인자는 호환을 위해 받되 25초로 제한합니다. 대기 취소와 작업 취소는 분리되며, stdio 연결 종료 시 수락한 작업을 원래 마감까지 수행·저장합니다. 호스트의 강제 프로세스 종료는 방지할 수 없습니다.
 - 실패·취소 worktree도 실제 커밋 병합과 `verified=true`, `idle_confirmed=true`, `verification_summary`, 유휴 검사를 통과하면 정리할 수 있습니다.
 - `remove_ignored_artifacts=true`는 Git ignore 일반 파일만 정리하는 명시적 옵션입니다. 삭제 경로는 `removedIgnoredPaths`에 남으며, 변경·일반 미추적 파일·링크·미병합 커밋은 보존합니다.

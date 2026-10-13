@@ -14,7 +14,7 @@ Windows x64용 MCP 게이트웨이와 독립 실행형 Agent Monitor입니다. �
 
 ## 업데이트
 
-**2.5.3 실행 종료 개선:** Codex 완료 신호를 실시간 감지하고, 종료 지연·마감·취소 시 부분 결과와 사용량을 보존합니다. MCP 대기는 최대 25초이며 연결 종료는 수락된 작업의 취소로 변환하지 않습니다. 검증·병합된 실패/취소 작업 정리와 명시적 ignored 산출물 삭제를 지원합니다. [작업 수명 및 정리](gateway/JOB-LIFECYCLE.md)를 확인하세요. Monitor는 1.2.1을 유지합니다.
+**2.5.3 실행 종료 개선:** Claude·Grok·Codex 완료 신호를 실시간 감지하고, 종료 지연·마감·취소 시 부분 결과와 사용량을 보존합니다. MCP 대기는 최대 25초이며 연결 종료는 수락된 작업의 취소로 변환하지 않습니다. 검증·병합된 실패/취소 작업 정리와 명시적 ignored 산출물 삭제를 지원합니다. [작업 수명 및 정리](gateway/JOB-LIFECYCLE.md)를 확인하세요. Monitor는 1.2.1을 유지합니다.
 
 **2.5.2 작업 보존 개선:** 새 worktree는 `%USERPROFILE%\.agent-acp\worktrees`에 보관합니다. 기존 TEMP worktree는 자동 이동하지 않으며, 명시적 이동·손상 복구 도구와 3일 이상 보관 경고를 제공합니다. 검증된 cherry-pick 결과의 정리는 선택적으로 patch 동등성을 확인합니다. 리뷰 본문은 64 KiB를 넘어도 그대로 반환하고 명령 로그를 줄입니다. Windows Codex용 portable PowerShell 7.6.6을 함께 배포하며 개인·시스템 PowerShell 설치는 변경하지 않습니다. [Worktree 및 결과 관리](gateway/MANAGED-WORKTREES.md)와 [설정 설명](distribution/README.md)을 확인하세요.
 

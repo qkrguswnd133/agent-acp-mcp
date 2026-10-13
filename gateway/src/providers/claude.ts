@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {runClaudeCommand} from '../claude-execution.js';
 import {spawnPlan} from '../process.js';
 import {readClaudeModels} from '../claude-model-catalog.js';
 import {accountStatus} from '../account.js';
@@ -102,8 +103,11 @@ export class ClaudeProvider implements ProviderAdapter{
   const {model,effort,modelSource,effortSource}=resolveProviderSettings('claude',input);
   if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('--effort',effort);
   args.push('--strict-mcp-config','--mcp-config','{"mcpServers":{}}');
-  const r=await runCommand(command,args,{cwd:input.cwd,env:providerChildEnv({DISABLE_AUTOUPDATER:'1'}),stdin:buildPrompt(kind,input,'Claude'),timeoutMs:(input.max_runtime_minutes??120)*60_000,signal,onActivity:hooks?.onActivity});
-  const parsed=parseJson(r.stdout);const failed=r.code!==0||parsed?.is_error===true;
+  const gradleUserHome=writable?path.join(process.env.AGENT_MCP_STATE_DIR??path.join(home,'.agent-acp-mcp'),'gradle',generatedSessionId):undefined;
+  const r=await runClaudeCommand(command,args,{cwd:input.cwd,env:providerChildEnv({DISABLE_AUTOUPDATER:'1',...(gradleUserHome?{GRADLE_USER_HOME:gradleUserHome}:{})}),stdin:buildPrompt(kind,input,'Claude'),timeoutMs:(input.max_runtime_minutes??120)*60_000,signal,onActivity:hooks?.onActivity});
+  const parsed=parseJson(r.stdout)??r.terminalResult;
+  const interrupted=interruptionKind(r.timedOut,signal);
+  const failed=(r.code!==0&&!(r.stopReason==='completed'&&r.completion.confirmed))||parsed?.is_error===true||!!interrupted;
   const sessionId=typeof (parsed?.session_id??parsed?.sessionId)==='string'&&(parsed.session_id??parsed.sessionId).trim()?(parsed.session_id??parsed.sessionId).trim():generatedSessionId;
   const directEffort=reportedEffort(parsed?.effort??parsed?.reasoning_effort??parsed?.reasoningEffort);
   // JSON output can be malformed on an exit error, but the official session
@@ -111,20 +115,21 @@ export class ClaudeProvider implements ProviderAdapter{
   const telemetry=await readClaudeSessionTelemetry(input.cwd,sessionId);
   const {text:partialText,usage:transcriptUsage,model:transcriptModel,observedModels:transcriptModels,usageSource:transcriptUsageSource,usageScope:transcriptUsageScope,observedUsage,commandExecutions,...sessionEffort}=telemetry;
   const runtimeEffort=directEffort?{effort:directEffort,effortSource:'cli_result',observedEfforts:[directEffort],effortComplete:true}:sessionEffort;
-  const metadata={...claudeModelMetadata(parsed,transcriptModels??(transcriptModel?[transcriptModel]:[])),...runtimeEffort,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,sessionId,commandExecutions};
+  const metadata={...claudeModelMetadata(parsed,transcriptModels??(transcriptModel?[transcriptModel]:[])),...runtimeEffort,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,sessionId,commandExecutions,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},rawEvents:r.stdout,...(gradleUserHome?{gradleUserHome}:{})};
   if(failed){
    const structured=parsed?.is_error===true?resultError(parsed,''):undefined;
-   const error=structured??(r.stderr.trim()||`Claude exited with code ${r.code}`);
+   const error=structured??(interrupted==='deadline_exceeded'?'Claude execution deadline exceeded':interrupted==='cancelled'?'Claude execution cancelled':r.stderr.trim()||`Claude exited with code ${r.code}`);
    // Only an actual structured error or stderr is classification evidence.
    // Normal stdout may contain a discussion of a quota and is never evidence.
    const structuredPayload=structuredErrorEvidence(parsed,structured);
    const classification=classifyProviderError(structuredPayload??r.stderr);
-   const interrupted=interruptionKind(r.timedOut,signal),errorKind=interrupted??classification.errorKind;
+   const errorKind=interrupted??classification.errorKind;
    if(!interrupted&&classification.limitKind){
     try{await quota.markLimited('claude',classification,'Claude CLI reported a runtime limit.',Date.now());}catch{/* Cache telemetry cannot replace the CLI result. */}
    }
    const directUsage=parsed?.usage;
-   return {provider:'claude',text:partialText??'',error,errorKind,limitKind:classification.limitKind??null,resetsAt:classification.resetsAt??null,retryAfter:classification.retryAfter??null,...metadata,usage:directUsage??transcriptUsage??'unavailable',...(directUsage!==undefined?{usageSource:'cli_result',usageScope:'cli_result'}:transcriptUsage!==undefined?{usageSource:transcriptUsageSource,usageScope:transcriptUsageScope,observedUsage}:{}),rawResultType:parsed?.type??'unavailable'};
+   const directText=parsed?.is_error!==true&&typeof parsed?.result==='string'?parsed.result.trim():undefined;
+   return {provider:'claude',text:directText??partialText??'',error,errorKind,limitKind:classification.limitKind??null,resetsAt:classification.resetsAt??null,retryAfter:classification.retryAfter??null,...metadata,usage:directUsage??transcriptUsage??'unavailable',...(directUsage!==undefined?{usageSource:'cli_result',usageScope:'cli_result'}:transcriptUsage!==undefined?{usageSource:transcriptUsageSource,usageScope:transcriptUsageScope,observedUsage}:{}),rawResultType:parsed?.type??'unavailable'};
   }
   try{await quota.markAvailable('claude','runtime_success',runStartedAt);}catch{/* Cache telemetry cannot replace the CLI result. */}
   const directUsage=parsed?.usage;

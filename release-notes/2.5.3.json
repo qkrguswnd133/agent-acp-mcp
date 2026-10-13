@@ -1,11 +1,12 @@
 {
   "gateway": [
-    "Gateway 2.5.3: Codex turn.completed를 실행 중 감지해 짧은 유예 후 남은 프로세스를 정리합니다. 종료 이벤트가 오지 않아도 마감·취소를 제한된 시간 안에 확정하며 최종/부분 응답, 사용량, 모델·effort와 정리 결과를 보존합니다. 대응하는 세션 JSONL의 task_complete도 보완 증거로 사용합니다.",
+    "Gateway 2.5.3: Codex turn.completed, Claude JSON result, Grok ACP end_turn을 실행 중 감지해 짧은 유예 후 남은 프로세스를 정리합니다. 종료 이벤트가 오지 않아도 마감·취소를 제한된 시간 안에 확정하며 최종/부분 응답, 사용량, 모델·effort와 정리 결과를 보존합니다. Codex는 대응하는 세션 JSONL의 task_complete도 보완 증거로 사용합니다.",
     "agent_job_wait는 기존 60초 인자를 받아도 실제 대기를 최대 25초로 제한합니다. 대기 요청 취소는 작업을 취소하지 않으며, stdio 연결 종료 시에도 수락한 작업은 원래 마감까지 수행·저장합니다. 호스트의 Gateway 강제 종료까지 막지는 못합니다.",
+    "Grok ACP 취소 유예를 5초로 줄이고 응답·터미널·프로세스 종료 대기를 제한합니다. 사용량 부가 조회는 8초 제한으로 본 작업 결과를 덮어쓰지 않습니다.",
     "다른 Gateway가 소유한 작업도 마지막 활동으로 stalled를 판단하고 완료 신호·무출력 근거를 표시합니다. CPU 정지는 관측하지 못하면 unavailable로 표시합니다.",
     "실패·취소한 작업도 실제 커밋 병합, verified=true, 검증 요약, idle_confirmed=true와 프로세스 검사를 통과하면 worktree를 정리할 수 있습니다. 미병합 변경과 원본 작업 기록은 보존합니다.",
     "remove_ignored_artifacts=true를 명시하면 Git이 ignore로 판정한 일반 파일만 지우며 deleted-path 이력을 반환합니다. 수정·일반 미추적 파일, 링크와 중첩 저장소는 보존합니다.",
-    "Codex 구현마다 Gradle 사용자 홈을 분리하고 --no-daemon을 권장합니다. 생성 시각으로 식별한 자식 프로세스만 정리하며, 정리를 확정하지 못하면 잔여 PID/불확실성을 보고하고 자동 worktree 정리를 막습니다."
+    "Claude·Grok·Codex 구현마다 Gradle 사용자 홈을 분리하고 --no-daemon을 권장합니다. 생성 시각으로 식별한 자식 프로세스만 정리하며, 정리를 확정하지 못하면 잔여 PID/불확실성을 보고하고 자동 worktree 정리를 막습니다."
   ],
   "monitor": ["Monitor 1.2.1을 유지합니다. 기존 설정과 작업 기록을 보존하며 업데이트 후 MCP를 재연결하세요."]
 }
