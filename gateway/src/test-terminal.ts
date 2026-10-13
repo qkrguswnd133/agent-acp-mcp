@@ -29,8 +29,8 @@ export class TestTerminal {
     if(finishing)return;finishing=true;if(timer)clearTimeout(timer);if(drainTimer)clearTimeout(drainTimer);signal.removeEventListener('abort',abort);
     void (async()=>{
      if(tree){let bound:NodeJS.Timeout|undefined;try{
-      this.record.processCleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Terminal cleanup deadline reached; ownership or exit remains unconfirmed.'});},options.cleanupMs??7000);})]);
-     }catch{this.record.processCleanup={trackedPids:tree.knownPids(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Terminal process inventory failed.'};}finally{if(bound)clearTimeout(bound);}}
+      this.record.processCleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),trackedProcesses:tree.knownProcesses?.(),rootPid:this.child.pid,rootProcess:tree.rootProcess?.(),observedAt:new Date().toISOString(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Terminal cleanup deadline reached; ownership or exit remains unconfirmed.'});},options.cleanupMs??7000);})]);
+     }catch{this.record.processCleanup={trackedPids:tree.knownPids(),trackedProcesses:tree.knownProcesses?.(),rootPid:this.child.pid,rootProcess:tree.rootProcess?.(),observedAt:new Date().toISOString(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Terminal process inventory failed.'};}finally{if(bound)clearTimeout(bound);}}
      const observedExit=!this.child.pid||this.child.exitCode!==null||this.child.signalCode!==null;
      const rootState=observedExit?'absent':probeProcessLiveness(this.child.pid!);
      const rootStopped=rootState==='absent';

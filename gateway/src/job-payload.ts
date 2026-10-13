@@ -9,7 +9,7 @@ interface Artifact {path:string;bytes:number;sha256:string;format:'json';}
 const bytes=(value:unknown)=>Buffer.byteLength(JSON.stringify(value),'utf8');
 const digest=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const isRecord=(v:any):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp','processCleanup','processCleanupState','processCleanupWarning']);
+const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp','processCleanup','processCleanupState','processCleanupWarning','runtimeEvidence','processEvidence','trackedPidCount','truncated','trackedPidsPath']);
 type PayloadScope='job'|'result'|'providers'|'provider'|'other';
 function markResponseLimit(job:any){
  if(job.payload?.schema===SCHEMA){
@@ -77,13 +77,16 @@ function compact(job:any){
     return [...value.slice(0,head).map((v,i)=>visit(v,`${field}[${i}]`,depth+1)),...value.slice(value.length-tail).map((v,i)=>visit(v,`${field}[${value.length-tail+i}]`,depth+1))];
    }
    const resultScope=scope==='result'||scope==='provider';
-   const required=(key:string)=>(scope==='job'&&(protectedKeys.has(key)||key==='result'))||(resultScope&&(protectedKeys.has(key)||key==='text'));
+   const cleanup=field.endsWith('processCleanup')&&Array.isArray(value.trackedPids);
+   const required=(key:string)=>(scope==='job'&&(protectedKeys.has(key)||key==='result'))||(resultScope&&(protectedKeys.has(key)||key==='text'))||(cleanup&&['trackedPids','trackedPidCount','truncated','trackedPidsPath','verified','remainingPids','unverifiedPids'].includes(key));
    const entries=Object.entries(value).filter(([key])=>field!==''||key!=='payload').sort(([a],[b])=>Number(required(b)||protectedKeys.has(b))-Number(required(a)||protectedKeys.has(a)));
    // Essential result fields cannot be displaced by a diagnostic-heavy object.
    const metadataLimit=field.endsWith('.usage')?24:protectedKeys.has(field.split('.').at(-1)!)?8:1;
    const kept=entries.filter(([key],index)=>required(key)||(index<Math.max(keyLimit,scope==='job'||resultScope?0:metadataLimit)&&(keyLimit>0||Buffer.byteLength(key)<=256)));
    if(entries.length>kept.length)note(field,{originalFieldCount:entries.length,previewFieldCount:kept.length});
-   return Object.fromEntries(kept.map(([key,item])=>[key,resultScope&&key==='text'&&typeof item==='string'?item:visit(item,field?`${field}.${key}`:key,depth+1,scope==='job'&&key==='result'?'result':scope==='result'&&key==='results'?'providers':'other')]));
+   const record=Object.fromEntries(kept.map(([key,item])=>[key,resultScope&&key==='text'&&typeof item==='string'?item:visit(item,field?`${field}.${key}`:key,depth+1,scope==='job'&&key==='result'?'result':scope==='result'&&key==='results'?'providers':'other')]));
+   if(cleanup){record.trackedPidCount=Math.max(Number.isSafeInteger(value.trackedPidCount)?value.trackedPidCount:0,value.trackedPids.length);record.truncated=value.truncated===true||(record.trackedPids?.length??0)<record.trackedPidCount;record.trackedPidsPath=value.trackedPidsPath??`${field}.trackedPids`;}
+   return record;
   };
   const result=visit(job,'',0,'job');
   const prior=job.payload?.schema===SCHEMA?job.payload:{};
@@ -144,7 +147,7 @@ export async function persistJobPayload(job:any,jobsDirectory:string):Promise<an
    await readArtifact(original,jobsDirectory,{path:`${id}/artifacts/${name}`,bytes:size,sha256,format:'json'});
   }
   reduced.payload.artifact={path:`${id}/artifacts/${name}`,bytes:size,sha256,format:'json'} satisfies Artifact;
-  return markResponseLimit(reduced);
+  return markResponseLimit(addProcessReferences(reduced,jobsDirectory));
  }catch(e){return diagnostic(original,'storage',e);}
 }
 async function readArtifact(job:any,directory:string,ref:Artifact){
@@ -171,7 +174,17 @@ async function readArtifact(job:any,directory:string,ref:Artifact){
 export async function presentJobPayload(job:any,options:{verbose?:boolean;jobsDirectory:string}):Promise<any>{
  const cloned=structuredClone(job);
  if(cloned.payload?.schema===SCHEMA&&cloned.payload.artifact)cloned.payload.artifactRoot=path.resolve(options.jobsDirectory);
- if(!options.verbose)return compact(cloned);
+ // Older compact records did not label PID previews. Rebuild their preview from
+ // verified lossless evidence, without rewriting the historical record.
+ if(!options.verbose){
+  if(cloned.payload?.artifact&&needsPidMetadata(cloned)){
+   const full=await presentJobPayload(cloned,{...options,verbose:true});
+   if(full.payload?.diagnostics)return addProcessReferences(compact(full),options.jobsDirectory);
+   const view=compact(full);view.payload={...view.payload,artifact:cloned.payload.artifact,artifactRoot:path.resolve(options.jobsDirectory)};
+   return addProcessReferences(view,options.jobsDirectory);
+  }
+  return addProcessReferences(compact(cloned),options.jobsDirectory);
+ }
  if(cloned.payload?.schema!==SCHEMA||!cloned.payload.artifact)return cloned;
  try{
   const full=await readArtifact(cloned,options.jobsDirectory,cloned.payload.artifact);
@@ -180,4 +193,27 @@ export async function presentJobPayload(job:any,options:{verbose?:boolean;jobsDi
   for(const key of ['status','error','completionPending','implementationProgress','stalled_suspected','poll_after_seconds','owner_available','message','worktree','cwd','worktreeMigration','worktreeIdleCheck'])if(Object.hasOwn(cloned,key))result[key]=cloned[key];
   return result;
  }catch(e){return diagnostic(cloned,'hydration',e);}
+}
+
+function needsPidMetadata(value:any):boolean{
+ if(!value||typeof value!=='object')return false;
+ if(Array.isArray(value.processCleanup?.trackedPids)&&!Number.isSafeInteger(value.processCleanup.trackedPidCount))return true;
+ return Object.entries(value).some(([key,item])=>!['rawEvents','payload','processEvidence'].includes(key)&&needsPidMetadata(item));
+}
+function addProcessReferences(job:any,jobsDirectory:string){
+ const ref=job.payload?.artifact,expected=ref&&ref.path===`${job.job_id}/artifacts/payload-${ref.sha256}.json`&&/^[a-f0-9]{64}$/.test(ref.sha256);
+ const file=expected?path.resolve(jobsDirectory,ref.path):path.resolve(jobsDirectory,`${validId(job)}.json`);
+ let found=false;
+ const visit=(value:any,field='')=>{
+  if(!value||typeof value!=='object')return;
+  if(field.endsWith('processCleanup')&&Array.isArray(value.trackedPids)){
+   const unknown=job.payload?.diagnostics?.some((item:any)=>item.operation==='hydration');
+   found=true;value.trackedPidCount=Number.isSafeInteger(value.trackedPidCount)?value.trackedPidCount:unknown?null:value.trackedPids.length;
+   value.truncated=value.truncated===true||!!unknown||value.trackedPids.length<value.trackedPidCount;
+   value.trackedPidsPath??=`${field}.trackedPids`;
+  }
+  for(const [key,item] of Object.entries(value))if(!['rawEvents','payload','processEvidence','fullList'].includes(key))visit(item,Array.isArray(value)?`${field}[${key}]`:field?`${field}.${key}`:key);
+ };
+ visit(job);if(found)job.processEvidence={file,source:expected?'artifact':'job_record',complete:!job.payload?.diagnostics,note:'Full tracked PID identities and cleanup evidence are in this file. Use verbose=true to hydrate an artifact.'};
+ return job;
 }

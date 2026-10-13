@@ -10,6 +10,7 @@ import {GatewayRegistry} from './gateway-registry.js';
 import {assertLinuxStateMigrated} from './state-paths.js';
 import {setMcpSelfTest} from './health.js';
 import {JobManager} from './jobs.js';
+import {defaultLegacyGradleRoots,listLegacyGradleHomes,cleanupLegacyGradleHome} from './legacy-gradle.js';
 import {detectHost} from './host.js';
 import {AgentRouter} from './router.js';
 import {ModelSelectionError} from './model-settings.js';
@@ -50,10 +51,19 @@ const base={
   max_runtime_minutes:z.number().int().min(1).max(1440).default(120)
 };
 const reply=(value:unknown)=>({content:[{type:'text' as const,text:JSON.stringify(value)}]});
-const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...((e as any)?.removedIgnoredPaths?{removedIgnoredPaths:(e as any).removedIgnoredPaths}:{}),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
+const errorReply=(e:unknown)=>({...reply({error:e instanceof Error?e.message:String(e),...((e as any)?.processCheck?{processCheck:(e as any).processCheck}:{}),...((e as any)?.removedIgnoredPaths?{removedIgnoredPaths:(e as any).removedIgnoredPaths}:{}),...(e instanceof ModelSelectionError?{errorKind:e.code,provider:e.provider,selection:e.selection}: {})}),isError:true});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.6.0'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.6.1'});
+ const legacyGradleOptions={jobsDirectory:path.join(stateRoot,'jobs'),roots:defaultLegacyGradleRoots(stateRoot)};
+ server.registerTool('agent_legacy_gradle_list',{
+   description:'Inspect obsolete UUID-named per-task Gradle homes, their sizes, associated jobs and cleanup blockers. Shared user Gradle caches are excluded. Never deletes; unreadable ownership evidence fails closed.',
+   inputSchema:z.object({}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
+ },tracked(async()=>{try{return reply(await listLegacyGradleHomes(legacyGradleOptions));}catch(e){return errorReply(e);}}));
+ server.registerTool('agent_legacy_gradle_cleanup',{
+   description:'Explicitly clean one obsolete Gateway-owned task Gradle home. Defaults to dry_run=true. Requires an exact path recorded by a terminal job, fresh process checks and safe regular files. Never removes shared caches, job records, artifacts, branches or unknown directories. Returns removed paths/bytes; no automatic cleanup.',
+   inputSchema:z.object({path:z.string().min(1),dry_run:z.boolean().default(true)}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
+ },tracked(async({path:cachePath,dry_run})=>{try{return reply(await jobs.exclusiveMaintenance(()=>cleanupLegacyGradleHome({...legacyGradleOptions,path:cachePath,dryRun:dry_run,assertIdle:()=>{if(!jobs.isIdle())throw Error('Gateway has active or pending jobs; legacy cache preserved');}})));}catch(e){return errorReply(e);}}));
  const readTools:Record<string,string>={
    agent_ask:'Start an independent read-only engineering analysis through one or more external providers.',
    agent_review:'Start a read-only code review focused on correctness, regressions, edge cases, security, and complexity.',
@@ -137,11 +147,11 @@ process.stdout.on('error',error=>{if((error as NodeJS.ErrnoException).code==='EP
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.6.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.6.1'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.6.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.6.1',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

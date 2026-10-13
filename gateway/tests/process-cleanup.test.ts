@@ -34,7 +34,7 @@ test('fresh tracked-PID check refuses live, permission-unknown, malformed and re
  await assert.rejects(verifyTrackedProcessesAbsent([1,2],pid=>pid===2?'alive':'absent'),/PIDs: 2/);
  await assert.rejects(verifyTrackedProcessesAbsent([1],()=> 'unknown'),/unverified/);
  await assert.rejects(verifyTrackedProcessesAbsent([0],()=> 'absent'),/invalid/);
- await assert.rejects(verifyTrackedProcessesAbsent([process.pid]),/still alive/);
+ await assert.rejects(verifyTrackedProcessesAbsent([process.pid]),/still alive|unverified/);
 });
 test('failed descendant snapshot reports unverified PIDs without claiming they are observed alive',async()=>{
  let scans=0;

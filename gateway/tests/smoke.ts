@@ -16,7 +16,7 @@ const c=new Client({name:'codex_smoke_client',title:'Codex smoke client',version
 try{
  await c.connect(transport);
  const list=await c.listTools();
- const expected=['agent_ask','agent_review','agent_investigate','agent_implement','agent_job_status','agent_job_cancel','agent_status','agent_cli_status','agent_cli_update','agent_worktree_status','agent_worktree_cleanup'];
+ const expected=['agent_ask','agent_review','agent_investigate','agent_implement','agent_job_status','agent_job_cancel','agent_status','agent_cli_status','agent_cli_update','agent_worktree_status','agent_worktree_cleanup','agent_legacy_gradle_list','agent_legacy_gradle_cleanup'];
  for(const name of expected)assert.ok(list.tools.some(t=>t.name===name),`missing ${name}`);
  const status=await c.callTool({name:'agent_status',arguments:{allow_self_provider:false}});
  const value=JSON.parse((status.content as any[])[0].text);
@@ -28,5 +28,7 @@ try{
  assert.equal(opted.allow_self_provider,true);assert.equal(opted.providers.codex.blocked_reason,'disabled');assert.equal(opted.providers.codex.callable,false);
  for(const name of ['agent_ask','agent_review','agent_investigate','agent_implement'])assert.ok(list.tools.find(t=>t.name===name)?.inputSchema.properties?.allow_self_provider);
  for(const name of ['agent_ask','agent_review','agent_investigate','agent_implement'])for(const key of ['model','effort','provider_options'])assert.ok(list.tools.find(t=>t.name===name)?.inputSchema.properties?.[key]);
+ const legacy=await c.callTool({name:'agent_legacy_gradle_list',arguments:{}});assert.equal(legacy.isError,undefined);assert.ok(Array.isArray(JSON.parse((legacy.content as any[])[0].text).caches));
+ assert.equal((list.tools.find(t=>t.name==='agent_legacy_gradle_cleanup')?.inputSchema.properties?.dry_run as any).default,true);
  console.log('TOOLS',list.tools.map(t=>t.name));console.log('STATUS',JSON.stringify(value));
 }finally{await c.close();}

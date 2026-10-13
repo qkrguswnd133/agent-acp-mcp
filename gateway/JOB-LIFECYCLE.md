@@ -1,4 +1,4 @@
-# Job completion, waiting and cleanup (2.6.0)
+# Job completion, waiting and cleanup (2.6.1)
 
 ## Claude, Grok and Codex completion and cancellation
 
@@ -24,7 +24,7 @@ Completion push notifications are not enabled: client subscription support and d
 
 ## Reviewed failed/cancelled worktrees
 
-Preview with `agent_worktree_cleanup(job_id, dry_run=true)`. A failed/cancelled job with commits can be removed only after its tip is an ancestor of the original repository's current HEAD, and the parent supplies `verified=true`, `idle_confirmed=true`, and `verification_summary`. Patch equivalence cannot substitute for ancestry for these failed/cancelled jobs. A fresh Windows/Linux process inventory rejects observable workspace writers and unknown provider ownership; the gateway may remain alive serving unrelated work. Active jobs, dirty targets and unmerged commits remain blocked. Incomplete prior cleanup requires idle_confirmed=true and verification_summary, a fresh check that every tracked/remaining/unverified PID is absent, and a fresh workspace ownership scan. Live or uninspectable PIDs still block cleanup and forget. Automatic empty-worktree deletion is not allowed while cleanup is unverified. Job outcome, logs and usage are not rewritten as successful.
+Preview with `agent_worktree_cleanup(job_id, dry_run=true)`. A failed/cancelled job with commits can be removed only after its tip is an ancestor of the original repository's current HEAD, and the parent supplies `verified=true`, `idle_confirmed=true`, and `verification_summary`. Patch equivalence cannot substitute for ancestry for these failed/cancelled jobs. A fresh Windows/Linux process inventory rejects observable workspace writers and unknown provider ownership; the gateway may remain alive serving unrelated work. Active jobs, dirty targets and unmerged commits remain blocked. Incomplete prior cleanup requires idle_confirmed=true and verification_summary, a fresh check that every tracked/remaining/unverified PID is absent or proven reused, and a fresh workspace ownership scan. Live or uninspectable PIDs still block cleanup and forget. Automatic empty-worktree deletion is not allowed while cleanup is unverified. Job outcome, logs and usage are not rewritten as successful.
 
 Add `remove_ignored_artifacts=true` only when the parent intends to discard ignored generated files. Eligibility and integration checks precede deletion. Dry-run returns `ignoredArtifactPaths`; apply returns and persists `removedIgnoredPaths`, including partial deletion if a locked file prevents completion. Only Git-ignored, untracked regular files and empty ignored parent directories are removed. Tracked modifications, ordinary untracked files, links/junctions and nested repositories are refused. No recursive or forced worktree deletion is used. Keep manual writers inactive during cleanup; filesystem changes by unrelated applications cannot be atomically locked by this gateway.
 
@@ -38,4 +38,21 @@ The implementation prompt asks for `--no-daemon`, preserves build artifacts for 
 
 `gradle.downloads` reports download lines found in available command output, with credential/query-stripped targets. `not_observed` is not proof of no network traffic, and `networkEnforced` is false: Gateway does not install a network firewall. Missing cached dependencies or a missing Wrapper distribution require parent review before downloading. Gradle's [dependency-cache documentation](https://docs.gradle.org/current/userguide/dependency_caching.html) and [Wrapper documentation](https://docs.gradle.org/current/userguide/gradle_wrapper.html) describe these separate caches. No task-local directory is created merely to make `--offline` appear isolated.
 
-Install using the signed 2.6.0 release and the existing Monitor updater or ZIP `Update.ps1`. Linux/WSL uses its separate signed package and `agent-acp update` after first-time installer registration. Finish active work before replacement, preserve state, and reconnect MCP. No provider CLI, authentication scheme, self-provider default, or model policy is changed.
+Install using the signed 2.6.2 release and the existing Monitor updater or ZIP `Update.ps1`. Linux/WSL uses its separate signed package and `agent-acp update` after first-time installer registration. Finish active work before replacement, preserve state, and reconnect MCP. No provider CLI, authentication scheme, self-provider default, or model policy is changed.
+
+
+## Process identity and historical PID reuse
+
+All three providers retain `processCleanup.trackedProcesses` and root identities: PID, UTC `createdAt`, `imageName`, `observedAt` and an OS creation key. Windows uses one CIM inventory per verification pass (including ancestors); Linux uses `/proc` start ticks and boot identity. A PID number alone is not process identity. Equal creation identity is `alive`; different creation is `reused`. Inaccessible creation data is `unknown` and blocks maintenance.
+
+Older jobs without identities use `startedAt` through `finishedAt` (or cleanup observation time). A current birth outside that interval proves reuse. A birth inside the interval requires a complete, creation-consistent current parent chain with no tracked or root anchor. The recorded Gateway owner is an additional ancestry anchor, labeled separately from observed provider roots. Missing/dead parents, cycles or unreadable birth data remain unknown; a familiar image name is never an exemption. Legacy ancestry is less definitive than recorded creation identity, so workspace ownership scanning and parent idle confirmation remain required.
+
+Dry runs return `trackedProcessCheck.checks`; refused requests return `processCheck.checks`, including current image/time, recorded time, decision and reason for each PID. Bulk cleanup retains these diagnostics. `forget` keeps the same live/unknown guard even after filesystem/branch/registration absence: it hides a listing but must not hide unresolved ownership. It never deletes job evidence.
+
+Compacted `processCleanup` includes `trackedPidCount`, `truncated` and `trackedPidsPath`. Both job and worktree status return `processEvidence.file`, pointing to the complete snapshot. Legacy previews are hydrated read-only to recover the true count; failed hydration reports unavailable evidence rather than treating the preview as complete.
+
+## Explicit cleanup of old task Gradle homes
+
+Use `agent_legacy_gradle_list` to see obsolete UUID directories, size, associated jobs and blockers. `agent_legacy_gradle_cleanup(path="<exact listed path>")` defaults to `dry_run=true`. After reviewing the result, pass `dry_run=false` to remove eligible files. This is never automatic. The exact home must be recorded by a finished job's authoritative result; UUID naming alone is insufficient. Active/pending jobs, missing job evidence, live/unknown ownership, unsafe paths, symlinks/junctions and hardlinks block deletion. The default user Gradle home and configured shared-cache aliases are protected.
+
+Successful cleanup reports removed paths and bytes, and leaves job records/results/branches untouched. A filesystem failure reports partial removal and retained paths. The Gateway serializes this operation against new local job starts and rechecks shared job/process state before deletion; keep unrelated manual writers idle as they cannot be atomically locked. Legacy homes not attributable to a retained job stay preserved.

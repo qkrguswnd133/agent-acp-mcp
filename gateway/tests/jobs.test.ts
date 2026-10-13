@@ -96,3 +96,16 @@ test('partial success is persisted as failed with successful results and handoff
  const restarted=new JobManager(path.join(dir,'jobs'),async()=>{throw Error('Do not resume automatically');});
  assert.equal((await restarted.status(j.job_id)).result.results[0].text,'completed portion');await m.close();await restarted.close();
 });
+
+
+test('exclusive maintenance blocks active jobs and serializes new starts without cancelling them',async()=>{
+ const {dir,input}=await fixture();let finish:((r:any)=>void)|undefined;const m=new JobManager(path.join(dir,'jobs'),async(_kind,_input,signal)=>new Promise(r=>{finish=r;signal.addEventListener('abort',()=>r({error:'Cancelled',errorKind:'cancelled'}),{once:true});}));
+ try{
+  const j=await m.start('agent_ask',input);while(!finish)await sleep(1);
+  await assert.rejects(()=>m.exclusiveMaintenance(async()=>assert.fail('must not run')),/active or pending jobs/);
+  finish({error:null});await done(m,j.job_id);
+  let release!:()=>void,entered=false;const maintenance=m.exclusiveMaintenance(async()=>{entered=true;await new Promise<void>(r=>{release=r;});});
+  while(!entered)await sleep(1);let started=false;const pending=m.start('agent_ask',input).then(job=>{started=true;return job;});await sleep(20);assert.equal(started,false);
+  finish=undefined;release();await maintenance;const next=await pending;while(!finish)await sleep(1);(finish as (r:any)=>void)({error:null});await done(m,next.job_id);
+ }finally{await m.close();await fs.rm(dir,{recursive:true,force:true});}
+});

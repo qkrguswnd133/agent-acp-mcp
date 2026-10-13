@@ -7,6 +7,19 @@ import {randomUUID,createHash} from 'node:crypto';
 import {MAX_JOB_RESPONSE_BYTES,persistJobPayload,presentJobPayload} from '../src/job-payload.js';
 
 async function fixture(){return fs.mkdtemp(path.join(os.tmpdir(),'job-payload-'));}
+test('PID previews retain the full count, truncation marker and full-evidence file on old and new records',async()=>{
+ const dir=await fixture(),pids=Array.from({length:117},(_,i)=>1000+i);
+ const job={...oversized(),runtimeEvidence:{processCleanup:{verified:false,trackedPids:pids,remainingPids:[]}}};
+ try{
+  const saved=await persistJobPayload(job,dir),cleanup=saved.runtimeEvidence.processCleanup;
+  assert.equal(cleanup.trackedPidCount,117);assert.equal(cleanup.truncated,true);assert.ok(cleanup.trackedPids.length<117);
+  assert.equal(saved.processEvidence.file,path.join(dir,saved.payload.artifact.path));assert.equal(cleanup.trackedPidsPath,'runtimeEvidence.processCleanup.trackedPids');
+  const original=JSON.parse(await fs.readFile(saved.processEvidence.file,'utf8'));assert.deepEqual(original.runtimeEvidence.processCleanup.trackedPids,pids);
+  const legacy=structuredClone(saved);delete legacy.runtimeEvidence.processCleanup.trackedPidCount;delete legacy.runtimeEvidence.processCleanup.truncated;delete legacy.processEvidence;
+  const view=await presentJobPayload(legacy,{jobsDirectory:dir});assert.equal(view.runtimeEvidence.processCleanup.trackedPidCount,117);assert.equal(view.runtimeEvidence.processCleanup.truncated,true);assert.equal(view.processEvidence.file,saved.processEvidence.file);
+  assert.deepEqual((await presentJobPayload(saved,{jobsDirectory:dir,verbose:true})).runtimeEvidence.processCleanup.trackedPids,pids);
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
 test('artifact hydration retains migrated current cwd without rewriting provider history',async()=>{
  const dir=await fixture(),job={job_id:randomUUID(),status:'completed',cwd:'D:/old',result:{text:'review',cwd:'D:/old',rawEvents:'x'.repeat(100000)}};
  try{

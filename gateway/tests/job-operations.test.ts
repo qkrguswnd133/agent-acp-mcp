@@ -292,12 +292,13 @@ test('interrupted cleanup requires idle confirmation and process scan, preservin
 test('unknown cleanup preserves successful and failed work until explicit review and fresh tracked-PID/workspace checks',async t=>{
  for(const status of ['completed','failed']){
   let scans=0,pidScans=0;const pids=Array.from({length:30},(_,i)=>1_900_000_000+i);
-  const f=await maintenanceFixture(t,undefined,async()=>{scans++;return {processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()};},async actual=>{pidScans++;assert.deepEqual(actual,pids);return {processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:actual,absentPids:actual};});
+  const f=await maintenanceFixture(t,undefined,async()=>{scans++;return {processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()};},async (actual,context)=>{pidScans++;assert.deepEqual(actual,pids);assert.equal(typeof context,'object');if(typeof context==='object'){assert.ok(context.startedAt);assert.ok(context.rootPids?.length);assert.equal(context.rootAnchorSource,'job_owner_and_observed_provider_roots');}return {processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:actual,absentPids:actual};});
   const originalResult={error:status==='failed'?'historical failure':null,results:[{provider:'codex',text:'finished implementation',usage:{totalTokens:44},rawEvents:'x'.repeat(80000),childCleanedUp:false,processCleanup:{verified:false,trackedPids:pids,remainingPids:[]}}]};
   const record={...f.record,status,result:originalResult};await fs.writeFile(f.file,JSON.stringify(await persistJobPayload(record,f.jobs)));
   try{
    await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','',{automatic:true,emptyOnly:true}),/child cleanup is unconfirmed/);
    await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed'),/idle_confirmed/);
+   const shown=await f.m.status(f.id);const tree=await f.m.worktreeStatus(f.id);assert.equal(shown.result.results[0].processCleanup.trackedPidCount,30);assert.equal(shown.processEvidence.source,'artifact');assert.equal(tree.processEvidence.file,shown.processEvidence.file);
    const preview=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true,dryRun:true});assert.ok('eligible' in preview&&preview.eligible);assert.ok(await fs.stat(f.w.path));assert.equal(scans,1);assert.equal(pidScans,2);
    const result=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true});assert.equal(result.worktree.state,'removed');assert.equal(scans,2);assert.equal(pidScans,4);
    const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,status);assert.equal(saved.result.error,originalResult.error);assert.deepEqual(saved.result.results[0].usage,{totalTokens:44});assert.equal(saved.worktreeIdleCheck.parentConfirmed,true);

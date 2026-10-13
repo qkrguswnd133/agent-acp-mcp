@@ -29,6 +29,8 @@ Windows Monitor의 업데이트 창에는 **WSL Gateway** 목록이 있습니다
 
 ## 업데이트
 
+**2.6.2 / Gateway 2.6.1 / Monitor 1.3.1:** PID 생성 시각으로 재사용을 구분합니다. 정리·forget의 PID별 근거와 전체 추적 목록 위치를 표시하며, 옛 작업별 Gradle 홈의 목록·명시적 정리 도구를 추가했습니다. 확인 불가 상태는 계속 차단하고 기존 기록과 사용자 공용 캐시는 보존합니다. [동작과 사용법](gateway/JOB-LIFECYCLE.md#process-identity-and-historical-pid-reuse)을 확인하세요.
+
 **2.6.1 / Monitor 1.3.1:** WSL Gateway의 확인 완료 후 100% 게이지가 남는 오류를 수정했습니다. 실제 업데이트 진행 중에만 게이지를 표시합니다. Gateway는 2.6.0을 유지합니다.
 
 **2.6.0 추가 수정:** 일부 프로세스 정리 검사 실패와 실제 잔존 PID를 구분해 정상 작업이 실패로 바뀌는 문제를 고칩니다. 정리 시에는 Parent 확인과 최신 PID·작업공간 검사를 요구합니다. 세 provider 모두 기존 Gradle 캐시를 재사용하고, 빌드 산출물은 Parent가 정리하도록 안내합니다. 기존 작업별 Gradle 폴더는 자동 삭제하지 않습니다. [상세 동작과 제한](gateway/JOB-LIFECYCLE.md)을 확인하세요.

@@ -2,7 +2,7 @@
 
 ## 2.6.0 Linux / WSL 업데이트
 
-현재 배포는 **2.6.1**, Gateway는 **2.6.0**, Windows Monitor는 **1.3.1**입니다. Monitor 1.3.1은 WSL 확인 완료 후 게이지가 남는 표시 오류를 수정합니다. Windows 설치 방식은 그대로이며 Linux·WSL은 [별도 Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치합니다. Windows용 ZIP이나 Node 모듈 폴더를 임의 복사하지 말고 `Agent-ACP-MCP-Linux-*.tar.gz`와 서명된 Linux manifest를 사용하세요.
+현재 배포는 **2.6.2**, Gateway는 **2.6.1**, Windows Monitor는 **1.3.1**입니다. Gateway 2.6.1은 PID 재사용 판정·전체 추적 목록 표시·옛 Gradle 홈의 명시적 정리를 지원합니다. Monitor 1.3.1은 WSL 확인 완료 후 게이지가 남는 표시 오류를 수정합니다. Windows 설치 방식은 그대로이며 Linux·WSL은 [별도 Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치합니다. Windows용 ZIP이나 Node 모듈 폴더를 임의 복사하지 말고 `Agent-ACP-MCP-Linux-*.tar.gz`와 서명된 Linux manifest를 사용하세요.
 
 Linux의 기본 프로그램 경로는 `~/.local/share/agent-acp-mcp`, 상태 경로는 `~/.local/state/agent-acp-mcp`입니다. 기존 MCP 설정에 `AGENT_MCP_STATE_DIR`이 있으면 첫 설치의 `--state-dir`에 동일한 **절대 경로**를 지정하세요. 기존 작업·설정은 충돌 시 덮어쓰지 않으며 백업을 보존합니다. 구버전 Gateway는 먼저 MCP 연결을 해제해야 합니다. 사용자 CLI와 로그인 정보는 변경하지 않습니다.
 

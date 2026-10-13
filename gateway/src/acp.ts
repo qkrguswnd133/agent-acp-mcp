@@ -269,7 +269,7 @@ async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeo
     const terminalsStopped=boundedObservation(Promise.all([...taskTerminals].map(terminal=>terminal.stop('task_finished'))).then(()=>[...taskTerminals].every(terminal=>terminal.record.childCleanedUp!==false)),cleanupMs*2+500,()=>false);
     if(p){
       p.stdin.end();await new Promise<void>(resolve=>{if(p!.exitCode!==null||p!.signalCode!==null)return resolve();const timeout=setTimeout(resolve,deps.timing?.exitGraceMs??1500);p!.once('close',()=>{clearTimeout(timeout);resolve();});});
-      const cleanup=tree?boundedObservation(tree.cleanup(),cleanupMs,()=>{tree!.cancelCleanup();return {trackedPids:tree!.knownPids(),remainingPids:[],unverifiedPids:tree!.knownPids(),verified:false,note:'Grok process cleanup deadline reached; tracked PIDs could not be rechecked.'};}):Promise.resolve(undefined);
+      const cleanup=tree?boundedObservation(tree.cleanup(),cleanupMs,()=>{tree!.cancelCleanup();return {trackedPids:tree!.knownPids(),trackedProcesses:tree!.knownProcesses?.()??[],rootProcess:tree!.rootProcess?.(),rootPid:p?.pid,observedAt:new Date().toISOString(),remainingPids:[],unverifiedPids:tree!.knownPids(),verified:false,note:'Grok process cleanup deadline reached; tracked PIDs could not be rechecked.'};}):Promise.resolve(undefined);
       [childCleanedUp,processCleanup]=await Promise.all([stopChild(),cleanup]);
       childCleanedUp=await terminalsStopped&&childCleanedUp;
       if(p.pid&&p.exitCode===null&&p.signalCode===null){processCleanup=withRootExitEvidence(processCleanup??{trackedPids:[],remainingPids:[],verified:false},p.pid);if(processCleanup.remainingPids.includes(p.pid)||processCleanup.unverifiedPids?.includes(p.pid))childCleanedUp=false;}
@@ -277,7 +277,7 @@ async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeo
       p.stdin.destroy();p.stdout.destroy();p.stderr.destroy();p.unref();active.delete(p);
     }else await terminalsStopped;
     const cleanups=[processCleanup,...[...taskTerminals].map(terminal=>terminal.record.processCleanup)].filter((value):value is ProcessCleanup=>!!value);
-    if(cleanups.length)processCleanup={trackedPids:[...new Set(cleanups.flatMap(value=>value.trackedPids))],remainingPids:[...new Set(cleanups.flatMap(value=>value.remainingPids))],unverifiedPids:[...new Set(cleanups.flatMap(value=>value.unverifiedPids??[]))],verified:childCleanedUp&&cleanups.every(value=>value.verified),scope:'observed_descendants',note:cleanups.map(value=>value.note).filter(Boolean).join(' ')};
+    if(cleanups.length)processCleanup={rootPid:processCleanup?.rootPid,rootProcess:processCleanup?.rootProcess,observedAt:new Date().toISOString(),rootProcesses:cleanups.flatMap(value=>[...(value.rootProcesses??[]),...(value.rootProcess?[value.rootProcess]:[])]),trackedProcesses:cleanups.flatMap(value=>value.trackedProcesses??[]),trackedPids:[...new Set(cleanups.flatMap(value=>value.trackedPids))],remainingPids:[...new Set(cleanups.flatMap(value=>value.remainingPids))],unverifiedPids:[...new Set(cleanups.flatMap(value=>value.unverifiedPids??[]))],verified:childCleanedUp&&cleanups.every(value=>value.verified),scope:'observed_descendants',note:cleanups.map(value=>value.note).filter(Boolean).join(' ')};
     if(processCleanup?.remainingPids.length)childCleanedUp=false;
     if(processCleanup)activity('process_cleanup',{...processCleanup});
     lifecycle.dispose(signal);locks.delete(lockId);phase='completed';

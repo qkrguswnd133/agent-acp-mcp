@@ -67,3 +67,8 @@ The common Gateway worktree preparation preserves the real repository name, not 
 All three providers receive the actual isolated cwd. Original cwd metadata is used by Monitor to label the project and distinguish isolated work, with both paths in its tooltip. No provider transcript cwd is forged or rewritten. A cwd-based usage collector derives project names from official Claude JSONL cwd, so preserving the folder name fixes new Claude worktree attribution without altering the collector or adding an ignored project_name argument. Other corporate collectors must be checked separately.
 
 Existing worktrees are not automatically renamed or migrated; legacy sessions retain their old cwd until the parent explicitly migrates the checkout and restarts the provider session. Cleanup remains compatible with the old UUID-only layout. Previously collected corporate rows and historical official sessions are not rewritten. Reconnect MCP to load the updated Gateway before starting new work.
+
+
+## PID reuse diagnostics
+
+Previously unverified cleanup and forget now compare process creation identities rather than PID numbers alone. Proven reused PIDs do not block maintenance; alive or unknown identities still do. Parent confirmation cannot override a missing creation time or incomplete historical parent chain. See [job lifecycle](JOB-LIFECYCLE.md#process-identity-and-historical-pid-reuse) for the four decisions and diagnostic fields. Status exposes `processEvidence.file` for the full tracked list, plus `trackedPidCount` and `truncated` on compact cleanup data. Old records and full artifacts are not rewritten merely by inspection.

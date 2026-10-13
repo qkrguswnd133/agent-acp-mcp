@@ -158,7 +158,7 @@ export async function runCommand(launch:LaunchCommand,args:string[],options:Comm
       if(lineBuffer){options.onStdoutLine?.(lineBuffer);lineBuffer='';}
       void (async()=>{
         let cleanup:ProcessCleanup|undefined;
-        if(tree){let bound:NodeJS.Timeout|undefined;cleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Process cleanup deadline reached; listed PIDs have not been rechecked, ownership/exit verification is incomplete.'});},7000);})]);if(bound)clearTimeout(bound);}
+        if(tree){let bound:NodeJS.Timeout|undefined;cleanup=await Promise.race([tree.cleanup(),new Promise<ProcessCleanup>(done=>{bound=setTimeout(()=>{tree.cancelCleanup();done({trackedPids:tree.knownPids(),trackedProcesses:tree.knownProcesses?.(),rootPid:p.pid,rootProcess:tree.rootProcess?.(),observedAt:new Date().toISOString(),remainingPids:[],unverifiedPids:tree.knownPids(),verified:false,note:'Process cleanup deadline reached; listed PIDs have not been rechecked, ownership/exit verification is incomplete.'});},7000);})]);if(bound)clearTimeout(bound);}
         if(cleanup&&p.pid&&p.exitCode===null&&p.signalCode===null)cleanup=withRootExitEvidence(cleanup,p.pid);
         if(cleanup)options.onActivity?.({type:'process_cleanup',...cleanup,at:new Date().toISOString()});
         // Release inherited pipe handles even if a child did not close them.
