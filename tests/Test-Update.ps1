@@ -103,15 +103,83 @@ function New-Fixture([string]$Name) {
     return [pscustomobject]@{ Base=$base; Package=$package; Gateway=$gateway; Monitor=$monitor }
 }
 
+function Read-FixtureOutput([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    # Descendants may still own the log handle. Reading a regular file does not
+    # wait for EOF from those descendants, unlike a native output pipeline.
+    $stream = New-Object IO.FileStream($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $reader = New-Object IO.StreamReader($stream,[Console]::OutputEncoding,$true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
+
+function Invoke-FixturePowerShell([string]$Base,[string[]]$Arguments,[int]$TimeoutSeconds = 120) {
+    $resolvedBase = [IO.Path]::GetFullPath($Base).TrimEnd('\')
+    $resolvedRoot = [IO.Path]::GetFullPath($script:Root).TrimEnd('\')
+    if (-not $resolvedBase.StartsWith($resolvedRoot+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Child invocation must stay in a disposable fixture.' }
+    if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 300) { throw 'Invalid fixture child timeout.' }
+    $driverFile = Join-Path $script:Root 'native-child.cjs'
+    if (-not (Test-Path -LiteralPath $driverFile)) {
+        Put $driverFile @'
+const fs=require('node:fs');
+const {spawnSync}=require('node:child_process');
+const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const stdout=fs.openSync(request.stdout,'w'),stderr=fs.openSync(request.stderr,'w');
+let result;
+try {
+  // Direct file descriptors, never pipes: an inherited output handle cannot
+  // keep the caller waiting after this exact PowerShell process has exited.
+  const child=spawnSync(request.executable,request.args,{
+    windowsHide:true,stdio:['ignore',stdout,stderr],timeout:request.timeoutMs
+  });
+  result={exitCode:child.status,pid:child.pid,signal:child.signal,
+    error:child.error?{code:child.error.code,message:child.error.message}:null};
+} finally { fs.closeSync(stdout);fs.closeSync(stderr); }
+fs.writeFileSync(request.result,JSON.stringify(result),'utf8');
+'@
+    }
+    $prefix = Join-Path $resolvedBase ('child-'+[guid]::NewGuid().ToString('N'))
+    $requestFile = $prefix+'.request.json'
+    $resultFile = $prefix+'.result.json'
+    $stdoutFile = $prefix+'.stdout.log'
+    $stderrFile = $prefix+'.stderr.log'
+    Put $requestFile (@{
+        executable = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+        args = $Arguments; stdout = $stdoutFile; stderr = $stderrFile; result = $resultFile
+        timeoutMs = $TimeoutSeconds*1000
+    } | ConvertTo-Json -Depth 8)
+    $driver = Start-Process -FilePath $NodeExecutable -ArgumentList @(('"'+$driverFile+'"'),('"'+$requestFile+'"')) -WindowStyle Hidden -PassThru
+    try {
+        # Pin the owned process handle before it can exit. Do not wait on CIM,
+        # PID reuse, descendant lifetime, or redirected-stream completion.
+        $null = $driver.Handle
+        if (-not $driver.WaitForExit(($TimeoutSeconds+15)*1000)) {
+            $driver.Kill()
+            $null = $driver.WaitForExit(5000)
+            throw "Fixture process driver timed out; logs: $stdoutFile ; $stderrFile"
+        }
+        if ($null -eq $driver.ExitCode -or $driver.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $resultFile)) {
+            throw "Fixture process driver failed (exit $($driver.ExitCode)); logs: $stdoutFile ; $stderrFile"
+        }
+        $result = Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $stdout = Read-FixtureOutput $stdoutFile
+        $stderr = Read-FixtureOutput $stderrFile
+        $output = $stdout + $(if ($stderr) { [Environment]::NewLine+$stderr } else { '' })
+        if ($result.error) {
+            $detail = if ($result.error.code -eq 'ETIMEDOUT') { "timed out after $TimeoutSeconds seconds" } else { $result.error.message }
+            throw "Fixture PowerShell $detail (PID $($result.pid)). $output"
+        }
+        if ($null -eq $result.exitCode) { throw "Fixture PowerShell exited without an exit code (signal $($result.signal)). $output" }
+        return [pscustomobject]@{ExitCode=[int]$result.exitCode;Output=$output;Stdout=$stdout;Stderr=$stderr}
+    } finally { $driver.Dispose() }
+}
+
 function Invoke-Update($Fixture, [string[]]$Additional = @(), [string]$GatewayTarget = '', [string]$MonitorTarget = '') {
     if (-not $GatewayTarget) { $GatewayTarget = $Fixture.Gateway }
     if (-not $MonitorTarget) { $MonitorTarget = $Fixture.Monitor }
     $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $Fixture.Package 'Update.ps1'),
         '-NodeExecutable',$NodeExecutable,'-GatewayDirectory',$GatewayTarget,
         '-MonitorDirectory',$MonitorTarget) + $Additional
-    $ErrorActionPreference = 'Continue' # Windows PowerShell promotes native stderr to an error record.
-    $output = & powershell.exe @args 2>&1 | Out-String
-    return [pscustomobject]@{ ExitCode=$LASTEXITCODE; Output=$output }
+    return Invoke-FixturePowerShell $Fixture.Base $args
 }
 function Invoke-Runner($Fixture,[switch]$OmitGateway,[switch]$MockDialog) {
     $userData=Join-Path $Fixture.Base 'user-data'
@@ -121,7 +189,6 @@ function Invoke-Runner($Fixture,[switch]$OmitGateway,[switch]$MockDialog) {
     if (-not $OmitGateway) { $request.gatewayDirectory=$Fixture.Gateway }
     Put $requestFile ($request | ConvertTo-Json -Depth 8)
     $dialogFile=Join-Path $Fixture.Base 'recovery-dialog.txt'
-    $ErrorActionPreference='Continue'
     if ($MockDialog) {
         $runner=(Join-Path $Fixture.Package 'Run-Update.ps1').Replace("'","''")
         $requestLiteral=$requestFile.Replace("'","''")
@@ -129,12 +196,10 @@ function Invoke-Runner($Fixture,[switch]$OmitGateway,[switch]$MockDialog) {
         $resultLiteral=$resultFile.Replace("'","''")
         $mock="function ShowRecoveryDialog([string]`$Message) { if (Test-Path -LiteralPath '$resultLiteral') { [IO.File]::WriteAllText('$dialogLiteral',`$Message) } }; . '$runner' -RequestFile '$requestLiteral'"
         $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($mock))
-        $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | Out-String
-    } else { $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Fixture.Package 'Run-Update.ps1') -RequestFile $requestFile 2>&1 | Out-String }
-    $code=$LASTEXITCODE
-    $ErrorActionPreference='Stop'
+        $execution=Invoke-FixturePowerShell $Fixture.Base @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded)
+    } else { $execution=Invoke-FixturePowerShell $Fixture.Base @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $Fixture.Package 'Run-Update.ps1'),'-RequestFile',$requestFile) }
     $value=if (Test-Path -LiteralPath $resultFile) { Get-Content -LiteralPath $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
-    return [pscustomobject]@{ExitCode=$code;Output=$output;Result=$value;History=(Join-Path $userData 'updates\history.json');DialogFile=$dialogFile}
+    return [pscustomobject]@{ExitCode=$execution.ExitCode;Output=$execution.Output;Result=$value;History=(Join-Path $userData 'updates\history.json');DialogFile=$dialogFile}
 }
 
 function Assert-Old($Fixture) {
@@ -204,6 +269,43 @@ function Run([string]$Name, [scriptblock]$Body) {
 }
 
 try {
+    Run 'Native child harness preserves exit codes and separate output' {
+        $f=New-Fixture 'native output with spaces'
+        $entry=Join-Path $f.Base 'output fixture.ps1'
+        Put $entry 'param([string]$Value);[Console]::Out.WriteLine($Value);[Console]::Error.WriteLine("stderr marker");exit 37'
+        $r=Invoke-FixturePowerShell $f.Base @('-NoProfile','-File',$entry,'-Value',"value with spaces and 'quote'")
+        Assert ($r.ExitCode -eq 37) 'The native exit code was lost.'
+        Assert ($r.Stdout.TrimEnd() -eq "value with spaces and 'quote'") 'stdout or argument quoting changed.'
+        Assert ($r.Stderr.TrimEnd() -eq 'stderr marker') 'stderr was lost.'
+    }
+    Run 'Native child harness returns while a descendant retains output handles' {
+        $f=New-Fixture 'native-inherited-output'
+        $entry=Join-Path $f.Base 'parent.ps1';$pidFile=Join-Path $f.Base 'descendant.pid';$child=$null
+        Put $entry @'
+param([string]$Node,[string]$PidFile)
+$child=Start-Process -FilePath $Node -ArgumentList @('-e','"setInterval(()=>{},1000)"') -NoNewWindow -PassThru
+[IO.File]::WriteAllText($PidFile,[string]$child.Id)
+[Console]::Out.WriteLine('parent completed')
+exit 23
+'@
+        try {
+            $watch=[Diagnostics.Stopwatch]::StartNew()
+            $r=Invoke-FixturePowerShell $f.Base @('-NoProfile','-File',$entry,'-Node',$NodeExecutable,'-PidFile',$pidFile) 15
+            $watch.Stop();$child=Get-Process -Id ([int](Read $pidFile));$null=$child.Handle
+            Assert ($r.ExitCode -eq 23 -and $r.Stdout.Contains('parent completed')) 'Parent exit status/output changed.'
+            Assert ($watch.Elapsed.TotalSeconds -lt 10) 'Harness waited for descendant output EOF.'
+            Assert-Alive $child 'The fixture descendant did not retain its output handles.'
+        } finally { if ($null -ne $child -and -not $child.HasExited) { $child.Kill();$null=$child.WaitForExit(5000) } }
+    }
+    Run 'Native child harness bounds a hung PowerShell process' {
+        $f=New-Fixture 'native-timeout';$entry=Join-Path $f.Base 'sleep.ps1';$pidFile=Join-Path $f.Base 'sleeper.pid'
+        Put $entry 'param([string]$PidFile);[IO.File]::WriteAllText($PidFile,[string]$PID);Start-Sleep -Seconds 60'
+        $message=''
+        try { $null=Invoke-FixturePowerShell $f.Base @('-NoProfile','-File',$entry,'-PidFile',$pidFile) 3 } catch { $message=$_.Exception.Message }
+        Assert ($message -match 'timed out after 3 seconds') "A hung child was not reported as a timeout: $message"
+        Assert (Test-Path -LiteralPath $pidFile) 'Timed fixture never started.'
+        Assert ($null -eq (Get-Process -Id ([int](Read $pidFile)) -ErrorAction SilentlyContinue)) 'Timed-out child remained alive.'
+    }
     Run 'All updates managed files and retains user data' {
         $f = New-Fixture 'all'
         $result = Invoke-Update $f
