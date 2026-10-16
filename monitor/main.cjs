@@ -6,6 +6,8 @@ const {updateAction}=require('./update/action.cjs');
 const {createUpdateFlow}=require('./ui/update-flow.js');
 const {createLoginItem}=require('./login-item.cjs');
 const {createWslUpdates}=require('./update/wsl.cjs');
+const {createUnifiedUpdates}=require('./update/unified.cjs');
+const {checkReadiness}=require('./update/readiness.cjs');
 const appVersion=app.getVersion();
 const smoke=process.argv.includes('--smoke');
 const verifyLive=process.argv.includes('--verify-live');
@@ -29,22 +31,28 @@ let bar,panel,updates,tray,backend,pending=new Map(),sequence=0,selected='grok',
 const monitorDirectory=path.dirname(process.execPath);
 const gatewayRoot=resolveGatewayRoot(monitorDirectory);
 const updater=createUpdater({stateDir,monitorDirectory,gatewayDirectory:fs.existsSync(gatewayRoot)?gatewayRoot:undefined,appVersion});
-let barProgressOpen=false,completionTimer,collapseTimer,barProgressHeight=52,barWidth=460,updateRun;
-const wslUpdates=createWslUpdates({stateDir,platform:smoke||verifyLive?'disabled':process.platform,blocked:()=>!!updateRun||installing||!!updater.getState().pending});
-wslUpdates.onChange(value=>{if(updates&&!updates.isDestroyed())updates.webContents.send('wsl-update-state',value);});
-const updateUiState=value=>{const action=updateAction(value);return {...value,updateAction:{...action,active:action.active||!!updateRun,canStart:action.canStart&&!updateRun},barProgressOpen};};
+let barProgressOpen=false,completionTimer,collapseTimer,barProgressHeight=52,barWidth=460,updateRun,unifiedUpdates;
+const wslUpdates=createWslUpdates({stateDir,platform:smoke||verifyLive?'disabled':process.platform,blocked:()=>!!updateRun||unifiedUpdates?.isBusy()||installing||!!updater.getState().pending});
+wslUpdates.onChange(value=>{if(updates&&!updates.isDestroyed())updates.webContents.send('wsl-update-state',value);publishUpdate(updater.getState());});
+const updateUiState=value=>{const unified=unifiedUpdates?.getState(),wsl=wslUpdates.getState();let merged={...value,unified,wslAvailable:wsl.targets.some(t=>t.canUpdate),wslUnchecked:wsl.targets.some(t=>!t.running&&t.installed!==false),otherUpdateBusy:wsl.busy&&!unified?.active};if(unified?.active)merged={...merged,phase:unified.phase,progress:unified.currentTarget==='windows'?value.progress:unified.progress,error:null,blocked:null};const action=updateAction(merged);return {...merged,updateAction:{...action,active:action.active||!!updateRun,canStart:action.canStart&&!updateRun},barProgressOpen};};
 function publishUpdate(value){
-  barWidth=updateAction(value).available?484:460;
-  if(['downloading','preparing','installing'].includes(value.phase)){clearTimeout(completionTimer);barProgressOpen=true;}
+  const display=updateUiState(value);barWidth=display.updateAction.available?484:460;
+  if(display.unified?.active||['downloading','preparing','installing'].includes(display.phase)){clearTimeout(completionTimer);barProgressOpen=true;}
   if(barProgressOpen){clearTimeout(collapseTimer);collapseTimer=undefined;barProgressHeight=96;if(bar&&!bar.isDestroyed())reposition();}
   else if(barProgressHeight!==52&&!collapseTimer){collapseTimer=setTimeout(()=>{collapseTimer=undefined;barProgressHeight=52;if(bar&&!bar.isDestroyed())reposition();},180);}
   else if(bar&&!bar.isDestroyed())reposition();
   for(const win of [bar,updates])if(win&&!win.isDestroyed())win.webContents.send('update-state',updateUiState(value));
 }
-updater.onChange(publishUpdate);
+updater.onChange(value=>{unifiedUpdates?.observeWindows(value);publishUpdate(value);});
 const sharedUpdateFlow=createUpdateFlow({updateDownload:()=>updater.download(),updateState:()=>updater.getState(),updateInstall:()=>installUpdate(),updateCancel:()=>updater.cancel()});
+unifiedUpdates=createUnifiedUpdates({stateDir,windows:updater,wsl:wslUpdates,checkWindows:async()=>{
+ if(!fs.existsSync(gatewayRoot))return {ready:true};
+ let config={};try{config=JSON.parse(fs.readFileSync(path.join(monitorDirectory,'agent-monitor.config.json'),'utf8'));}catch{}
+ return checkReadiness({installRoot:gatewayRoot,stateRoot:process.env.AGENT_MCP_STATE_DIR||config.env?.AGENT_MCP_STATE_DIR});
+},installWindows:()=>installUpdate(),onChange:value=>{publishUpdate(updater.getState());if(!value.active&&value.status==='completed'){clearTimeout(completionTimer);completionTimer=setTimeout(()=>{barProgressOpen=false;publishUpdate(updater.getState());},5000);}}});
 function checkUpdates(force=false){return updateRun?Promise.resolve(updater.getState()):updater.check(force);}
-function runUpdate(){if(!updateRun){updateRun=sharedUpdateFlow.run().finally(()=>{updateRun=undefined;publishUpdate(updater.getState());});}return updateRun;}
+function runUpdate(){if(!updateRun){updateRun=unifiedUpdates.run().finally(()=>{updateRun=undefined;publishUpdate(updater.getState());});}return updateRun;}
+function runWindowsUpdate(){if(unifiedUpdates.isBusy()||wslUpdates.isBusy())return Promise.resolve({started:false,reason:'다른 대상의 업데이트 또는 조회가 진행 중입니다.'});if(!updateRun)updateRun=sharedUpdateFlow.run().finally(()=>{updateRun=undefined;publishUpdate(updater.getState());});return updateRun;}
 async function installUpdate(){
   if(wslUpdates.isDispatching())return {started:false,reason:'WSL 요청을 처리 중입니다. 잠시 후 다시 시도하세요.'};
   if(installing||updater.getState().pending)return {started:false,reason:'설치가 이미 진행 중입니다.'};
@@ -135,11 +143,12 @@ ipcMain.handle('wsl-state',event=>updateTrusted(event)?wslUpdates.getState():nul
 ipcMain.handle('wsl-refresh',event=>updateTrusted(event)?wslUpdates.refresh():null);
 ipcMain.handle('wsl-probe',(event,id)=>updateTrusted(event)?wslUpdates.probe(id):null);
 ipcMain.handle('wsl-update',(event,id)=>updateTrusted(event)?wslUpdates.update(id):null);
-ipcMain.on('dismiss-update-progress',event=>{if(!bar||bar.isDestroyed()||event.sender!==bar.webContents||updateAction(updater.getState()).active)return;barProgressOpen=false;clearTimeout(completionTimer);publishUpdate(updater.getState());});
-ipcMain.handle('update-check',event=>updateTrusted(event)?checkUpdates(true):null);
+ipcMain.on('dismiss-update-progress',event=>{if(!bar||bar.isDestroyed()||event.sender!==bar.webContents||updateUiState(updater.getState()).updateAction.active)return;barProgressOpen=false;clearTimeout(completionTimer);publishUpdate(updater.getState());});
+ipcMain.handle('update-check',async event=>{if(!updateTrusted(event))return null;await Promise.all([checkUpdates(true),wslUpdates.refresh()]);return updateUiState(updater.getState());});
 ipcMain.handle('update-run',event=>updateTrusted(event)?runUpdate():null);
+ipcMain.handle('update-windows',event=>updateTrusted(event)?runWindowsUpdate():null);
 ipcMain.handle('update-download',event=>updateTrusted(event)?(updateRun?updater.getState():updater.download()):null);
-ipcMain.on('update-cancel',event=>{if(updateTrusted(event))updater.cancel();});
+ipcMain.on('update-cancel',event=>{if(updateTrusted(event)){if(unifiedUpdates.isBusy())unifiedUpdates.cancel();else updater.cancel();}});
 ipcMain.handle('update-install',event=>updateTrusted(event)?(updateRun?{started:false,reason:'업데이트가 이미 진행 중입니다.'}:installUpdate()):null);
 if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
   app.on('second-instance',(_event,argv)=>argv.includes('--quit')?app.quit():show());
@@ -154,7 +163,7 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
     const icon=nativeImage.createFromPath(path.join(__dirname,'assets','tray.png'));tray=new Tray(icon);tray.setToolTip('Agent Monitor · 사용량 모니터');tray.on('click',()=>bar.isVisible()?(closePanel(),bar.hide()):show());tray.on('right-click',menu);
     await Promise.all([bar,panel].map(win=>win.webContents.isLoading()?new Promise(resolve=>win.webContents.once('did-finish-load',resolve)):Promise.resolve()));
     show();
-    if(!smoke&&!verifyLive){await updater.load();installing=!!updater.getState().pending;const recentResult=updater.getState().result;if(recentResult?.status==='success'&&Date.now()-Date.parse(recentResult.finishedAt)<60000){barProgressOpen=true;publishUpdate(updater.getState());completionTimer=setTimeout(()=>{barProgressOpen=false;publishUpdate(updater.getState());},3500);}void checkUpdates();void wslUpdates.refresh();releaseTimer=setInterval(()=>{void checkUpdates();void wslUpdates.refresh();},6*60*60*1000);updateTimer=setInterval(async()=>{try{const pending=updater.getState().pending;await updater.pollResult();const current=updater.getState();if(pending&&!current.pending&&!(current.result?.operationId===pending.operationId&&current.result.status==='success')){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}}catch{}},2000);}
+    if(!smoke&&!verifyLive){await updater.load();unifiedUpdates.load();installing=!!updater.getState().pending;const recentResult=updater.getState().result;if(recentResult?.status==='success'&&Date.now()-Date.parse(recentResult.finishedAt)<60000){barProgressOpen=true;publishUpdate(updater.getState());completionTimer=setTimeout(()=>{barProgressOpen=false;publishUpdate(updater.getState());},3500);}void checkUpdates();void wslUpdates.refresh();releaseTimer=setInterval(()=>{void checkUpdates();void wslUpdates.refresh();},6*60*60*1000);updateTimer=setInterval(async()=>{try{const pending=updater.getState().pending;await updater.pollResult();const current=updater.getState();if(pending&&!current.pending&&!(current.result?.operationId===pending.operationId&&current.result.status==='success')){installing=false;void refresh();if(!refreshTimer)refreshTimer=setInterval(()=>void refresh(),60000);}}catch{}},2000);}
     hoverTimer=setInterval(()=>hoverStep(screen.getCursorScreenPoint()),80);
     if(smoke){clearInterval(hoverTimer);await runSmoke();}
     else if(verifyLive){
@@ -168,7 +177,7 @@ if(!smoke&&!verifyLive&&!app.requestSingleInstanceLock())app.quit();else{
     }else if(!installing){void refresh();refreshTimer=setInterval(()=>void refresh(),60000);}
   }).catch(error=>{console.error(error);app.exit(1);});
 }
-app.on('before-quit',event=>{if(quitting)return;event.preventDefault();quitting=true;clearInterval(refreshTimer);clearInterval(updateTimer);clearInterval(releaseTimer);clearInterval(hoverTimer);clearTimeout(moveTimer);clearTimeout(completionTimer);clearTimeout(collapseTimer);savePosition();wslUpdates.close();failPending('앱 종료');tray?.destroy();void stopBackend().finally(()=>app.quit());});
+app.on('before-quit',event=>{if(quitting)return;event.preventDefault();quitting=true;clearInterval(refreshTimer);clearInterval(updateTimer);clearInterval(releaseTimer);clearInterval(hoverTimer);clearTimeout(moveTimer);clearTimeout(completionTimer);clearTimeout(collapseTimer);savePosition();unifiedUpdates.close();wslUpdates.close();failPending('앱 종료');tray?.destroy();void stopBackend().finally(()=>app.quit());});
 async function runSmoke(){
   const assert=require('node:assert/strict');const out=process.env.AGENT_MONITOR_SMOKE_DIR||path.join(__dirname,'work');fs.mkdirSync(out,{recursive:true});const forcedDpi=Number(process.argv.find(arg=>arg.startsWith('--force-device-scale-factor='))?.split('=')[1]);
   try{
@@ -295,6 +304,11 @@ async function runSmoke(){
     wslFixture.busy=true;wslFixture.targets[0].phase='verifying';wslFixture.targets[0].progress={received:50,total:100,unit:'percent'};updates.webContents.send('wsl-update-state',wslFixture);await new Promise(r=>setTimeout(r,50));assert.match(await updates.webContents.executeJavaScript("document.querySelector('#wsl-targets').innerText"),/50%/);
     wslFixture.busy=false;wslFixture.targets[0].phase='checked';wslFixture.targets[0].progress={received:100,total:100,unit:'percent'};updates.webContents.send('wsl-update-state',wslFixture);updates.webContents.setZoomFactor(1);await new Promise(r=>setTimeout(r,80));assert.equal(await updates.webContents.executeJavaScript("document.querySelectorAll('#wsl-targets progress').length"),0);assert.doesNotMatch(await updates.webContents.executeJavaScript("document.querySelector('#wsl-targets').innerText"),/100%/);await updates.webContents.executeJavaScript("document.querySelector('#wsl-section').scrollIntoView()");fs.writeFileSync(path.join(out,'wsl-check-complete.png'),await captureReady(updates));
     for(const status of ['unavailable','disabled','empty']){updates.webContents.send('wsl-update-state',{available:status==='empty',status,targets:[],busy:false});await new Promise(r=>setTimeout(r,40));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#wsl-targets').children.length"),0);}
+    const combinedFixture={...fixtureUpdate,phase:'installing',progress:{received:55,total:100,unit:'percent'},barProgressOpen:true,updateAction:{available:true,active:true,canStart:false},unified:{active:true,status:'running',phase:'installing',currentTarget:'Ubuntu',message:'WSL · Ubuntu 업데이트 중',canCancel:true,targets:[{id:'Ubuntu',name:'WSL · Ubuntu',kind:'wsl',status:'running',version:'2.7.0',latestVersion:'2.7.1'},{id:'windows',name:'Windows Gateway · Monitor',kind:'windows',status:'ready',version:'2.7.0',latestVersion:'2.7.1'}]}};
+    await updates.webContents.executeJavaScript("for(const node of document.querySelectorAll('details'))node.open=false;window.scrollTo(0,0)");
+    for(const theme of ['light','dark']){nativeTheme.themeSource=theme;for(const scale of scales){updates.webContents.setZoomFactor(scale);updates.webContents.send('update-state',combinedFixture);bar.webContents.send('update-state',combinedFixture);await new Promise(r=>setTimeout(r,120));assert.ok(await updates.webContents.executeJavaScript('document.documentElement.scrollWidth-document.documentElement.clientWidth<=1'));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#progress-label').textContent"),'55%');fs.writeFileSync(path.join(out,`unified-${theme}-${Math.round(scale*100)}.png`),await captureReady(updates));}}
+    fs.writeFileSync(path.join(out,'bar-unified-progress.png'),await captureReady(bar));
+    combinedFixture.phase='idle';combinedFixture.unified={...combinedFixture.unified,active:false,status:'partial',canCancel:false,message:'WSL 업데이트 완료 · Windows 작업 실행 중으로 설치 보류',targets:[{...combinedFixture.unified.targets[0],status:'completed'},{...combinedFixture.unified.targets[1],status:'blocked'}]};combinedFixture.updateAction.active=false;combinedFixture.updateAction.canStart=true;updates.webContents.setZoomFactor(1);updates.webContents.send('update-state',combinedFixture);bar.webContents.send('update-state',combinedFixture);await new Promise(r=>setTimeout(r,120));assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#unified').dataset.tone"),'error');fs.writeFileSync(path.join(out,'unified-partial.png'),await captureReady(updates));
     fs.writeFileSync(path.join(out,'smoke.json'),JSON.stringify({passed:true,checks:['three agents','hover expands','unknown quota','panel crossing remains open','outside delay collapses','position persisted','login item fake API','updater light/dark and states','WSL absent/stopped/installed/progress states'],uiScaleEmulation:forcedDpi>1?{method:'Electron --force-device-scale-factor',factor:forcedDpi,observed:dpr}:{method:'Electron webContents.setZoomFactor',factors:scales,observed:dpr},stateDir}));console.log('MONITOR_SMOKE_OK');app.quit();
   }catch(error){console.error(error);app.exit(1);}
 }

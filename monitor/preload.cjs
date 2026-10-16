@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('monitor',{
   togglePin:()=>ipcRenderer.send('toggle-pin'),
   updateState:()=>ipcRenderer.invoke('update-state'),
   updateRun:()=>ipcRenderer.invoke('update-run'),
+  updateWindows:()=>ipcRenderer.invoke('update-windows'),
   updateCheck:()=>ipcRenderer.invoke('update-check'),
   wslState:()=>ipcRenderer.invoke('wsl-state'),
   wslRefresh:()=>ipcRenderer.invoke('wsl-refresh'),

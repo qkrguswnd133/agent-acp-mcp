@@ -70,3 +70,18 @@ button:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outli
 .wsl-actions,.wsl-tools{display:flex;justify-content:flex-end;gap:6px;margin-top:6px}
 .wsl-actions button,.wsl-tools button{min-height:28px;padding:3px 10px;font-size:12px}
 @media(forced-colors:active){.wsl-state.running,.wsl-error{color:CanvasText}.wsl-target button:disabled,.wsl-tools button:disabled{opacity:1;color:GrayText;border-color:GrayText}}
+
+.unified{margin-top:10px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.unified[data-tone="error"]{border-color:var(--error);background:var(--error-background)}.unified[data-tone="success"]{border-color:var(--success)}
+.unified[hidden]{display:none}
+#unified-status{font-size:13px;font-weight:650}.unified[data-tone="error"] #unified-status{color:var(--error)}.unified[data-tone="success"] #unified-status{color:var(--success)}
+#unified-message{margin:2px 0 0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}#unified-message:empty{display:none}
+#unified-targets{list-style:none;margin:6px 0 0;padding:0}#unified-targets:empty{display:none}
+.unified-target{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:8px;padding:4px 0;border-top:1px solid var(--line)}
+.unified-target strong{font-weight:600;min-width:0;overflow-wrap:anywhere}.unified-target span{font-size:12px;color:var(--muted)}
+.unified-target small{grid-column:1/-1;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.unified-target[data-current="true"] strong::before{content:"▶ ";color:var(--accent)}
+.unified-target[data-status="completed"] span,.unified-target[data-status="up_to_date"] span{color:var(--success)}
+.unified-target[data-status="failed"] span,.unified-target[data-status="blocked"] span{color:var(--error);font-weight:600}
+.individual-body{border-top:1px solid var(--line);padding:6px 12px 10px}.individual-body p{margin:2px 0 8px;font-size:12px;color:var(--muted)}
+@media(forced-colors:active){.unified{forced-color-adjust:auto}.unified-target span,#unified-status{color:CanvasText!important}}

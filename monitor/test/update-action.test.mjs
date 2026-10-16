@@ -16,3 +16,9 @@ test('new release remains discoverable but cannot start during work or recovery 
     const action=updateAction(state('2.2.1','2.2.2',extra));assert.equal(action.available,true);assert.equal(action.canStart,false);
   }
 });
+test('WSL-only availability and unchecked stopped distro support unified action',()=>{
+ assert.equal(updateAction(state('2.7.1','2.7.1',{wslAvailable:true})).available,true);
+ assert.equal(updateAction(state('2.7.1','2.7.1',{wslAvailable:true})).canStart,true);
+ const unchecked=updateAction(state('2.7.1','2.7.1',{wslUnchecked:true}));assert.equal(unchecked.available,false);assert.equal(unchecked.canStart,true);
+ assert.equal(updateAction(state('2.7.1','2.7.1',{wslAvailable:true,unified:{active:true}})).canStart,false);
+});

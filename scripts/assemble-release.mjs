@@ -51,7 +51,7 @@ async function copyFile(relativeSource,relativeDestination=relativeSource) {
   await fs.mkdir(path.dirname(destination),{recursive:true});
   await fs.copyFile(path.join(repo,...relativeSource.split('/')),destination);
 }
-for(const filename of ['Install.ps1','Update.ps1','Run-Update.ps1','Verify-Package.mjs','README.md','THIRD-PARTY-NOTICES.md']) await copyFile(`distribution/${filename}`,filename);
+for(const filename of ['Install.ps1','Update.ps1','Run-Update.ps1','Verify-Package.mjs','README.md','UNIFIED-UPDATE.md','THIRD-PARTY-NOTICES.md']) await copyFile(`distribution/${filename}`,filename);
 await copyTree(path.join(repo,'distribution','examples'),path.join(stage,'examples'));
 await copyTree(path.join(repo,'distribution','instructions'),path.join(stage,'instructions'));
 for(const filename of ['package.json','package-lock.json']) await copyFile(`gateway/${filename}`,`gateway/${filename}`);

@@ -34,9 +34,22 @@
     </div>
   </div>
 
-  <div class="actions"><button id="update" class="primary" type="button" disabled>업데이트</button><button id="cancel" type="button" hidden>취소</button></div>
+  <section id="unified" class="unified" aria-label="전체 업데이트 상태" hidden>
+    <strong id="unified-status"></strong>
+    <p id="unified-message" role="status" aria-live="polite"></p>
+    <ul id="unified-targets" aria-label="업데이트 대상별 결과"></ul>
+  </section>
+
+  <div class="actions"><button id="update" class="primary" type="button" disabled>전체 업데이트</button><button id="cancel" type="button" hidden>취소</button></div>
   <progress id="progress" aria-label="다운로드 진행률" hidden></progress><p id="progress-label" class="progress-label" aria-live="polite"></p>
 
+  <details id="individual-section" class="disclosure individual" hidden>
+    <summary>개별 업데이트</summary>
+    <div class="individual-body">
+      <p>Windows 앱만 업데이트합니다. WSL 배포판은 아래 WSL Gateway에서 하나씩 업데이트할 수 있습니다.</p>
+      <button id="update-windows" type="button" disabled>Windows만 업데이트</button>
+    </div>
+  </details>
   <details id="wsl-section" class="disclosure wsl" hidden>
     <summary><span>WSL Gateway</span><small id="wsl-badge"></small></summary>
     <div class="wsl-body">

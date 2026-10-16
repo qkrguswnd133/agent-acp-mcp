@@ -1,6 +1,7 @@
 // Copied into a disposable installed ASAR by Smoke-Release.mjs. Never packaged
 // into a published release. Instrumentation observes UI actions and substitutes
-// only the signed GitHub response bytes; updater/install code stays unchanged.
+// signed GitHub bytes and WSL transport fixtures; Windows updater/install code
+// stays unchanged. Never dispatch an update into a user's actual WSL distro.
 (() => {
   const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');
   const artifacts=process.env.AGENT_SMOKE_ARTIFACTS,events=process.env.AGENT_SMOKE_EVENTS;
@@ -39,7 +40,7 @@
           try{
             if(isBar){
               if(barClicked){clearInterval(timer);return;}
-              const ready=await this.webContents.executeJavaScript("!!(document.querySelector('#updates') && !document.querySelector('#updates').hidden && window.monitor)");
+              const ready=await this.webContents.executeJavaScript("!!(document.querySelector('#updates') && !document.querySelector('#updates').hidden && !document.querySelector('#updates').disabled && window.monitor)");
               if(!ready)return;
               barClicked=true;clearInterval(timer);record('bar-update-click');
               // A second IPC caller must share the in-flight run, not install twice.
@@ -62,6 +63,18 @@
     const value=originalLoad.apply(this,arguments);
     if(!parent?.filename?.endsWith(path.sep+'main.cjs'))return value;
     if(request==='electron')return {...value,BrowserWindow:ObservedWindow};
+    if(request==='./update/wsl.cjs')return {...value,createWslUpdates:options=>value.createWslUpdates({...options,exec:async(file,args)=>{
+      if(file!=='wsl.exe')throw Error('Unexpected fixture executable');
+      const answer=value=>({stdout:Buffer.from(JSON.stringify(value)+'\n')});
+      if(args[0]==='--list')return {stdout:Buffer.from((args.includes('--running')?'Fixture Ubuntu':'Fixture Ubuntu\r\nFixture Empty')+'\r\n','utf16le')};
+      if(!['Fixture Ubuntu','Fixture Empty'].includes(args[1]))throw Error('Real WSL access is forbidden in release smoke');
+      const script=args[5];record('wsl-command',{target:args[1]});
+      if(script.includes('checkReadiness')){record('wsl-preflight');return answer({ready:true});}
+      if(script.includes("'--background'")){record('wsl-install');return answer({status:'started',operationId:'11111111-1111-4111-8111-111111111111'});}
+      if(script.includes("'operation'")){record('wsl-finished');return answer({status:'installed',version:manifest.version,phase:'completed'});}
+      if(script.includes("'--check'"))return answer({status:'available',installed:true,currentVersion:'0.0.0',latestVersion:manifest.version,canUpdate:true});
+      return answer(args[1]==='Fixture Empty'?{installed:false,legacy:false}:{installed:true,legacy:false,version:'0.0.0',installRoot:'/tmp/agent-fixture/gateway',stateRoot:'/tmp/agent-fixture/state',nodeExecutable:'/usr/bin/node'});
+    }})};
     if(request==='./update/service.cjs')return {...value,createUpdater:options=>{
       const updater=value.createUpdater({...options,fetcher});
       const onChange=updater.onChange.bind(updater);

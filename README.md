@@ -4,6 +4,10 @@ Windows x64 및 Linux용 MCP 게이트웨이와 Windows 독립 실행형 Agent M
 
 ## Linux / WSL
 
+**2.7.1 / Gateway 2.7.0 / Monitor 1.4.0:** 상단 다운로드 아이콘 또는 **전체 업데이트**를 누르면 설치된 WSL Gateway들을 먼저, Windows Gateway·Monitor를 마지막에 업데이트합니다. 모든 대상의 작업 상태를 먼저 확인하고, 미설치 Gateway는 건너뜁니다. 중지된 배포판은 전체 업데이트 클릭 시에만 시작합니다. 개별 업데이트는 상세 영역에 유지됩니다. 별도 Linux PC는 기존 `agent-acp update`를 사용합니다.
+
+기존 Monitor는 먼저 이번 릴리스로 업데이트해야 전체 업데이트 버튼이 생깁니다. 그 뒤부터 Windows·WSL을 한 번에 진행할 수 있습니다. [통합 업데이트 동작과 복구](distribution/UNIFIED-UPDATE.md)를 확인하세요.
+
 배포/Gateway **2.6.0**, Monitor **1.3.0**부터 Linux 전용 서명 패키지를 제공합니다. Linux에는 Gateway와 CLI 업데이터를 설치하며 Windows Monitor나 PowerShell을 설치하지 않습니다. Linux Node.js 22.12 이상이 필요합니다. x64는 Ubuntu 20.04의 실제 Linux 실행 환경에서 검증했으며 arm64 패키지 구조는 지원하지만 실기기 검증은 하지 않았습니다.
 
 최초 설치·기존 수동 설치의 전환은 [Linux 설치 설명](distribution/linux/README.md)을 따르세요. 전환 후 다음 명령을 사용합니다.

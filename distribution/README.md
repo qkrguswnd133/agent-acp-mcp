@@ -2,13 +2,13 @@
 
 ## 2.6.0 Linux / WSL 업데이트
 
-현재 배포는 **2.7.0**, Gateway는 **2.7.0**, Windows Monitor는 **1.3.1**입니다. junction 안전 검사, 백그라운드 worktree 정리, 자동 만료와 감사 기록이 있는 잠금, 무관 프로세스 오인 방지, 20 KiB 미만 응답과 patch 대응 표시를 지원합니다. Windows 업데이트 방법은 그대로이며 Linux·WSL은 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치합니다. Windows ZIP이나 Node 모듈을 임의 복사하지 말고 서명된 Linux tar.gz를 사용하세요.
+현재 배포는 **2.7.1**, Gateway는 **2.7.0**, Windows Monitor는 **1.4.0**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
 
 **2.7.0 도구 변경:** cleanup·forget·migrate·recover는 dry_run도 `operation_id`를 즉시 반환합니다. `agent_operation_status`로 완료/실패와 결과를 확인하세요. `background=false`는 기존 동기 동작을 선택하지만 큰 폴더에서는 호스트 요청 제한에 걸릴 수 있습니다. `verbose=true`도 전체 결과의 artifact 경로를 반환합니다. 업데이트 후 MCP를 재연결하고 배포본의 Parent 지침을 병합하세요. 현재 개인 설정·지침은 자동 변경하지 않습니다.
 
 Linux의 기본 프로그램 경로는 `~/.local/share/agent-acp-mcp`, 상태 경로는 `~/.local/state/agent-acp-mcp`입니다. 기존 MCP 설정에 `AGENT_MCP_STATE_DIR`이 있으면 첫 설치의 `--state-dir`에 동일한 **절대 경로**를 지정하세요. 기존 작업·설정은 충돌 시 덮어쓰지 않으며 백업을 보존합니다. 구버전 Gateway는 먼저 MCP 연결을 해제해야 합니다. 사용자 CLI와 로그인 정보는 변경하지 않습니다.
 
-Monitor 업데이트 창의 WSL 목록은 설치된 배포판을 확인하며 실행 중인 배포판만 자동 조회합니다. 사용자가 명시적으로 선택한 배포판만 시작하거나 업데이트합니다. WSL이 없는 Windows PC에서는 WSL 관련 설치나 설정이 필요하지 않습니다. 일반 Linux PC에서는 Windows 없이 `agent-acp update`를 직접 사용합니다.
+Monitor 업데이트 창의 WSL 목록은 평소에 실행 중인 배포판만 자동 조회합니다. 사용자가 **전체 업데이트**를 누르면 중지된 배포판도 시작해 Gateway 설치 여부를 확인하며, 설치된 대상만 업데이트합니다. 개별 업데이트도 계속 제공합니다. WSL이 없는 Windows PC에서는 추가 설치나 설정이 필요하지 않습니다. 일반 Linux PC에서는 Windows 없이 `agent-acp update`를 직접 사용합니다.
 
 릴리스 게시 전에 커밋한 소스를 Linux Node 24로 `scripts/run-linux-validation.mjs --suite all --report <checkout>/build/linux-validation.json` 검증하세요. 이후 기존 `Publish-Release.ps1` 명령이 Windows/Linux의 서명된 자산 8개를 함께 검증·게시합니다. `tests/Smoke-Linux.mjs --package-dir <release-assets>`는 Linux에서 실제 배포 패키지를 격리 설치해 검증하는 추가 검사입니다.
 

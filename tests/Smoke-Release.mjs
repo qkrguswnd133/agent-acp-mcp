@@ -114,8 +114,14 @@ try {
   assert.ok(log.some(item=>item.event==='bar-update-click'),'Update was not clicked through Electron renderer');
   assert.equal(log.filter(item=>item.event==='install-returned'&&item.started).length,1,'Concurrent update requests launched duplicate installers');
   assert.ok(log.some(item=>item.event==='update-state'&&item.selected===manifest.version),'Signed release was not selected in Electron');
+  assert.equal(log.filter(item=>item.event==='wsl-install').length,1,'Unified action must dispatch the WSL fixture once');
+  assert.ok(log.findIndex(item=>item.event==='wsl-finished')<log.findIndex(item=>item.event==='install-returned'),'WSL must finish before Windows dispatch');
+  const unified=await waitFor(async()=>{const value=await read(path.join(data,'unified-update.json'));return value?.status==='completed'?value:null;},15000,'unified result after restart');
+  assert.equal(unified.targets.find(item=>item.id==='Fixture Ubuntu')?.status,'completed');
+  assert.equal(unified.targets.find(item=>item.id==='Fixture Empty')?.status,'skipped');
+  assert.equal(unified.targets.find(item=>item.id==='windows')?.status,'completed');
   success=true;
-  console.log(JSON.stringify({passed:true,version:manifest.version,uiButtonClicked:true,entrypoint:'bar-download-icon',externalInstallerSurvivedLauncherExit:true,settingsPreserved:true,receipts:true,monitorRestarted:restarted,fixtureRoot:root}));
+  console.log(JSON.stringify({passed:true,version:manifest.version,uiButtonClicked:true,entrypoint:'bar-download-icon',unifiedWslFixtureBeforeWindows:true,unifiedResultRestored:true,externalInstallerSurvivedLauncherExit:true,settingsPreserved:true,receipts:true,monitorRestarted:restarted,fixtureRoot:root}));
 }finally{
   await client?.close().catch(()=>{});
   const pids=await monitorPids(exe).catch(()=>[]);
