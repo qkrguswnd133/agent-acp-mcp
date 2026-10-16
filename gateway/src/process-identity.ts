@@ -31,6 +31,17 @@ export function processIdentity(pid:number,options:IdentityOptions={}):string|un
 }
 
 let pendingWindowsInventory:Promise<ProcessInventory>|undefined;
+/** Win32_Process.CreationDate has microsecond precision, while the existing
+ * updater writes Get-Process.StartTime ticks (100 ns). Compare that native
+ * record at CIM's exact resolution, never with an elapsed-time tolerance.
+ * Adjacent microseconds still identify different process generations. */
+export function matchesWindowsCimCreation(observed:string|undefined,recorded:string):boolean {
+  const ticks=/^\d{15,20}$/;
+  if(typeof observed!=='string'||!ticks.test(observed)||!ticks.test(recorded))return false;
+  if(observed===recorded)return true;
+  const current=BigInt(observed);
+  return current%10n===0n&&current===BigInt(recorded)/10n*10n;
+}
 /** Async Windows callers share an in-flight inventory, never a stale PID cache. */
 export async function processIdentityAsync(pid:number,options:IdentityOptions&{snapshot?:()=>Promise<ProcessInventory>}={}):Promise<string|undefined>{
   if(!Number.isSafeInteger(pid)||pid<1)return undefined;

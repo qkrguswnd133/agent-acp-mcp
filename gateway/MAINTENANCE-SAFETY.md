@@ -21,6 +21,8 @@ These changes apply to all three providers on Windows and Linux/WSL. Tests use d
 
 The temporary 5,000-file Windows fixture confirmed millisecond-level operation acceptance; full cleanup is intentionally asynchronous and can take seconds or longer. Disk speed, antivirus and metadata verification affect elapsed time. Timings are returned with each operation instead of a hard-coded completion promise.
 
+The packaged Windows updater smoke also checks creation-identity compatibility: `Get-Process.StartTime.Ticks` retains 100 ns precision, while CIM reports whole microseconds. Maintenance compares these existing updater identities at the observed CIM precision (one microsecond), with no wider time tolerance. Different creation-time buckets remain blocked. Linux identity comparison remains exact.
+
 To diagnose idle processes, record Gateway and parent creation identities, keep a temporary Gateway's stdin open without sending work, then close stdin. Idle instances should remain while connected and exit on EOF; accepted jobs/maintenance should first persist their results. An old creation time alone does not establish a leak, so this version adds no age-based process killer. SIGKILL, host process-tree termination or power loss can still interrupt work.
 
 ## Upgrade and remaining limits

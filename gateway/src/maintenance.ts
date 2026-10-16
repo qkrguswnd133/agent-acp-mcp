@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {processIdentityAsync} from './process-identity.js';
+import {processIdentityAsync,matchesWindowsCimCreation} from './process-identity.js';
 
 export interface MaintenanceRequest {schemaVersion:1;operationId:string;ownerPid:number;ownerStartedAt:string;platform?:'linux'|'win32';requestedAt:string;expiresAt:string;phase:'prepare'|'commit'}
 export interface MaintenanceOptions {platform?:NodeJS.Platform;identity?:(pid:number)=>string|undefined|Promise<string|undefined>;alive?:(pid:number)=>boolean;}
@@ -33,7 +33,7 @@ export class MaintenanceGate {
     const ownerKey=value.operationId+':'+value.ownerPid+':'+value.ownerStartedAt;
     if(platform==='linux'||!this.verifiedOwner||this.verifiedOwner.key!==ownerKey||now-this.verifiedOwner.checkedAt>1000){
       if(this.ownerCheck?.key!==ownerKey){
-        const pending=(async()=>{try{return await (this.options.identity??processIdentityAsync)(value.ownerPid)===value.ownerStartedAt;}catch{return false;}})();
+        const pending=(async()=>{try{const observed=await (this.options.identity??processIdentityAsync)(value.ownerPid);return platform==='win32'?matchesWindowsCimCreation(observed,value.ownerStartedAt):observed===value.ownerStartedAt;}catch{return false;}})();
         this.ownerCheck={key:ownerKey,pending};
       }
       const check=this.ownerCheck;const valid=await check.pending;
