@@ -74,7 +74,7 @@ test('Linux busy lease blocks new work; idle prepare acknowledges generation and
   const dir=fixture(),root=path.join(dir,'gateway');let idle=false,exits=0;
   const gate=new MaintenanceGate(root,()=>idle,()=>exits++,{platform:'linux',identity:()=>identity,alive:()=>true});
   try{
-    const request=lease(root);gate.start();assert.throws(()=>gate.assertAvailable(),/GATEWAY_MAINTENANCE/);
+    const request=lease(root);gate.start();await assert.rejects(gate.assertAvailable(),/GATEWAY_MAINTENANCE/);
     const ack=`${root}.maintenance.${request.operationId}.${process.pid}.ack.json`;
     assert.equal(fs.existsSync(ack),false);assert.equal(exits,0);
     idle=true;await pause(150);
@@ -83,21 +83,21 @@ test('Linux busy lease blocks new work; idle prepare acknowledges generation and
     await pause(250);assert.equal(exits,1);
   }finally{gate.stop();fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('Linux ignores expired, cross-platform, wrong-generation and dead updater leases',()=>{
+test('Linux ignores expired, cross-platform, wrong-generation and dead updater leases',async()=>{
   const dir=fixture(),root=path.join(dir,'gateway');let observed=identity,alive=true;
   const gate=new MaintenanceGate(root,()=>true,()=>{throw Error('must not exit');},{platform:'linux',identity:()=>observed,alive:()=>alive});
   try{
-    lease(root,{expiresAt:new Date(Date.now()-1).toISOString()});assert.equal(gate.blocked(),false);
-    lease(root,{platform:'win32',ownerStartedAt:'123456789012345678'});assert.equal(gate.blocked(),false);
-    lease(root);assert.equal(gate.blocked(),true);
-    observed=identity.replace('123456','123457');assert.equal(gate.blocked(),false);
-    observed=identity;alive=false;assert.equal(gate.blocked(),false);
+    lease(root,{expiresAt:new Date(Date.now()-1).toISOString()});assert.equal(await gate.blocked(),false);
+    lease(root,{platform:'win32',ownerStartedAt:'123456789012345678'});assert.equal(await gate.blocked(),false);
+    lease(root);assert.equal(await gate.blocked(),true);
+    observed=identity.replace('123456','123457');assert.equal(await gate.blocked(),false);
+    observed=identity;alive=false;assert.equal(await gate.blocked(),false);
   }finally{gate.stop();fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('Linux gateway respawn honors existing maintenance lease before accepting work',()=>{
+test('Linux gateway respawn honors existing maintenance lease before accepting work',async()=>{
   const dir=fixture(),root=path.join(dir,'gateway');
   const gate=new MaintenanceGate(root,()=>true,()=>{},{platform:'linux',identity:()=>identity,alive:()=>true});
-  try{lease(root,{phase:'commit'});assert.throws(()=>gate.assertAvailable(),/GATEWAY_MAINTENANCE/);}finally{gate.stop();fs.rmSync(dir,{recursive:true,force:true});}
+  try{lease(root,{phase:'commit'});await assert.rejects(gate.assertAvailable(),/GATEWAY_MAINTENANCE/);}finally{gate.stop();fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('Linux registry records installation and generation; stop preserves another generation record',()=>{
   const dir=fixture(),root=path.join(dir,'gateway'),state=path.join(dir,'state');
@@ -120,7 +120,7 @@ test('native Linux Gateway registers external state, acknowledges idle maintenan
   fs.mkdirSync(path.join(root,'dist'),{recursive:true});
   fs.cpSync(path.join(source,'dist/src'),path.join(root,'dist/src'),{recursive:true});
   fs.copyFileSync(path.join(source,'package.json'),path.join(root,'package.json'));
-  fs.symlinkSync(path.join(source,'node_modules'),path.join(root,'node_modules'),'dir');
+  fs.cpSync(path.join(source,'node_modules'),path.join(root,'node_modules'),{recursive:true,filter:source=>!fs.lstatSync(source).isSymbolicLink()});
   fs.writeFileSync(path.join(root,'agent-acp-installation.json'),JSON.stringify({schemaVersion:1,stateRoot:state}));
   const env:NodeJS.ProcessEnv={...process.env,GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false'};delete env.AGENT_MCP_STATE_DIR;
   const child=spawn(process.execPath,[path.join(root,'dist/src/index.js')],{env,stdio:['pipe','pipe','pipe']});

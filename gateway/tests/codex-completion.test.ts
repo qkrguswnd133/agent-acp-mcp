@@ -39,7 +39,7 @@ test('Deadline settles even when ChildProcess close and exit events never arrive
  assert.equal(result.timedOut,true);assert.equal(result.stopReason,'deadline_exceeded');assert.match(result.stdout,/preserved/);assert.ok(Date.now()-started<10000);
 });
 test('Owned descendant discovery rejects reused owner PIDs and unrelated processes',()=>{
- const root={pid:100,parentPid:1,created:'root-start'},child={pid:101,parentPid:100,created:'child-start'},grandchild={pid:102,parentPid:101,created:'grandchild-start'};
+ const root={pid:100,parentPid:1,created:'2026-10-17T00:00:00Z'},child={pid:101,parentPid:100,created:'2026-10-17T00:00:01Z'},grandchild={pid:102,parentPid:101,created:'2026-10-17T00:00:02Z'};
  assert.deepEqual(ownedDescendants([root,child,grandchild,{pid:200,parentPid:1,created:'other'}],new Map([[100,root]])).map(x=>x.pid),[100,101,102]);
  assert.deepEqual(ownedDescendants([{...root,created:'reused'},child],new Map([[100,root]])),[]);
 });

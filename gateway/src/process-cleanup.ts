@@ -16,6 +16,28 @@ export function withRootExitEvidence(cleanup:ProcessCleanup,pid:number,probe=pro
 }
 
 export type CleanupState='verified'|'remaining'|'unverified';
+export interface RemainingWorkspaceCheck {pid:number;usage:'referenced'|'not_referenced'|'unknown';evidence:Array<'commandLine'|'cwd'>;reason:string;}
+/** Attribute only observable command/cwd evidence. No path match does not prove
+ * there are no open handles, and never authorizes physical worktree removal. */
+export async function observeRemainingProcessWorkspace(result:ProviderRunResult,workspacePaths:string[],options:{snapshot?:()=>Promise<ProcessInventory>;platform?:NodeJS.Platform}={}):Promise<ProviderRunResult>{
+ const cleanup=classifyProcessCleanup(result);if(!cleanup.remainingPids.length)return result;
+ const normalize=(text:string)=>(options.platform??process.platform)==='win32'?text.replace(/\\/g,'/').toLowerCase():text;
+ const targets=workspacePaths.filter(Boolean).map(value=>normalize(value).replace(/\/$/,''));
+ const references=(text:string)=>targets.some(target=>{const value=normalize(text);let offset=value.indexOf(target);while(offset!==-1){const before=value[offset-1],after=value[offset+target.length];if((before===undefined||/[\s='"\x00]/.test(before))&&(after===undefined||/[\s/'"\x00]/.test(after)))return true;offset=value.indexOf(target,offset+1);}return false;});
+ let inventory:ProcessInventory|undefined;try{inventory=await (options.snapshot??readProcessInventory)();}catch{}
+ const checks:RemainingWorkspaceCheck[]=cleanup.remainingPids.map(pid=>{
+  const current=inventory?.processes.find(row=>row.pid===pid),recorded=[...cleanup.trackedProcesses,...cleanup.rootProcesses].filter(row=>row.pid===pid);
+  const unknown=(reason:string):RemainingWorkspaceCheck=>({pid,usage:'unknown',evidence:[],reason});
+  if(!current)return unknown(inventory?.complete?'Previously remaining PID is absent from the fresh inventory':'Fresh process inventory is unavailable or incomplete');
+  if(!targets.length)return unknown('Workspace path is unavailable');
+  if(recorded.length&&!recorded.some(row=>sameProcessCreation(row,current)===true))return unknown('Current PID creation does not match a recorded remaining process');
+  const evidence=(['commandLine','cwd'] as const).filter(key=>typeof current[key]==='string'&&!!current[key]?.trim());
+  if(!evidence.length)return unknown('Command line and cwd are unavailable; open handles were not inspected');
+  const matched=evidence.filter(key=>references(current[key]!));
+  return {pid,usage:matched.length?'referenced':'not_referenced',evidence:matched.length?matched:evidence,reason:matched.length?'Observed metadata references the workspace':'Available command/cwd metadata does not reference the workspace; open handles were not inspected'};
+ });
+ return {...result,processWorkspaceCheck:{checkedAt:new Date().toISOString(),checks}};
+}
 export interface CleanupEvidence {state:CleanupState;reported:boolean;trackedPids:number[];remainingPids:number[];unverifiedPids:number[];invalidPids:boolean;trackedProcesses:RecordedProcessIdentity[];rootPids:number[];rootProcesses:RecordedProcessIdentity[];cleanupAt?:string;}
 /** Unknown observation is not evidence of a surviving process. */
 export function classifyProcessCleanup(result:any):CleanupEvidence {
@@ -53,8 +75,10 @@ export function applyProcessCleanupPolicy(result:ProviderRunResult,writable:bool
   const fields={processCleanupState:evidence.state};
   if(evidence.state==='verified')return {...result,...fields};
   if(evidence.state==='remaining'){
-    const warning=`Observed remaining process PIDs: ${evidence.remainingPids.join(', ')}. Review workspace ownership before further implementation or cleanup.`;
-    return {...result,...fields,processCleanupWarning:warning,...(writable&&!result.error?{error:warning,errorKind:'process_cleanup_unconfirmed'}:{})};
+    const checks=(result.processWorkspaceCheck as {checks?:RemainingWorkspaceCheck[]}|undefined)?.checks??[];
+    const referenced=evidence.remainingPids.filter(pid=>checks.some(row=>row.pid===pid&&row.usage==='referenced'));
+    const warning=`Observed remaining process PIDs: ${evidence.remainingPids.join(', ')}. ${referenced.length?`Workspace references observed for PIDs: ${referenced.join(', ')}.`:'Workspace use is unrelated in available metadata or unknown; the provider result is preserved.'} Review workspace ownership before further implementation or cleanup.`;
+    return {...result,...fields,processCleanupWarning:warning,...(writable&&referenced.length&&!result.error?{error:warning,errorKind:'process_cleanup_unconfirmed'}:{})};
   }
   return {...result,...fields,processCleanupWarning:'Process cleanup could not be fully verified; no remaining process was observed. The provider result is preserved. Before worktree cleanup, confirm idle state and perform a fresh process/workspace check.'};
 }

@@ -1,12 +1,10 @@
 import path from 'node:path';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {safeChildEnv} from './process.js';
 import fs from 'node:fs/promises';
+import {readProcessInventory,type ProcessInventory} from './process-inventory.js';
 
-const execute=promisify(execFile);
 export interface ProcessSnapshotEntry {pid:number;parentPid:number;name:string;commandLine:string|null;cwd?:string}
 export interface InterruptedOwnershipInput {ownerPid:number;workspacePaths:string[]}
+export interface OwnershipSnapshotOptions {snapshot?:()=>Promise<ProcessInventory>;platform?:NodeJS.Platform;}
 
 /** Read-only inventory of this account's Linux processes, equally applicable
  * to WSL. A disappearing process is absent; inaccessible live data is unknown. */
@@ -39,21 +37,19 @@ export async function linuxOwnershipSnapshot(procRoot='/proc',uid=process.getuid
 }
 
 /** Read-only OS inventory, matching the Windows updater's process source. */
-export async function processOwnershipSnapshot():Promise<ProcessSnapshotEntry[]>{
- if(process.platform==='win32'){
+export async function processOwnershipSnapshot(options:OwnershipSnapshotOptions={}):Promise<ProcessSnapshotEntry[]>{
+ const platform=options.platform??process.platform;
+ if(platform==='win32'){
   // This is the same CIM source used by distribution/Update.ps1. Keep workspace
   // paths out of the scan command itself so it cannot match its own arguments.
-  const script="$ErrorActionPreference='Stop';[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);@(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,Name,CommandLine) | ConvertTo-Json -Compress";
-  const executable=path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-  const {stdout}=await execute(executable,['-NoLogo','-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,env:safeChildEnv(),timeout:10000,maxBuffer:8*1024*1024,encoding:'utf8'});
-  const parsed:unknown=JSON.parse(stdout.replace(/^\uFEFF/,'').trim());
-  if(!Array.isArray(parsed)||!parsed.length)throw Error('Process inventory is unavailable or incomplete');
-  return parsed.map(value=>{
-   if(!value||typeof value!=='object'||!Number.isSafeInteger(value.ProcessId)||!Number.isSafeInteger(value.ParentProcessId)||typeof value.Name!=='string'||(value.CommandLine!==null&&typeof value.CommandLine!=='string'))throw Error('Process inventory contains invalid ownership data');
-   return {pid:value.ProcessId,parentPid:value.ParentProcessId,name:value.Name,commandLine:value.CommandLine};
+  const inventory=await (options.snapshot??(()=>readProcessInventory({platform})))();
+  if(!inventory.complete||!inventory.processes.length)throw Error('Process inventory is unavailable or incomplete');
+  return inventory.processes.map(value=>{
+   if(!Number.isSafeInteger(value.pid)||!Number.isSafeInteger(value.parentPid)||typeof value.imageName!=='string'||(value.commandLine!==null&&typeof value.commandLine!=='string'))throw Error('Process inventory contains invalid ownership data');
+   return {pid:value.pid,parentPid:value.parentPid!,name:value.imageName,commandLine:value.commandLine??null};
   });
  }
- if(process.platform==='linux')return linuxOwnershipSnapshot();
+ if(platform==='linux')return linuxOwnershipSnapshot();
  throw Error('Interrupted worktree ownership inspection is unsupported on this platform; preserved');
 }
 
@@ -84,17 +80,17 @@ export function assertInterruptedOwnershipAbsent(input:InterruptedOwnershipInput
 /** A terminal persisted job may belong to a live gateway serving other jobs.
  * JobManager checks terminal records/locks and child cleanup before this scan;
  * do not confuse the gateway's lifetime with this job's provider lifetime. */
-export async function verifyFinishedOwnership(input:InterruptedOwnershipInput):Promise<{processScan:'passed';checkedAt:string;ownerMayServeOtherJobs:true;ownerAbsent?:true;processScanScope?:string}>{
- const snapshot=await processOwnershipSnapshot().catch(()=>{throw Error('Process ownership inventory unavailable; reviewed worktree preserved');});
- assertInterruptedOwnershipAbsent(input,snapshot,process.platform,process.pid,true);
- return {processScan:'passed' as const,checkedAt:new Date().toISOString(),ownerMayServeOtherJobs:true,processScanScope:process.platform==='linux'?'current_uid':'system_inventory'};
+export async function verifyFinishedOwnership(input:InterruptedOwnershipInput,options:OwnershipSnapshotOptions={}):Promise<{processScan:'passed';checkedAt:string;ownerMayServeOtherJobs:true;ownerAbsent?:true;processScanScope?:string}>{
+ const snapshot=await processOwnershipSnapshot(options).catch(()=>{throw Error('Process ownership inventory unavailable; reviewed worktree preserved');});
+ const platform=options.platform??process.platform;assertInterruptedOwnershipAbsent(input,snapshot,platform,process.pid,true);
+ return {processScan:'passed' as const,checkedAt:new Date().toISOString(),ownerMayServeOtherJobs:true,processScanScope:platform==='linux'?'current_uid':'system_inventory'};
 }
 
-export async function verifyInterruptedOwnership(input:InterruptedOwnershipInput):Promise<{ownerAbsent:true;processScan:'passed';checkedAt:string;processScanScope?:string}>{
+export async function verifyInterruptedOwnership(input:InterruptedOwnershipInput,options:OwnershipSnapshotOptions={}):Promise<{ownerAbsent:true;processScan:'passed';checkedAt:string;processScanScope?:string}>{
  if(!Number.isSafeInteger(input.ownerPid)||input.ownerPid<1)throw Error('Interrupted job owner identity is unknown; preserved');
  try{process.kill(input.ownerPid,0);throw Error('Interrupted job owner process is still alive; preserved');}
  catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}
- const snapshot=await processOwnershipSnapshot().catch(()=>{throw Error('Process ownership inventory is unavailable or incomplete on this platform; interrupted worktree preserved');});assertInterruptedOwnershipAbsent(input,snapshot);
+ const snapshot=await processOwnershipSnapshot(options).catch(()=>{throw Error('Process ownership inventory is unavailable or incomplete on this platform; interrupted worktree preserved');});assertInterruptedOwnershipAbsent(input,snapshot,options.platform??process.platform);
  // A PID reused during the inventory must not turn into permission to mutate.
  try{process.kill(input.ownerPid,0);throw Error('Interrupted job owner appeared during inspection; preserved');}
  catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}

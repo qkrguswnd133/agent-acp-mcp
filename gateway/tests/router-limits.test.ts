@@ -27,8 +27,16 @@ test('completed turn with unconfirmed children stops later implementation and pr
  const first=adapter('grok',async()=>({provider:'grok',text:'finished code',error:null,childCleanedUp:false,processCleanup:{verified:false,remainingPids:[1234]},usage:{totalTokens:7}}));
  const next=adapter('claude',async()=>{second++;return {provider:'claude',text:'must not run'};});
  const r=await new AgentRouter([first,next]).run('agent_implement',selectedInput({...input,provider:'grok,claude'}),host);
- assert.equal(second,0);assert.equal(r.errorKind,'process_cleanup_unconfirmed');assert.equal(r.handoff?.requiresWorkspaceReview,true);
+ assert.equal(second,0);assert.equal(r.errorKind,'process_cleanup_review_required');assert.equal(r.handoff?.requiresWorkspaceReview,true);assert.equal(r.results[0].error,null);assert.equal(r.successCount,1);
  assert.equal(r.results[0].text,'finished code');assert.deepEqual(r.results[0].usage,{totalTokens:7});assert.deepEqual(r.results[0].processCleanup,{verified:false,remainingPids:[1234]});
+});
+test('a successful single provider with unknown remaining workspace use stays successful and requests review',async()=>{
+ const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'gateway-remaining-result-'));
+ try{
+  const provider=adapter('grok',async()=>({provider:'grok',text:'committed and tested',error:null,processCleanup:{verified:false,remainingPids:[1900000000]}}));
+  const result=await new AgentRouter([provider]).run('agent_implement',selectedInput({...input,cwd,provider:'grok'}),host);
+  assert.equal(result.outcome,'success');assert.equal(result.error,null);assert.equal(result.failureCount,0);assert.equal(result.handoff?.requiresWorkspaceReview,true);assert.match(result.results[0].processCleanupWarning!,/unknown/);
+ }finally{await fs.rm(cwd,{recursive:true,force:true});}
 });
 const limit=(provider:ProviderName,kind='quota_exhausted'):ProviderRunResult=>({provider,text:'partial',error:'limited',errorKind:kind,sessionId:'fixture-session',usage:{totalTokens:10}});
 function adapter(name:ProviderName,run:ProviderAdapter['run'],status?:(force?:boolean)=>Partial<ProviderStatus>):ProviderAdapter{

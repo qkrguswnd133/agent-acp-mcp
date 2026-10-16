@@ -299,8 +299,8 @@ test('unknown cleanup preserves successful and failed work until explicit review
    await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','',{automatic:true,emptyOnly:true}),/child cleanup is unconfirmed/);
    await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed'),/idle_confirmed/);
    const shown=await f.m.status(f.id);const tree=await f.m.worktreeStatus(f.id);assert.equal(shown.result.results[0].processCleanup.trackedPidCount,30);assert.equal(shown.processEvidence.source,'artifact');assert.equal(tree.processEvidence.file,shown.processEvidence.file);
-   const preview=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true,dryRun:true});assert.ok('eligible' in preview&&preview.eligible);assert.ok(await fs.stat(f.w.path));assert.equal(scans,1);assert.equal(pidScans,2);
-   const result=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true});assert.equal(result.worktree.state,'removed');assert.equal(scans,2);assert.equal(pidScans,4);
+   const preview=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true,dryRun:true});assert.ok('eligible' in preview&&preview.eligible);assert.ok(await fs.stat(f.w.path));assert.equal(scans,1);assert.equal(pidScans,1);
+   const result=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true});assert.equal(result.worktree.state,'removed');assert.equal(scans,2);assert.equal(pidScans,2);
    const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,status);assert.equal(saved.result.error,originalResult.error);assert.deepEqual(saved.result.results[0].usage,{totalTokens:44});assert.equal(saved.worktreeIdleCheck.parentConfirmed,true);
   }finally{await disposeFixture(f);}
  }

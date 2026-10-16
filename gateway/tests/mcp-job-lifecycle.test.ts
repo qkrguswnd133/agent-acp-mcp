@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {spawn} from 'node:child_process';
+import {spawn,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {randomUUID} from 'node:crypto';
+import {createManagedWorktree} from '../src/managed-worktree.js';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {terminateProcess} from '../src/process.js';
@@ -21,10 +24,10 @@ async function fixture(t:any){
  await Promise.all([fs.mkdir(path.join(gateway,'dist'),{recursive:true}),fs.mkdir(home),fs.mkdir(cwd)]);
  await fs.cp(path.join(sourceGateway,'dist','src'),path.join(gateway,'dist','src'),{recursive:true});
  await fs.writeFile(path.join(gateway,'package.json'),JSON.stringify({type:'module'}));
- await fs.symlink(path.join(sourceGateway,'node_modules'),path.join(gateway,'node_modules'),process.platform==='win32'?'junction':'dir');
+ await fs.cp(path.join(sourceGateway,'node_modules'),path.join(gateway,'node_modules'),{recursive:true,filter:async source=>!(await fs.lstat(source)).isSymbolicLink()});
  // Windows shell preflight validates the bundled runtime even though the fake
- // provider never launches shell commands. Share these read-only binaries only.
- if(process.platform==='win32')await fs.symlink(path.join(sourceGateway,'runtime'),path.join(gateway,'runtime'),'junction');
+ // provider never launches shell commands. Copies stay inside this fixture.
+ if(process.platform==='win32')await fs.cp(path.join(sourceGateway,'runtime'),path.join(gateway,'runtime'),{recursive:true,filter:async source=>!(await fs.lstat(source)).isSymbolicLink()});
  const cli=path.join(root,process.platform==='win32'?'fixture-codex.cmd':'fixture-codex.sh');
  await fs.writeFile(path.join(root,'fake.mjs'),`
 import fs from 'node:fs/promises';
@@ -68,8 +71,7 @@ else if(args[0]==='app-server'){
  t.after(async()=>{
   if(child.exitCode===null&&child.signalCode===null){child.stdin.end();await bounded(exited,15000,'Fixture cleanup timeout').catch(()=>{});if(child.exitCode===null&&child.signalCode===null)await terminateProcess(child);}
   for(const waiter of pending.values()){clearTimeout(waiter.timer);waiter.reject(Error('Fixture closed'));}pending.clear();lines.close();
-  // Remove only this fixture-owned link, never its real dependency directory.
-  await fs.unlink(path.join(gateway,'node_modules'));if(process.platform==='win32')await fs.unlink(path.join(gateway,'runtime'));await fs.rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100});
+  await fs.rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100});
  });
  const notify=(method:string,params?:any)=>child.stdin.write(JSON.stringify({jsonrpc:'2.0',method,...(params?{params}:{})})+'\n');
  const request=(method:string,params:any)=>{
@@ -87,7 +89,7 @@ else if(args[0]==='app-server'){
   for(let i=0;i<200;i++){if(await fs.stat(marker).catch(()=>undefined))return job;await delay(50);}
   assert.fail('Mock Codex exec did not start: '+JSON.stringify(await call('agent_job_status',{job_id:job.job_id}))+'; '+stderr);
  };
- return {child,exited,request,notify,call,start,gateway,stateRoot:process.platform==='linux'?path.join(root,'runtime-state'):path.join(gateway,'state'),stderr:()=>stderr};
+ return {child,exited,request,notify,call,start,gateway,root,stateRoot:process.platform==='linux'?path.join(root,'runtime-state'):path.join(gateway,'state'),stderr:()=>stderr};
 }
 
 function assertSuccessful(job:any){
@@ -113,4 +115,17 @@ test('actual MCP stdin EOF drains accepted work and persists success before gate
  b.child.stdin.end();
  const exit=await bounded(b.exited,20000,'Gateway did not exit after draining');assert.equal(exit.code,0,b.stderr());
  const stored=JSON.parse(await fs.readFile(path.join(b.stateRoot,'jobs',job.job_id+'.json'),'utf8'));assertSuccessful(stored);assert.ok(terminal.has(stored.status));
+});
+
+test('actual MCP EOF drains accepted maintenance alongside an unrelated provider job',async t=>{
+ const b=await fixture(t),repo=path.join(b.root,'maintenance-repo'),exec=promisify(execFile);await fs.mkdir(repo);
+ const git=async(...args:string[])=>(await exec('git',['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args],{cwd:repo,windowsHide:true})).stdout.trim();
+ await git('init');await fs.writeFile(path.join(repo,'.gitignore'),'build/\n');await fs.writeFile(path.join(repo,'base'),'base');await git('add','.');await git('commit','-m','base');
+ const id=randomUUID(),w=(await createManagedWorktree({cwd:repo,task:'fixture'},id)).worktree;await fs.mkdir(path.join(w.path,'build'));
+ for(let i=0;i<100;i++)await fs.writeFile(path.join(w.path,'build',i+'.txt'),'generated');
+ await fs.mkdir(path.join(b.stateRoot,'jobs'),{recursive:true});const now=new Date().toISOString();await fs.writeFile(path.join(b.stateRoot,'jobs',id+'.json'),JSON.stringify({job_id:id,kind:'agent_implement',status:'completed',ownerPid:process.pid,cwd:w.path,startedAt:now,lastActivityAt:now,finishedAt:now,worktree:w,result:{error:null,childCleanedUp:true}}));
+ const provider=await b.start(),started=performance.now(),accepted=await b.call('agent_worktree_cleanup',{job_id:id,remove_ignored_artifacts:true});assert(performance.now()-started<5000);assert.equal(accepted.status,'queued');assert.ok(accepted.operation_id);
+ b.child.stdin.end();const exit=await bounded(b.exited,40000,'Gateway did not drain maintenance');assert.equal(exit.code,0,b.stderr());
+ const operation=JSON.parse(await fs.readFile(path.join(b.stateRoot,'operations',accepted.operation_id+'.json'),'utf8'));assert.equal(operation.status,'completed',JSON.stringify(operation));assert.equal(operation.result.worktree.state,'removed');
+ assertSuccessful(JSON.parse(await fs.readFile(path.join(b.stateRoot,'jobs',provider.job_id+'.json'),'utf8')));
 });

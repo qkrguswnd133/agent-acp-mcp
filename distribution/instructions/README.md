@@ -59,3 +59,7 @@ For a finished job whose cleanup was unverified, supply `idle_confirmed=true` an
 All providers reuse the existing Gradle home/cache. Use `--no-daemon`, preserve `GRADLE_USER_HOME`, and do not delete build artifacts or run clean just to tidy the worktree. Parent can use `remove_ignored_artifacts=true` after integration review. A missing Wrapper distribution may download even with `--offline`; report missing cache entries and obtain user authorization before downloading. Report observed download targets. Absence of download telemetry is not proof of no network activity. Shared user caches and old task Gradle homes must not be deleted automatically.
 
 Linux and WSL use the same signed Gateway package and `agent-acp update`; the Monitor is a Windows component. Preserve the configured external state directory when upgrading. Never update or restart while an active job has not finished, and never copy authentication across operating systems.
+
+## 2.7.0 template update
+
+Merge the new maintenance section and replace the old 64 KiB/full-inline response guidance. Maintenance returns operation_id by default; poll agent_operation_status. Responses stay below 20 KiB and full data is read through details.artifact.path, including verbose. Review explicit unlink_links, audited lease recovery, historical patch matching and remaining-process workspace evidence. The updater does not modify live global instructions.

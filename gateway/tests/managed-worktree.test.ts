@@ -322,7 +322,13 @@ test('patch-equivalent cleanup requires opt-in, parent verification and current-
   const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'patch'},randomUUID());
   try{
    await fs.writeFile(path.join(w.path,'file.txt'),'change');await git(w.path,'add','.');await git(w.path,'commit','-m','source change');
+   const sourceCommit=await git(w.path,'rev-parse','HEAD');
+   const beforePick=await inspectManagedWorktree(w);assert.ok('patchEquivalentInOriginal' in beforePick);assert.equal(beforePick.patchEquivalentInOriginal,false);
    await fs.writeFile(path.join(repo,'unrelated.txt'),'unrelated');await git(repo,'add','.');await git(repo,'commit','-m','original diverges');await git(repo,'cherry-pick',w.branch);
+   const matchedCommit=await git(repo,'rev-parse','HEAD');
+   const picked=await inspectManagedWorktree(w);assert.ok('patchEquivalentInOriginal' in picked);assert.equal(picked.patchEquivalentInOriginal,true);assert.equal(picked.integratedIntoOriginalHead,false);
+   assert.deepEqual(picked.patchEquivalentOriginalCommits,[{worktreeCommit:sourceCommit,originalCommit:matchedCommit}]);
+   const disabled=await inspectManagedWorktree(w,{includePatchEquivalence:false});assert.ok('patchEquivalentInOriginal' in disabled);assert.equal(disabled.patchEquivalentInOriginal,'unknown');
    if(reverted)await git(repo,'revert','--no-edit','HEAD');
    await assert.rejects(()=>cleanupManagedWorktree(w,'HEAD','verified'),/not merged/);
    assert.match((await cleanupManagedWorktree(w,'HEAD','',{dryRun:true,allowPatchEquivalent:true})).reason!,/summary/);
@@ -440,4 +446,42 @@ test('partial ignored-artifact deletion failure reports deleted paths and retain
   assert.equal(await git(w.path,'rev-parse','HEAD'),w.baseCommit);assert.equal(await git(repo,'rev-parse',w.branch),w.baseCommit);
   assert.equal(await fs.readFile(path.join(w.path,'build','nested','한글 output.txt'),'utf8'),'build output');
  }finally{t.mock.restoreAll();await disposeIgnoredFixture(root,repo,w);}
+});
+
+test('5000 ignored artifacts use bounded Git passes and report measured cleanup phases',async t=>{
+ const {root,repo,w}=await ignoredFixture(),phases:Record<string,number>={};
+ try{
+  const writes=[];for(let i=0;i<5000;i++)writes.push(fs.writeFile(path.join(w.path,'build','nested',`artifact-${i}.txt`),'fixture output'));
+  await Promise.all(writes);
+  const started=Date.now(),preview=await cleanupManagedWorktree(w,'','',{dryRun:true,removeIgnoredArtifacts:true,onPhase:(name,ms)=>{phases['preview.'+name]=ms;}});
+  assert.equal(preview.eligible,true,preview.reason);assert.equal(preview.ignoredArtifactPaths?.length,5002);phases.previewTotal=Date.now()-started;
+  const applied=Date.now(),result=await cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,onPhase:(name,ms)=>{phases[name]=ms;}});
+  assert.equal(result.state,'removed');assert.equal(result.removedIgnoredPaths?.filter(name=>!name.endsWith('/')).length,5002);phases.applyTotal=Date.now()-applied;
+  t.diagnostic(JSON.stringify(phases));
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+
+test('batched artifact checks still stop when the index changes immediately before unlink',async()=>{
+ const {root,repo,w}=await ignoredFixture();let changed=false;
+ try{
+  await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,beforeMutation:async()=>{
+   if(!changed){changed=true;await git(w.path,'add','--force','.gradle/cache.bin');}
+  }}),/Git index, configuration or ignore rules changed/);
+  assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+
+test('cached artifact directories cannot redirect remaining deletes through a new junction',async()=>{
+ const {root,repo,w}=await ignoredFixture(),nested=path.join(w.path,'build','nested'),moved=path.join(root,'moved-fixture-directory');
+ let attempts=0,redirected=false;
+ try{
+  await fs.writeFile(path.join(nested,'a-first.txt'),'first artifact');
+  await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,beforeMutation:async()=>{
+   if(++attempts===3){await fs.rename(nested,moved);await fs.symlink(moved,nested,'junction');redirected=true;}
+  }}),/redirected|symlink|junction/);
+  assert.equal(redirected,true);assert.equal(await fs.readFile(path.join(moved,'한글 output.txt'),'utf8'),'build output');
+ }finally{
+  if(redirected){await fs.unlink(nested);await fs.rename(moved,nested);}
+  await disposeIgnoredFixture(root,repo,w);
+ }
 });

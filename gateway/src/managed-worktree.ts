@@ -7,6 +7,7 @@ import {resolveGitExecutable} from './git-read-policy.js';
 import {safeChildEnv} from './process.js';
 import {canonical,within} from './policy.js';
 import {readWorktreeRegistrations} from './git-worktree-list.js';
+import {inspectWorktreeLinks,inspectRemovalLinks,prepareWorktreeRemoval,linkErrorDetails,linkInspectionError,type LinkInspection} from './worktree-links.js';
 import type {RunInput} from './types.js';
 
 const execute=promisify(execFile);
@@ -38,9 +39,11 @@ export interface ManagedWorktree {
  sourceHadChanges:boolean; state:'preserved'|'removed'; integrationCommit?:string; integrationMethod?:'ancestor'|'patch-equivalent'; verificationSummary?:string; createdAt?:string; storageRoot?:string; recoveryBranchPreserved?:boolean;
  recordDisposition?:'forgotten';forgottenAt?:string;forgetAudit?:Record<string,unknown>;removedIgnoredPaths?:string[];
 }
-async function git(cwd:string,args:string[]){
+async function git(cwd:string,args:string[],input?:string,timeout=60000){
  const env=safeChildEnv({GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',LC_ALL:'C'});
- const result=await execute(await resolveGitExecutable(),['-c','core.hooksPath='+path.join(os.tmpdir(),'agent-acp-disabled-hooks'),...args],{cwd,env,windowsHide:true,timeout:60000,maxBuffer:4*1024*1024});
+ const running=execute(await resolveGitExecutable(),['-c','core.hooksPath='+path.join(os.tmpdir(),'agent-acp-disabled-hooks'),...args],{cwd,env,windowsHide:true,timeout,maxBuffer:4*1024*1024});
+ if(input!==undefined){running.child.stdin?.on('error',()=>{});running.child.stdin?.end(input);}
+ const result=await running;
  return args.includes('-z')?result.stdout:result.stdout.trim();
 }
 export async function createManagedWorktree(input:RunInput,id:string):Promise<{worktree:ManagedWorktree;input:RunInput}>{
@@ -135,26 +138,29 @@ async function checkoutHealth(target:string){
  const checkoutState=metadataOnly?'git-metadata-only':missingTrackedFileCount===0?'complete':'partial';
  return {checkoutState,missingTrackedFileCount,trackedFileCount:tracked.size} as const;
 }
-export interface InspectOptions {includeDiskSize?:boolean}
+export interface InspectOptions {includeDiskSize?:boolean;verbose?:boolean;includePatchEquivalence?:boolean}
 export async function inspectManagedWorktree(value:ManagedWorktree,options:InspectOptions={}){
- if(value.state==='removed')return {...value};
+ const unavailable={patchEquivalentInOriginal:'unknown' as const,patchEquivalentOriginalCommits:[],links:[],linkCount:0,outsideWorktreeLinkCount:0,linksTruncated:false,linksScanComplete:false,linksScanErrors:['No active checkout was available for inspection'],entriesScanned:0};
+ if(value.state==='removed')return {...value,...unavailable};
  const {target,repository}=await ownership(value);
- if(!await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))return {...value,exists:false,checkoutState:'missing' as const,nextAction:'Worktree path is missing; branch and registration presence is unconfirmed. Use agent_worktree_forget to verify all three are absent before hiding only this listing.'};
+ if(!await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))return {...value,...unavailable,exists:false,checkoutState:'missing' as const,nextAction:'Worktree path is missing; branch and registration presence is unconfirmed. Use agent_worktree_forget to verify all three are absent before hiding only this listing.'};
  await verifyRegistration(value,target,repository);
- const [head,originalHead,changes,health,changedFiles,changedNames,statusText]=await Promise.all([
+ const [head,originalHead,changes,health,changedFiles,changedNames,statusText,links]=await Promise.all([
   git(target,['rev-parse','HEAD']),git(repository,['rev-parse','HEAD']),git(target,['status','--porcelain','--untracked-files=all','--ignored']),checkoutHealth(target),
-  git(target,['diff','--name-status',value.baseCommit,'--']),git(target,['diff','--name-only','-z',value.baseCommit,'--']),git(target,['status','--porcelain','-z','--untracked-files=all','--ignored'])
+  git(target,['diff','--name-status',value.baseCommit,'--']),git(target,['diff','--name-only','-z',value.baseCommit,'--']),git(target,['status','--porcelain','-z','--untracked-files=all','--ignored']),inspectWorktreeLinks(target,{verbose:options.verbose})
  ]);
  const names=new Set(changedNames.split('\0').filter(Boolean));
  const status=statusText.split('\0');
  for(let i=0;i<status.length;i++){const item=status[i];if(item){names.add(item.slice(3));if(/[RC]/.test(item.slice(0,2)))i++;}}
  const integratedIntoOriginalHead=await git(repository,['merge-base','--is-ancestor',head,originalHead]).then(()=>true,()=>false);
+ const equivalent=options.includePatchEquivalence===false?{patchEquivalentInOriginal:'unknown' as const,patchEquivalentOriginalCommits:[],patchEquivalentReason:'Computation disabled'}:await inspectPatchEquivalent(repository,value.baseCommit,head,originalHead,integratedIntoOriginalHead);
  const preview=(text:string)=>text.length<=12000?text:text.slice(0,8000)+'\n... [truncated] ...\n'+text.slice(-4000);
  return {...value,exists:true,head,tipCommit:head,originalHead,changes:preview(changes),changedFiles:preview(changedFiles),changesTruncated:changes.length>12000,changedFilesTruncated:changedFiles.length>12000,changedFileCount:names.size,
-  commitCount:Number(await git(target,['rev-list','--count',value.baseCommit+'..'+head])),empty:head===value.baseCommit,commitEmpty:head===value.baseCommit,cleanEmpty:head===value.baseCommit&&!changes&&health.checkoutState==='complete',integratedIntoOriginalHead,...health,...(options.includeDiskSize?await diskUsage(target):{}),
+  commitCount:Number(await git(target,['rev-list','--count',value.baseCommit+'..'+head])),empty:head===value.baseCommit,commitEmpty:head===value.baseCommit,cleanEmpty:head===value.baseCommit&&!changes&&health.checkoutState==='complete',integratedIntoOriginalHead,...equivalent,...links,...health,...(options.includeDiskSize?await diskUsage(target):{}),
   nextAction:health.checkoutState!=='complete'?'Tracked files are missing. Ordinary cleanup and migration are blocked; inspect the preserved branch and use explicit recovery only for a metadata-only checkout.':head===value.baseCommit&&!changes?'Clean empty worktree can be removed once the job is idle.':'Parent must review, commit, integrate, test, then call agent_worktree_cleanup. No automatic merge or deletion.'};
 }
-export interface CleanupOptions {dryRun?:boolean;emptyOnly?:boolean;allowPatchEquivalent?:boolean;removeIgnoredArtifacts?:boolean}
+export interface MutationOptions {beforeMutation?:()=>Promise<void>;onPhase?:(name:string,milliseconds:number)=>void}
+export interface CleanupOptions extends MutationOptions {dryRun?:boolean;emptyOnly?:boolean;allowPatchEquivalent?:boolean;removeIgnoredArtifacts?:boolean;unlinkLinks?:boolean}
 /** Forget metadata only after proving every managed Git/filesystem reference is
  * absent. An inaccessible repository or any remaining object fails closed. */
 export async function forgetManagedWorktree(value:ManagedWorktree,summary:string,dryRun=true){
@@ -168,18 +174,22 @@ export async function forgetManagedWorktree(value:ManagedWorktree,summary:string
  if(!summary.trim())throw Error('Forgetting a missing worktree requires a verification summary');
  return {...value,state:'removed' as const,recordDisposition:'forgotten' as const,forgottenAt:new Date().toISOString(),verificationSummary:summary,recordOnly:true};
 }
-export interface CleanupResult extends ManagedWorktree {dryRun?:boolean;eligible?:boolean;reason?:string;empty?:boolean;tipCommit?:string;ignoredArtifactPaths?:string[]}
+export interface CleanupResult extends ManagedWorktree,Partial<LinkInspection> {dryRun?:boolean;eligible?:boolean;reason?:string;empty?:boolean;tipCommit?:string;ignoredArtifactPaths?:string[];unlinkedPaths?:string[];linkTargetIntegrityVerified?:boolean}
 export async function cleanupManagedWorktree(value:ManagedWorktree,integrationRef:string,verificationSummary:string,options:CleanupOptions={}):Promise<CleanupResult>{
  if(value.state==='removed')return {...value,...(options.dryRun?{dryRun:true,eligible:true}:{})};
  try{return await cleanupChecked(value,integrationRef,verificationSummary,options);}
- catch(error){if(options.dryRun)return {...value,dryRun:true,eligible:false,reason:error instanceof Error?error.message:String(error)};throw error;}
+ catch(error){if(options.dryRun)return {...value,dryRun:true,eligible:false,reason:error instanceof Error?error.message:String(error),...linkErrorDetails(error)};throw error;}
 }
 async function cleanupChecked(value:ManagedWorktree,integrationRef:string,verificationSummary:string,options:CleanupOptions):Promise<CleanupResult>{
  const {target,repository,container,current}=await ownership(value);
  if(!await fs.lstat(target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))throw Error('Worktree path is missing; branch and registration preserved for manual inspection');
  await verifyRegistration(value,target,repository);
+ const linkStarted=Date.now(),links=await inspectRemovalLinks(target,options.unlinkLinks);
+ options.onPhase?.('linkInspection',Date.now()-linkStarted);
+ const exclusions=links.links.map(link=>':(exclude,literal)'+path.relative(target,link.path).split(path.sep).join('/'));
+ if(links.linkCount&&await git(target,['ls-files','--cached','-z','--',...links.links.map(link=>':(literal)'+path.relative(target,link.path).split(path.sep).join('/'))]))throw linkInspectionError('Tracked links cannot be unlinked during cleanup; preserve and review the committed paths',links);
  if((await checkoutHealth(target)).checkoutState!=='complete')throw Error('Worktree checkout is damaged or partial (tracked files missing); ordinary cleanup refused, branch preserved');
- if(await git(target,['status','--porcelain','--untracked-files=all',...(options.removeIgnoredArtifacts?[]:['--ignored'])]))throw Error('Worktree has modified, untracked or ignored files; preserved. Review/commit changes and explicitly opt in to removing ignored artifacts before cleanup.');
+ if(await git(target,['status','--porcelain','--untracked-files=all',...(options.removeIgnoredArtifacts?[]:['--ignored']),...(exclusions.length?['--','.',...exclusions]:[])]))throw Error('Worktree has modified, untracked or ignored files; preserved. Review/commit changes and explicitly opt in to removing ignored artifacts before cleanup.');
  const tip=await git(target,['rev-parse','HEAD']);
  const empty=tip===value.baseCommit;
  if(options.emptyOnly&&!empty)throw Error('Only empty worktrees (tip equals base commit) can be cleaned for this job; preserved');
@@ -198,84 +208,170 @@ async function cleanupChecked(value:ManagedWorktree,integrationRef:string,verifi
  }
  // Build the deletion plan only after integration/verification eligibility. A
  // dry-run validates the same paths, without deleting even an empty directory.
- const artifacts=options.removeIgnoredArtifacts?await ignoredArtifactPlan(target):[];
+ const planStarted=Date.now(),artifacts=options.removeIgnoredArtifacts?await ignoredArtifactPlan(target,exclusions):[];
+ options.onPhase?.('ignoredArtifactPlan',Date.now()-planStarted);
  const ignoredArtifactPaths=artifacts.map(item=>item.relative);
- if(options.dryRun)return {...value,dryRun:true,eligible:true,empty,tipCommit:tip,...(options.removeIgnoredArtifacts?{ignoredArtifactPaths}:{}),...(integrated?{integrationCommit:integrated,integrationMethod}:{})};
+ if(options.dryRun)return {...value,dryRun:true,eligible:true,empty,tipCommit:tip,...links,links:links.links.slice(0,20),linksTruncated:links.linkCount>20,...(options.removeIgnoredArtifacts?{ignoredArtifactPaths}:{}),...(integrated?{integrationCommit:integrated,integrationMethod}:{})};
  // Minimize the external-Git race between eligibility and removal. Parent locking
  // serializes gateway jobs; these checks also catch manual ref/checkout changes.
  if(await git(target,['symbolic-ref','HEAD'])!=='refs/heads/'+value.branch||await git(target,['rev-parse','HEAD'])!==tip)throw Error('Worktree branch or tip changed during cleanup; preserved');
  if(integrated&&await git(repository,['rev-parse','HEAD'])!==integrated)throw Error('Original HEAD changed during cleanup; preserved');
  const removedIgnoredPaths:string[]=[];
+ let linkRemoval:{unlinkedPaths:string[];linkTargetIntegrityVerified:boolean}|undefined;
  try{
+ if(links.linkCount)linkRemoval=await prepareWorktreeRemoval(target,{unlinkLinks:options.unlinkLinks,beforeMutation:options.beforeMutation});
  if(options.removeIgnoredArtifacts){
   // Recheck non-ignored changes immediately before the first deletion. Files
   // becoming tracked or redirected during cleanup are also checked per-file.
   if(await git(target,['status','--porcelain','--untracked-files=all']))throw Error('Worktree changed during cleanup; preserved');
-  await removeIgnoredArtifactPlan(target,artifacts,removedIgnoredPaths);
+  const removedStarted=Date.now();await removeIgnoredArtifactPlan(target,artifacts,removedIgnoredPaths,options.beforeMutation);options.onPhase?.('ignoredArtifactRemoval',Date.now()-removedStarted);
   if(await git(target,['status','--porcelain','--untracked-files=all','--ignored']))throw Error('Worktree changed or contains additional artifacts during cleanup; preserved');
  }
  // Git refuses dirty worktrees; never use force or recursive filesystem deletion.
- await git(repository,['worktree','remove',target]);
+ await removeWorktreeSafely(repository,target,options);
  // Delete exactly the verified reference; do not delete a branch changed concurrently.
- try{await git(repository,['update-ref','-d','refs/heads/'+value.branch,tip]);}catch{throw Error(`Worktree removed but branch ${value.branch} changed or could not be removed; branch preserved.`);}
- if(current&&!(await fs.readdir(container)).length)await fs.rmdir(container).catch(()=>{});
- return {...value,state:'removed' as const,...(options.removeIgnoredArtifacts?{ignoredArtifactPaths,removedIgnoredPaths:[...(value.removedIgnoredPaths??[]),...removedIgnoredPaths]}:{}),...(integrated?{integrationCommit:integrated,integrationMethod,verificationSummary}:{})};
+ try{await options.beforeMutation?.();await git(repository,['update-ref','-d','refs/heads/'+value.branch,tip]);}catch{throw Error(`Worktree removed but branch ${value.branch} changed or could not be removed; branch preserved.`);}
+ if(current&&!(await fs.readdir(container)).length){await options.beforeMutation?.();await fs.rmdir(container).catch(()=>{});}
+ return {...value,state:'removed' as const,...linkRemoval,...(options.removeIgnoredArtifacts?{ignoredArtifactPaths,removedIgnoredPaths:[...(value.removedIgnoredPaths??[]),...removedIgnoredPaths]}:{}),...(integrated?{integrationCommit:integrated,integrationMethod,verificationSummary}:{})};
  }catch(error){
   // The job layer persists this audit even if a locked artifact or concurrent
   // change stops cleanup after earlier files were removed.
-  if(options.removeIgnoredArtifacts)throw Object.assign(error instanceof Error?error:Error(String(error)),{ignoredArtifactPaths,removedIgnoredPaths:[...(value.removedIgnoredPaths??[]),...removedIgnoredPaths]});
-  throw error;
+  throw Object.assign(error instanceof Error?error:Error(String(error)),...(options.removeIgnoredArtifacts?[{ignoredArtifactPaths,removedIgnoredPaths:[...(value.removedIgnoredPaths??[]),...removedIgnoredPaths]}]:[]),...(linkRemoval?[linkRemoval]:[]));
  }
 }
 
+/** The only Git worktree-remove call site. Always scan the entire checkout
+ * directly before handing it to Git, irrespective of artifact options. */
+async function removeWorktreeSafely(repository:string,target:string,options:MutationOptions){
+ await options.beforeMutation?.();
+ const started=Date.now();await inspectRemovalLinks(target,false);const elapsed=Date.now()-started;
+ try{await git(repository,['worktree','remove',target]);}finally{options.onPhase?.('preRemoveLinkInspection',elapsed);}
+}
+
 interface IgnoredArtifact {relative:string;dev:number;ino:number;size:number;mtimeMs:number}
-async function safeArtifactPath(root:string,relative:string){
+async function safeArtifactPath(root:string,relative:string,checkedDirectories=new Set<string>()){
  const parts=relative.split('/');
  if(!relative||path.isAbsolute(relative)||parts.some(p=>!p||p==='.'||p==='..'||/^\.git$/i.test(p)||p.includes('\\')||p.includes('\0')||(process.platform==='win32'&&(/[:<>"|?*]/.test(p)||/[. ]$/.test(p)))))throw Error('Unsafe ignored artifact path; preserved: '+relative);
  let target=root;
  // Do not follow any link/junction, including ancestors of a Git-reported file.
  for(const part of parts){
   target=path.join(target,part);
+  if(target!==path.join(root,relative)&&checkedDirectories.has(target))continue;
   const stat=await fs.lstat(target);
-  if(stat.isSymbolicLink()||await fs.realpath(target)!==target||!within(root,target))throw Error('Ignored artifact traverses a symlink, junction or redirected path; preserved: '+relative);
+  if(stat.isSymbolicLink()||!within(root,target))throw Error('Ignored artifact traverses a symlink, junction or redirected path; preserved: '+relative);
+  if(stat.isDirectory())checkedDirectories.add(target);
  }
  return target;
 }
-async function ignoredArtifactPlan(root:string):Promise<IgnoredArtifact[]>{
- const names=(await git(root,['ls-files','--others','--ignored','--exclude-standard','-z'])).split('\0').filter(Boolean);
- const result:IgnoredArtifact[]=[];
+async function ignoredArtifactPlan(root:string,exclusions:string[]=[]):Promise<IgnoredArtifact[]>{
+ const names=(await git(root,['ls-files','--others','--ignored','--exclude-standard','-z',...(exclusions.length?['--','.',...exclusions]:[])])).split('\0').filter(Boolean);
+ const result:IgnoredArtifact[]=[],checkedDirectories=new Set<string>();
  for(const relative of names){
-  const target=await safeArtifactPath(root,relative),stat=await fs.lstat(target);
+  const target=await safeArtifactPath(root,relative,checkedDirectories),stat=await fs.lstat(target);
   // Nested repositories are listed as directories; never recursively walk or
   // remove them. Plain files only also excludes devices, sockets and pipes.
   if(!stat.isFile())throw Error('Ignored artifact is not a regular file (nested repository or special file); preserved: '+relative);
-  await assertIgnoredUntracked(root,relative);
   result.push({relative,dev:stat.dev,ino:stat.ino,size:stat.size,mtimeMs:stat.mtimeMs});
  }
  return result;
 }
-async function assertIgnoredUntracked(root:string,relative:string){
- if(await git(root,['--literal-pathspecs','ls-files','--cached','-z','--',relative]))throw Error('Ignored artifact is tracked; preserved: '+relative);
- await git(root,['check-ignore','-q','--',relative]).catch(()=>{throw Error('Artifact is no longer ignored by Git; preserved: '+relative);});
+async function artifactGitStateGuard(root:string,artifacts:IgnoredArtifact[]){
+ const [index,exclude,config,worktreeConfig,globalExclude]=await Promise.all([
+  git(root,['rev-parse','--git-path','index']),git(root,['rev-parse','--git-path','info/exclude']),git(root,['rev-parse','--git-path','config']),git(root,['rev-parse','--git-path','config.worktree']),
+  git(root,['config','--path','--get','core.excludesFile']).catch((error:any)=>{if(error.code===1)return '';throw error;})
+ ]);
+ const common=[index,exclude,config,worktreeConfig,globalExclude||path.join(process.env.XDG_CONFIG_HOME??path.join(os.homedir(),'.config'),'git','ignore')].map(name=>path.resolve(root,name));
+ const pathsFor=(relative:string)=>{
+  const result=[...common,path.join(root,'.gitignore')];
+  for(let parent=path.posix.dirname(relative);parent!=='.';parent=path.posix.dirname(parent))result.push(path.join(root,parent,'.gitignore'));
+  return result;
+ };
+ const signature=async(file:string)=>{
+  const stat=await fs.lstat(file).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT'||error.code==='ENOTDIR')return undefined;throw error;});
+  return stat?JSON.stringify([stat.dev,stat.ino,stat.mode,stat.size,stat.mtimeMs,stat.ctimeMs]):'absent';
+ };
+ const initial=new Map<string,string>();
+ for(const artifact of artifacts)for(const name of pathsFor(artifact.relative))if(!initial.has(name))initial.set(name,await signature(name));
+ const check=async(names:Iterable<string>)=>{
+  for(const name of names)if(await signature(name)!==initial.get(name))throw Error('Git index, configuration or ignore rules changed during artifact cleanup; remaining files preserved: '+name);
+ };
+ return {all:()=>check(initial.keys()),file:(relative:string)=>check(pathsFor(relative))};
 }
-async function removeIgnoredArtifactPlan(root:string,artifacts:IgnoredArtifact[],removed:string[]){
- const directories=new Set<string>();
+async function removeIgnoredArtifactPlan(root:string,artifacts:IgnoredArtifact[],removed:string[],beforeMutation?:()=>Promise<void>){
+ if(!artifacts.length)return;
+ // One Git inventory per pass replaces two subprocesses for every artifact.
+ // Each file still gets a fresh no-follow identity check before unlink.
+ const guard=await artifactGitStateGuard(root,artifacts);
+ const [trackedText,ignoredText]=await Promise.all([git(root,['ls-files','--cached','-z']),git(root,['ls-files','--others','--ignored','--exclude-standard','-z'])]);
+ await guard.all();
+ const tracked=new Set(trackedText.split('\0')),ignored=new Set(ignoredText.split('\0'));
+ const directories=new Set<string>(),checkedDirectories=new Set<string>();
  for(const artifact of artifacts){
-  await assertIgnoredUntracked(root,artifact.relative);
-  const target=await safeArtifactPath(root,artifact.relative),stat=await fs.lstat(target);
+  if(tracked.has(artifact.relative))throw Error('Ignored artifact is tracked; preserved: '+artifact.relative);
+  if(!ignored.has(artifact.relative))throw Error('Artifact is no longer ignored by Git; preserved: '+artifact.relative);
+  await beforeMutation?.();await guard.file(artifact.relative);
+  const target=await safeArtifactPath(root,artifact.relative,checkedDirectories),stat=await fs.lstat(target);
   if(!stat.isFile()||stat.dev!==artifact.dev||stat.ino!==artifact.ino||stat.size!==artifact.size||stat.mtimeMs!==artifact.mtimeMs)throw Error('Ignored artifact changed during cleanup; preserved: '+artifact.relative);
+  // Ancestor lstat checks are cached once per directory. Resolve only the
+  // immediate parent before mutation so moving a cached directory outside the
+  // checkout and replacing it with a junction cannot redirect this unlink.
+  if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw Error('Ignored artifact parent was redirected during cleanup; preserved: '+artifact.relative);
   await fs.unlink(target);removed.push(artifact.relative);
   for(let parent=path.posix.dirname(artifact.relative);parent!=='.';parent=path.posix.dirname(parent))directories.add(parent);
  }
+ const ignoredDirectories=new Set(directories.size?(await git(root,['check-ignore','-z','--stdin'],[...directories].map(name=>name+'/\0').join('')).catch((error:any)=>{if(error.code===1)return '';throw error;})).split('\0').filter(Boolean):[]);
  for(const relative of [...directories].sort((a,b)=>b.split('/').length-a.split('/').length)){
-  const target=await safeArtifactPath(root,relative);
+  await beforeMutation?.();await guard.file(relative+'/placeholder');
+  const target=await safeArtifactPath(root,relative,checkedDirectories);
   // Only remove Git-ignored directories that are still empty. rmdir refuses
   // unexpected new files; it never follows links or deletes a populated tree.
   if((await fs.readdir(target)).length)continue;
-  const ignored=await git(root,['check-ignore','-q','--',relative+'/']).then(()=>true,()=>false);
-  if(!ignored)continue;
-  await fs.rmdir(target);removed.push(relative+'/');
+  if(!ignoredDirectories.has(relative+'/'))continue;
+  if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw Error('Ignored artifact directory parent was redirected; preserved: '+relative);
+  await fs.rmdir(target);checkedDirectories.delete(target);removed.push(relative+'/');
  }
+}
+
+interface PatchInspection {patchEquivalentInOriginal:boolean|'unknown';patchEquivalentOriginalCommits:{worktreeCommit:string;originalCommit:string}[];patchEquivalentReason?:string}
+const patchInspectionCache=new Map<string,PatchInspection>();
+/** Informational historical patch matching, bounded by commit count, subprocess
+ * time and output size. Cleanup always runs its stricter fresh tree checks. */
+async function inspectPatchEquivalent(repository:string,base:string,tip:string,original:string,ancestor:boolean):Promise<PatchInspection>{
+ const key=JSON.stringify([repository,base,tip,original]),cached=patchInspectionCache.get(key);
+ if(cached)return cached;
+ let result:PatchInspection;
+ try{
+  const source=(await git(repository,['rev-list','--parents','--max-count=51',base+'..'+tip],undefined,5000)).split('\n').filter(Boolean);
+  if(source.length>50||source.some(line=>line.split(' ').length!==2))throw Error('Patch comparison requires at most 50 non-merge source commits');
+  if(ancestor)result={patchEquivalentInOriginal:true,patchEquivalentOriginalCommits:source.map(line=>({worktreeCommit:line.split(' ')[0],originalCommit:line.split(' ')[0]}))};
+  else{
+   const cherry=(await git(repository,['cherry',original,tip,base],undefined,5000)).split('\n').filter(Boolean);
+   if(cherry.some(line=>line.startsWith('+ ')))result={patchEquivalentInOriginal:false,patchEquivalentOriginalCommits:[]};
+   else{
+    const commits=source.map(line=>line.split(' ')[0]);
+    const originalCommits=(await git(repository,['rev-list','--no-merges','--max-count=257',original],undefined,5000)).split('\n').filter(Boolean);
+    const truncated=originalCommits.length>256;
+    const patchIds=async(ids:string[])=>{
+     if(!ids.length)return new Map<string,string>();
+     const patch=await git(repository,['show','--format=commit %H','--no-ext-diff','--no-renames',...ids,'--'],undefined,5000);
+     return new Map((await git(repository,['patch-id','--stable'],patch+'\n',5000)).split('\n').filter(Boolean).map(line=>{const [patchId,commit]=line.split(' ');return [commit,patchId];}));
+    };
+    const [sourceIds,originalIds]=await Promise.all([patchIds(commits),patchIds(originalCommits.slice(0,256))]);
+    const originalsByPatch=new Map<string,string>();for(const [commit,id] of originalIds)if(!originalsByPatch.has(id))originalsByPatch.set(id,commit);
+    const matches:{worktreeCommit:string;originalCommit:string}[]=[];
+    for(const commit of commits){
+     const id=sourceIds.get(commit),match=id&&originalsByPatch.get(id);
+     if(match)matches.push({worktreeCommit:commit,originalCommit:match});
+    }
+    result=matches.length===commits.length&&commits.length>0?{patchEquivalentInOriginal:true,patchEquivalentOriginalCommits:matches}:
+     {patchEquivalentInOriginal:'unknown',patchEquivalentOriginalCommits:matches,patchEquivalentReason:truncated?'Matching original commit is outside the 256-commit inspection window':'Patch identity coverage is incomplete'};
+   }
+  }
+ }catch(error){result={patchEquivalentInOriginal:'unknown',patchEquivalentOriginalCommits:[],patchEquivalentReason:error instanceof Error?error.message:String(error)};}
+ // Avoid caching transient inability to inspect. Immutable commit identities
+ // make successful cached comparisons safe until HEAD/base/tip changes.
+ if(result.patchEquivalentInOriginal!=='unknown'){if(patchInspectionCache.size>=64)patchInspectionCache.delete(patchInspectionCache.keys().next().value!);patchInspectionCache.set(key,result);}
+ return result;
 }
 
 async function verifyPatchEquivalent(repository:string,base:string,tip:string,integrated:string){
@@ -304,7 +400,7 @@ async function verifyPatchEquivalent(repository:string,base:string,tip:string,in
  }
 }
 
-export interface MigrateOptions {dryRun?:boolean;targetRoot?:string}
+export interface MigrateOptions extends MutationOptions {dryRun?:boolean;targetRoot?:string}
 export interface MigrateResult extends ManagedWorktree {dryRun?:boolean;eligible?:boolean;reason?:string;sourcePath:string;destinationPath?:string;restartRequired?:boolean}
 export async function migrateManagedWorktree(value:ManagedWorktree,options:MigrateOptions={}):Promise<MigrateResult>{
  let destinationPath:string|undefined;
@@ -323,6 +419,7 @@ export async function migrateManagedWorktree(value:ManagedWorktree,options:Migra
   if(await fs.lstat(destinationContainer).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))throw Error('Migration destination already exists; refusing collision');
   if(options.dryRun)return {...value,dryRun:true,eligible:true,sourcePath:target,destinationPath,restartRequired:true};
   const head=await git(target,['rev-parse','HEAD']);
+  await options.beforeMutation?.();
   await fs.mkdir(storageRoot,{recursive:true});
   await assertWorktreeStoragePath(storageRoot);
   await fs.mkdir(destinationContainer);
@@ -330,11 +427,11 @@ export async function migrateManagedWorktree(value:ManagedWorktree,options:Migra
   try{
    await verifyRegistration(value,target,repository);
    if(await git(target,['rev-parse','HEAD'])!==head||(await checkoutHealth(target)).checkoutState!=='complete')throw Error('Worktree changed during migration; preserved');
-   await git(repository,['worktree','move',target,destinationPath]);
-  }catch(error){if(!(await fs.readdir(destinationContainer)).length)await fs.rmdir(destinationContainer).catch(()=>{});throw error;}
+   await options.beforeMutation?.();await git(repository,['worktree','move',target,destinationPath]);
+  }catch(error){if(!(await fs.readdir(destinationContainer)).length){await options.beforeMutation?.();await fs.rmdir(destinationContainer).catch(()=>{});}throw error;}
   const result={...value,path:destinationPath,storageRoot,sourcePath:target,destinationPath,restartRequired:true};
   try{await verifyRegistration(result,destinationPath,repository);}catch(error){throw Error(`Worktree moved to ${destinationPath}, but post-migration verification failed. Preserve and reconcile metadata using storageRoot ${storageRoot}; source was ${target}. ${error instanceof Error?error.message:String(error)}`);}
-  if(current&&!(await fs.readdir(container)).length)await fs.rmdir(container).catch(()=>{});
+  if(current&&!(await fs.readdir(container)).length){await options.beforeMutation?.();await fs.rmdir(container).catch(()=>{});}
   return result;
  }catch(error){
   if(options.dryRun)return {...value,dryRun:true,eligible:false,reason:error instanceof Error?error.message:String(error),sourcePath:value.path,...(destinationPath?{destinationPath}:{})};
@@ -343,7 +440,7 @@ export async function migrateManagedWorktree(value:ManagedWorktree,options:Migra
 }
 
 /** Roll back a completed move when the caller cannot persist the new job path. */
-export async function rollbackManagedWorktreeMigration(original:ManagedWorktree,moved:ManagedWorktree):Promise<ManagedWorktree>{
+export async function rollbackManagedWorktreeMigration(original:ManagedWorktree,moved:ManagedWorktree,options:MutationOptions={}):Promise<ManagedWorktree>{
  if(original.state!=='preserved'||moved.state!=='preserved'||original.branch!==moved.branch||original.repository!==moved.repository||original.baseCommit!==moved.baseCommit||original.originalCwd!==moved.originalCwd)throw Error('Migration rollback metadata does not identify the same worktree');
  const source=await ownership(moved),destination=await ownership(original);
  if(source.target===destination.target)throw Error('Migration rollback source and destination are identical');
@@ -351,53 +448,69 @@ export async function rollbackManagedWorktreeMigration(original:ManagedWorktree,
  if((await checkoutHealth(source.target)).checkoutState!=='complete')throw Error('Migration rollback refuses a partial checkout; reconcile metadata manually');
  if(await fs.lstat(destination.target).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;}))throw Error('Migration rollback destination already exists; preserved');
  const tip=await git(source.target,['rev-parse','HEAD']);
- await fs.mkdir(path.dirname(destination.target),{recursive:true});
+ await options.beforeMutation?.();await fs.mkdir(path.dirname(destination.target),{recursive:true});
  if(await canonical(destination.target)!==destination.target)throw Error('Migration rollback destination changed; preserved');
  await verifyRegistration(moved,source.target,source.repository);
  if(await git(source.target,['rev-parse','HEAD'])!==tip)throw Error('Worktree changed during migration rollback; preserved');
- await git(source.repository,['worktree','move',source.target,destination.target]);
+ await options.beforeMutation?.();await git(source.repository,['worktree','move',source.target,destination.target]);
  await verifyRegistration(original,destination.target,destination.repository);
- if(source.current&&!(await fs.readdir(source.container)).length)await fs.rmdir(source.container).catch(()=>{});
+ if(source.current&&!(await fs.readdir(source.container)).length){await options.beforeMutation?.();await fs.rmdir(source.container).catch(()=>{});}
  return {...original};
 }
 
-export interface RecoveryOptions {dryRun?:boolean;action?:'restore'|'remove'}
-export interface RecoveryResult extends ManagedWorktree {dryRun?:boolean;eligible?:boolean;reason?:string;recoveryAction:'restore'|'remove';recoveryBranchPreserved:true}
+export interface RecoveryOptions extends MutationOptions {dryRun?:boolean;action?:'restore'|'remove';unlinkLinks?:boolean}
+export interface RecoveryResult extends ManagedWorktree,Partial<LinkInspection> {dryRun?:boolean;eligible?:boolean;reason?:string;recoveryAction:'restore'|'remove';recoveryBranchPreserved:true;unlinkedPaths?:string[];linkTargetIntegrityVerified?:boolean}
+async function metadataOnlyExceptLinks(root:string){
+ const pending=[root];
+ while(pending.length){
+  const directory=pending.pop()!;
+  for(const name of await fs.readdir(directory)){
+   const item=path.join(directory,name);if(item===path.join(root,'.git'))continue;
+   const stat=await fs.lstat(item);if(stat.isSymbolicLink())continue;
+   if(!stat.isDirectory())return false;pending.push(item);
+  }
+ }
+ return true;
+}
 export async function recoverManagedWorktree(value:ManagedWorktree,verificationSummary:string,options:RecoveryOptions={}):Promise<RecoveryResult>{
  const recoveryAction=options.action??'restore';
+ let linkRemoval:{unlinkedPaths:string[];linkTargetIntegrityVerified:boolean}|undefined;
  try{
   if(value.state==='removed')throw Error('Removed worktree cannot be recovered');
   const {target,repository,container,current}=await ownership(value);
   await verifyRegistration(value,target,repository);
+  const links=await inspectRemovalLinks(target,options.unlinkLinks);
   const head=await git(target,['rev-parse','HEAD']);
   const check=async()=>{
    if(await git(target,['config','--bool','core.sparseCheckout']).catch(()=>'' )==='true'||(await git(target,['ls-files','-t','-z'])).split('\0').some(line=>line.startsWith('S ')))throw Error('Recovery refuses sparse checkout or skip-worktree entries; preserved');
    const health=await checkoutHealth(target);
-   if(health.checkoutState!=='git-metadata-only'||!health.trackedFileCount||health.missingTrackedFileCount!==health.trackedFileCount)throw Error('Recovery requires a metadata-only checkout with every tracked file missing; partial or unknown trees are preserved');
+   if((health.checkoutState!=='git-metadata-only'&&!(options.unlinkLinks&&await metadataOnlyExceptLinks(target)))||!health.trackedFileCount||health.missingTrackedFileCount!==health.trackedFileCount)throw Error('Recovery requires a metadata-only checkout with every tracked file missing; partial or unknown trees are preserved');
    if(await git(target,['diff','--cached','--name-only','HEAD','--']))throw Error('Recovery refuses staged changes; index preserved');
    if(await git(target,['rev-parse','HEAD'])!==head)throw Error('Worktree HEAD changed during recovery; preserved');
   };
   await check();
-  if(options.dryRun)return {...value,dryRun:true,eligible:true,recoveryAction,recoveryBranchPreserved:true};
+  if(options.dryRun)return {...value,dryRun:true,eligible:true,recoveryAction,recoveryBranchPreserved:true,...links,links:links.links.slice(0,20),linksTruncated:links.linkCount>20};
   if(!verificationSummary.trim())throw Error('Recovery requires a parent verification summary acknowledging missing files');
   await verifyRegistration(value,target,repository);
   await check();
+  if(links.linkCount)linkRemoval=await prepareWorktreeRemoval(target,{unlinkLinks:options.unlinkLinks,beforeMutation:options.beforeMutation});
   // The index has already been proven equal to HEAD. Restore its stat/checkout
   // metadata too: worktree-only restore can leave false modifications after EOL
   // conversion when GIT_OPTIONAL_LOCKS=0 prevents a later status refresh.
   // Never reset an index containing staged changes, or delete the branch here.
+  await options.beforeMutation?.();await inspectRemovalLinks(target,false);
   await git(target,['restore','--source='+head,'--staged','--worktree','--','.']);
   await verifyRegistration(value,target,repository);
   if(await git(target,['rev-parse','HEAD'])!==head)throw Error('Worktree HEAD changed during recovery; inspect preserved checkout');
   if((await checkoutHealth(target)).checkoutState!=='complete'||await git(target,['status','--porcelain','--untracked-files=all','--ignored']))throw Error('Restored checkout needs inspection; branch and worktree preserved');
   if(recoveryAction==='remove'){
    if(await git(target,['rev-parse','HEAD'])!==head)throw Error('Worktree HEAD changed during recovery; preserved');
-   await git(repository,['worktree','remove',target]);
-   if(current&&!(await fs.readdir(container)).length)await fs.rmdir(container).catch(()=>{});
+   await removeWorktreeSafely(repository,target,options);
+   if(current&&!(await fs.readdir(container)).length){await options.beforeMutation?.();await fs.rmdir(container).catch(()=>{});}
   }
-  return {...value,state:recoveryAction==='remove'?'removed':'preserved',verificationSummary,recoveryAction,recoveryBranchPreserved:true};
+  return {...value,state:recoveryAction==='remove'?'removed':'preserved',verificationSummary,recoveryAction,recoveryBranchPreserved:true,...linkRemoval};
  }catch(error){
-  if(options.dryRun)return {...value,dryRun:true,eligible:false,reason:error instanceof Error?error.message:String(error),recoveryAction,recoveryBranchPreserved:true};
-  throw error;
+  if(options.dryRun)return {...value,dryRun:true,eligible:false,reason:error instanceof Error?error.message:String(error),...linkErrorDetails(error),recoveryAction,recoveryBranchPreserved:true};
+  throw Object.assign(error instanceof Error?error:Error(String(error)),...(linkRemoval?[linkRemoval]:[]));
  }
 }

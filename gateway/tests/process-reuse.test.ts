@@ -5,10 +5,43 @@ import os from 'node:os';
 import path from 'node:path';
 import {verifyTrackedProcessesAbsent,classifyProcessCleanup} from '../src/process-cleanup.js';
 import {readProcessInventory,type RecordedProcessIdentity,type ProcessInventory} from '../src/process-inventory.js';
-import {trackProcessTree} from '../src/process-tree.js';
+import {trackProcessTree,ownedDescendants} from '../src/process-tree.js';
+import {processIdentityAsync} from '../src/process-identity.js';
+import {verifyFinishedOwnership} from '../src/interrupted-ownership.js';
+import {terminateProcessWithSnapshot} from '../src/process.js';
+import {EventEmitter} from 'node:events';
+import type {ChildProcess} from 'node:child_process';
 const observedAt='2026-10-13T12:00:00.000Z',start='2026-10-13T10:00:00.000Z',end='2026-10-13T11:00:00.000Z';
 const row=(pid:number,createdAt:string|null='2026-10-13T10:30:00.000Z',parentPid=0,imageName='node.exe'):RecordedProcessIdentity=>({pid,parentPid,createdAt,imageName,observedAt});
 const inventory=(rows:RecordedProcessIdentity[],complete=true):ProcessInventory=>({processes:rows,observedAt,complete});
+
+test('reused parent PID cannot adopt a child born before its parent or run root',async()=>{
+ const root={pid:9840,parentPid:1,created:start},old={pid:5764,parentPid:9840,created:'2026-10-13T06:00:00.000Z'},child={pid:100,parentPid:9840,created:end},grandchild={pid:101,parentPid:100,created:'2026-10-13T11:01:00.000Z'},backdated={pid:102,parentPid:100,created:'2026-10-13T10:59:00.000Z'};
+ assert.deepEqual(ownedDescendants([root,old,child,grandchild,backdated],new Map([[root.pid,root]]),root,start).map(row=>row.pid),[9840,100,101]);
+ assert.deepEqual(ownedDescendants([root,child],new Map([[root.pid,root]]),root,'2026-10-13T10:00:01.000Z'),[]);
+ const preciseRoot={...root,created:'windows:638000000000000002'},preciseOld={...old,created:'windows:638000000000000001'};
+ assert.deepEqual(ownedDescendants([preciseRoot,preciseOld],new Map([[root.pid,preciseRoot]]),preciseRoot).map(row=>row.pid),[9840]);
+ const killed:number[]=[];
+ const tracker=trackProcessTree(root.pid,()=>true,{snapshot:async()=>killed.length?[root,old]:[root,old,child],terminate:async pid=>{killed.push(pid);}});await new Promise(resolve=>setTimeout(resolve,0));
+ const result=await tracker.cleanup();assert.deepEqual(result.trackedPids,[100]);assert.deepEqual(killed,[100]);assert.equal(result.verified,true);
+});
+
+test('root termination excludes stale-parent children and refreshes creation before each individual kill',async()=>{
+ for(const changed of [false,true]){
+  const root={pid:1900000000,parentPid:1,created:start},child={pid:1900000001,parentPid:root.pid,created:end},old={pid:1900000002,parentPid:root.pid,created:'2026-10-13T06:00:00.000Z'};
+  const emitter=new EventEmitter(),processFixture=Object.assign(emitter,{pid:root.pid,exitCode:null as number|null,signalCode:null,kill(){this.exitCode=0;emitter.emit('close',0);return true;}}) as unknown as ChildProcess;
+  let calls=0;const killed:number[]=[];
+  const result=await terminateProcessWithSnapshot(processFixture,{snapshot:async()=>{calls++;return [root,old,changed&&calls>1?{...child,created:observedAt}:child];},kill:pid=>{killed.push(pid);}});
+  assert.equal(result,true);assert.deepEqual(killed,changed?[]:[child.pid]);assert.equal(calls,2);
+ }
+});
+
+test('one Windows inventory supplies async lease identity, tracked identity and workspace ownership checks',async()=>{
+ let calls=0;let pending:Promise<ProcessInventory>|undefined;
+ const snapshot=()=>pending??=readProcessInventory({platform:'win32',execute:async()=>{calls++;await new Promise(resolve=>setTimeout(resolve,5));return JSON.stringify([{ProcessId:123,ParentProcessId:0,Name:'fixture.exe',CommandLine:'fixture.exe',CreatedAt:start,CreationKey:'638959536000000000'}]);}});
+ const [identity,proof,ownership]=await Promise.all([processIdentityAsync(123,{platform:'win32',snapshot}),verifyTrackedProcessesAbsent([77],{snapshot}),verifyFinishedOwnership({ownerPid:999,workspacePaths:['C:\\fixture-worktree']},{platform:'win32',snapshot})]);
+ assert.equal(identity,'638959536000000000');assert.deepEqual(proof.absentPids,[77]);assert.equal(ownership.processScan,'passed');assert.equal(calls,1);
+});
 test('same PID different creation is reused, same creation stays alive regardless of renamed image',async()=>{
  const saved=row(77,start),current=row(77,end,0,'chrome.exe');
  const proof=await verifyTrackedProcessesAbsent([77],{trackedProcesses:[saved],snapshot:async()=>inventory([current])});assert.deepEqual(proof.reusedPids,[77]);assert.equal(proof.checks?.[0].currentImageName,'chrome.exe');assert.equal(proof.checks?.[0].recordedCreatedAt,start);

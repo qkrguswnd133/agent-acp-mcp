@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {runGrok,type RunGrokDependencies} from '../src/acp.js';
-import {terminateProcess} from '../src/process.js';
+import {terminateProcess,terminateProcessWithSnapshot} from '../src/process.js';
 import {selectedInput} from './selection-fixture.js';
 
 async function fixture(t:any,mode:'completed'|'hang'|'closed'|'terminal'){
@@ -41,7 +41,9 @@ for await(const line of readline.createInterface({input:process.stdin})){
   getWeeklyUsage:async()=>({status:'unavailable',fresh:false,source:'unavailable',stale:true}),
   getSessionUsage:async()=>({status:'available',sessionId:'completion-fixture',inputTokens:10,outputTokens:5,reasoningTokens:2,totalTokens:15,primaryModelId:'fixture-model'}),
   spawn:((_file:string,_args:string[],options:any)=>{const child=spawn(process.execPath,['--input-type=module','--eval',source],options) as ChildProcessWithoutNullStreams;children.push(child);return child;}) as typeof spawn,
-  terminate:terminateProcess,
+  // This fixture has only its owned root; OS inventory latency is tested in
+  // process-reuse, not inside the ACP protocol's one-second cleanup budget.
+  terminate:child=>terminateProcessWithSnapshot(child,{snapshot:async()=>[]}),
   trackProcessTree:()=>({knownPids:()=>[],cancelCleanup:()=>{},cleanup:async()=>({trackedPids:[],remainingPids:[],verified:true,scope:'observed_descendants'})}),
   timing:{cancelGraceMs:100,cleanupMs:1000,telemetryMs:150,exitGraceMs:10}
  };

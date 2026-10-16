@@ -2,7 +2,7 @@ import {spawn,execFile,type ChildProcess} from 'node:child_process';
 import {homedir} from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {trackProcessTree,type ProcessCleanup} from './process-tree.js';
+import {trackProcessTree,processSnapshot,ownedDescendants,sameObservedCreation,type ProcessCleanup,type ProcessIdentity} from './process-tree.js';
 import {withRootExitEvidence} from './process-cleanup.js';
 
 export function processHome(platform:NodeJS.Platform=process.platform,env:NodeJS.ProcessEnv=process.env){return platform==='win32'?(env.USERPROFILE??env.HOME??homedir()):(env.HOME??homedir());}
@@ -23,30 +23,37 @@ export function safeChildEnv(extra:NodeJS.ProcessEnv={}):NodeJS.ProcessEnv {
   return env;
 }
 
-export async function terminateProcess(p:ChildProcess):Promise<boolean>{
+export function terminateProcess(p:ChildProcess):Promise<boolean>{return terminateProcessWithSnapshot(p);}
+export async function terminateProcessWithSnapshot(p:ChildProcess,options:{snapshot?:()=>Promise<ProcessIdentity[]>;kill?:(pid:number)=>void}={}):Promise<boolean>{
   if(p.exitCode!==null||p.signalCode!==null||!p.pid)return true;
   const closed=new Promise<boolean>(resolve=>{
     const t=setTimeout(()=>resolve(p.exitCode!==null||p.signalCode!==null),5000);
     p.once('close',()=>{clearTimeout(t);resolve(true);});
   });
-  if(process.platform==='win32'){
-    await new Promise<void>(resolve=>execFile(path.join(process.env.SystemRoot??'C:/Windows','System32/taskkill.exe'),['/PID',String(p.pid),'/T','/F'],{windowsHide:true,timeout:4000},()=>resolve()));
-  }else{
-    let descendants:number[]=[];
-    try{
-      const ps=await new Promise<string>((resolve,reject)=>execFile('ps',['-eo','pid=,ppid='],{timeout:3000},(e,stdout)=>e?reject(e):resolve(stdout)));
-      const byParent=new Map<number,number[]>();
-      for(const line of ps.split(/\r?\n/)){const [pidText,ppidText]=line.trim().split(/\s+/);const pid=Number(pidText),ppid=Number(ppidText);if(Number.isFinite(pid)&&Number.isFinite(ppid)){const list=byParent.get(ppid)??[];list.push(pid);byParent.set(ppid,list);}}
-      const visit=(pid:number)=>{for(const child of byParent.get(pid)??[]){visit(child);descendants.push(child);}};visit(p.pid);
-    }catch{}
-    for(const pid of descendants)try{process.kill(pid,'SIGTERM');}catch{}
-    try{p.kill('SIGTERM');}catch{}
-    await new Promise(r=>setTimeout(r,250));
-    for(const pid of descendants)try{process.kill(pid,'SIGKILL');}catch{}
-    if(p.exitCode===null&&p.signalCode===null)try{p.kill('SIGKILL');}catch{}
-    const deadline=Date.now()+4500;
-    while(Date.now()<deadline){let alive=false;for(const pid of descendants)try{process.kill(pid,0);alive=true;}catch{}if(!alive)break;await new Promise(r=>setTimeout(r,50));}
+  // Recursive taskkill and PPID-only ps walks adopt old children after PID
+  // reuse. Establish a creation-consistent tree, then refresh each candidate
+  // immediately before its individual kill. Inspection snapshots are never
+  // cached across destructive actions.
+  const deadline=Date.now()+4000;
+  const snapshot=async()=>{
+    let timer:NodeJS.Timeout|undefined;
+    try{return await Promise.race([(options.snapshot??processSnapshot)(),new Promise<never>((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('Process identity deadline')),Math.max(1,Math.min(1500,deadline-Date.now())));
+    })]);}
+    finally{clearTimeout(timer);}
+  };
+  let descendants:ProcessIdentity[]=[];
+  try{
+    const rows=await snapshot(),root=rows.find(row=>row.pid===p.pid);
+    if(root&&p.exitCode===null&&p.signalCode===null)descendants=ownedDescendants(rows,new Map([[root.pid,root]]),root).filter(row=>row.pid!==root.pid).reverse();
+  }catch{}
+  for(const identity of descendants){
+    if(Date.now()>=deadline)break;
+    try{const current=(await snapshot()).find(row=>row.pid===identity.pid);if(sameObservedCreation(current,identity)){if(options.kill)options.kill(identity.pid);else process.kill(identity.pid,'SIGKILL');}}catch{}
   }
+  // ChildProcess owns its root; use its native handle, never PID recursion.
+  if(p.exitCode===null&&p.signalCode===null)try{p.kill(process.platform==='win32'?'SIGKILL':'SIGTERM');}catch{}
+  if(process.platform!=='win32'){await new Promise(resolve=>setTimeout(resolve,250));if(p.exitCode===null&&p.signalCode===null)try{p.kill('SIGKILL');}catch{}}
   return closed;
 }
 

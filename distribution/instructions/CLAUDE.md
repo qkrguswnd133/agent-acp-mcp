@@ -25,6 +25,7 @@ Expected tools:
 - `agent_job_wait`, `agent_job_status`, `agent_job_cancel`: background progress and cancellation.
 - `agent_worktree_status`, `agent_worktree_list`, `agent_worktree_cleanup`: inspect and safely clean managed worktrees.
 - `agent_worktree_migrate`, `agent_worktree_recover`: explicitly move intact checkouts or recover narrowly verified metadata-only checkouts.
+- `agent_operation_status`: background worktree maintenance progress, timings and results.
 - `agent_cli_status`, `agent_cli_update`: diagnostics and explicitly requested maintenance.
 
 The gateway detects its host from MCP client information. Do not set `MCP_HOST`, impersonate a different host, or bypass self-provider policy. If the detected host is unknown or inconsistent with the actual client, stop external routing and diagnose the connection. Continue independent local work when possible.
@@ -43,7 +44,7 @@ For writes, prefer one explicit provider and a bounded scope. Multiple implement
 
 ## Background jobs, limits, and partial work
 
-An accepted job ID is not completion. Prefer `agent_job_wait(job_id, timeout_seconds=25)`; repeat when wait.timed_out is true. A timeout or cancelled wait does not cancel the job. `agent_job_status` remains available. Full `result.text` and `result.results[*].text` are preserved; command logs and raw events are compacted. The usual 64 KiB response budget can be exceeded to preserve result bodies, reported by `payload.responseLimitExceededByReview`, `contentBytes` and `serializedContentBytes`. Use artifacts or explicit verbose=true when full diagnostics are needed. Inspect outcome, successful and failed results, skipped providers, and handoff information; a completed background job can still contain provider failures.
+An accepted job ID is not completion. Prefer `agent_job_wait(job_id, timeout_seconds=25)`; repeat when wait.timed_out is true. A timeout or cancelled wait does not cancel the job. `agent_job_status` remains available. Complete result bodies and diagnostics are preserved in immutable artifacts. MCP output is below 20 KiB, including verbose requests. Follow `details.artifact.path` to read full JSON; `verbose=true` requests that reference instead of unlimited inline output. Inspect outcome, successful and failed results, skipped providers, and handoff information; a completed background job can still contain provider failures.
 
 For ordinary bounded implementation, prefer explicitly passing `max_runtime_minutes=60` when that parameter exists. The current gateway default is 120 minutes when omitted; 60 minutes is this workflow's preference, not a claim about the runtime default. Split larger work at verifiable milestones or choose a longer supported deadline when the task warrants it.
 
@@ -80,7 +81,7 @@ Inspect parentVerification even when a provider reports success. A required stat
 
 Use agent_implement workspace_mode=auto for conflict-triggered isolation, current to retain blocking, or isolated for explicit separation. When the source has uncommitted changes, choose base_ref only after verifying the committed starting point contains the task prerequisites; uncommitted changes are never copied.
 
-When a job returns worktree metadata, inspect it with agent_worktree_status, review changes, resolve integration conflicts, commit and integrate into the original workspace, then test the integrated result. After success, remove reviewed disposable artifacts and call agent_worktree_cleanup with verified=true, integration_ref=HEAD and a factual verification_summary. Do not report integration complete before verification. Only cleanEmpty worktrees are automatically removed after completion/failure/cancellation; commitEmpty means only tip equals base and is not enough. Partial changes, unintegrated commits, dirty worktrees and interrupted jobs remain preserved.
+When a job returns worktree metadata, inspect it with agent_worktree_status, review changes, resolve integration conflicts, commit and integrate into the original workspace, then test the integrated result. After success, preserve build artifacts for explicit remove_ignored_artifacts and call agent_worktree_cleanup with verified=true, integration_ref=HEAD and a factual verification_summary. Do not report integration complete before verification. Only cleanEmpty worktrees are automatically removed after completion/failure/cancellation; commitEmpty means only tip equals base and is not enough. Partial changes, unintegrated commits, dirty worktrees and interrupted jobs remain preserved.
 
 Inspect agent_worktree_list and preview batch cleanup with job_ids plus dry_run=true. Disk scanning is opt-in with include_disk_size=true; inventory uses at most four concurrent inspections. Unrelated original edits do not prevent cleanup. Read-only Git commands must be submitted individually, without shell operators or chaining. For cherry-picks, allow_patch_equivalent=true optionally checks every source commit against current original HEAD and verifies matching current trees on every touched path; its default is false. Merge commits, incomplete coverage and later reverts/edits are refused. Parent verification is still required for apply; patch-equivalent previews also need a verification_summary. Never force-delete to bypass a failed check.
 
@@ -124,3 +125,11 @@ For a finished job whose cleanup was unverified, supply `idle_confirmed=true` an
 All providers reuse the existing Gradle home/cache. Use `--no-daemon`, preserve `GRADLE_USER_HOME`, and do not delete build artifacts or run clean just to tidy the worktree. Parent can use `remove_ignored_artifacts=true` after integration review. A missing Wrapper distribution may download even with `--offline`; report missing cache entries and obtain user authorization before downloading. Report observed download targets. Absence of download telemetry is not proof of no network activity. Shared user caches and old task Gradle homes must not be deleted automatically.
 
 Linux and WSL use the same signed Gateway package and `agent-acp update`; the Monitor is a Windows component. Preserve the configured external state directory when upgrading. Never update or restart while an active job has not finished, and never copy authentication across operating systems.
+
+## Gateway 2.7.0 maintenance
+
+Cleanup, forget, migrate and recover default to background=true, including dry_run. An operation_id is acceptance, not completion: poll agent_operation_status until terminal and inspect result, every bulk target and phase timings. Never resubmit while active. background=false is an explicit compatibility option with host-timeout risk. Abort/EOF does not cancel accepted maintenance; no automatic replay occurs after interruption.
+
+Inspect links and linksScanComplete before cleanup. Default cleanup preserves junctions/symlinks; unlink_links=true authorizes removing untracked link objects only, after review and target metadata verification. Never force-delete or traverse their targets. Review handoff.worktreeLinkWarning, partial unlinkedPaths/removedIgnoredPaths and lockRecovery. Stale lock recovery is audited by owner birth identity/expiry; do not manually delete a live owner lease. patchEquivalentInOriginal is a historical hint, not cleanup authorization.
+
+A remaining process with unrelated or unknown workspace evidence preserves a successful turn with processCleanupWarning. Inspect processWorkspaceCheck and handoff; physical cleanup still requires its strict fresh checks. Never terminate a process solely by a reused PID or old PPID.

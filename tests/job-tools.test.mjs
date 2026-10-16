@@ -17,7 +17,7 @@ const gateway=path.join(fixture,'gateway'),jobs=path.join(gateway,'state/jobs'),
 const previousStorage=process.env.AGENT_MCP_WORKTREE_DIR;process.env.AGENT_MCP_WORKTREE_DIR=path.join(fixture,'worktrees');
 await fs.cp(path.join(repoRoot,'gateway/dist'),path.join(gateway,'dist'),{recursive:true});
 await fs.copyFile(path.join(repoRoot,'gateway/package.json'),path.join(gateway,'package.json'));
-await fs.symlink(path.join(repoRoot,'gateway/node_modules'),path.join(gateway,'node_modules'),'junction');await fs.mkdir(jobs,{recursive:true});await fs.mkdir(repo);
+await fs.cp(path.join(repoRoot,'gateway/node_modules'),path.join(gateway,'node_modules'),{recursive:true,filter:async file=>!(await fs.lstat(file)).isSymbolicLink()});await fs.mkdir(jobs,{recursive:true});await fs.mkdir(repo);
 const git=async(...args)=>(await exec('git',['-c','user.name=Fixture','-c','user.email=fixture@example.invalid',...args],{cwd:repo,windowsHide:true})).stdout.trim();
 await git('init');await fs.writeFile(path.join(repo,'base.txt'),'base');await git('add','.');await git('commit','-m','base');
 const entries=[];for(let n=0;n<2;n++){const id=randomUUID(),created=await createManagedWorktree({cwd:repo,task:'fixture'},id);entries.push({id,worktree:created.worktree});await fs.writeFile(path.join(jobs,id+'.json'),JSON.stringify({job_id:id,kind:'agent_implement',cwd:created.input.cwd,status:'failed',ownerPid:process.pid,startedAt:'2020-01-01T00:00:00Z',lastActivityAt:'2020-01-01T00:00:00Z',worktree:{...created.worktree,createdAt:'2020-01-01T00:00:00Z'},result:{error:'fixture task failure'}}));}
@@ -27,10 +27,13 @@ const largeId=randomUUID(),full={job_id:largeId,kind:'agent_review',cwd:repo,sta
 await fs.writeFile(path.join(jobs,largeId+'.json'),JSON.stringify(await persistJobPayload(full,jobs)));
 const activeId=randomUUID(),active={job_id:activeId,kind:'agent_ask',cwd:repo,status:'running',ownerPid:process.pid,startedAt:new Date().toISOString(),lastActivityAt:new Date().toISOString()};await fs.writeFile(path.join(jobs,activeId+'.json'),JSON.stringify(active));
 const client=new Client({name:'codex-lifecycle-verifier',version:'1.0.0'});
-const call=async(name,args={},options)=>{const r=await client.callTool({name,arguments:args},options);if(r.isError)throw Error(r.content[0].text);return JSON.parse(r.content[0].text);};
+const rawCall=async(name,args={},options)=>{const r=await client.callTool({name,arguments:args},options);if(r.isError)throw Error(r.content[0].text);assert(Buffer.byteLength(JSON.stringify(r))<20*1024);return JSON.parse(r.content[0].text);};
+const call=async(name,args={},options)=>{let value=await rawCall(name,args,options);if(value.operation_id&&value.status==='queued'){for(let i=0;i<600;i++){await new Promise(r=>setTimeout(r,50));const status=await rawCall('agent_operation_status',{operation_id:value.operation_id});if(status.status==='failed')throw Error(JSON.stringify(status));if(status.status==='completed')return status.result??JSON.parse(await fs.readFile(status.details.artifact.path,'utf8')).result;}throw Error('Background operation did not finish');}return value;};
 try{
  await client.connect(new StdioClientTransport({command:process.execPath,args:[path.join(gateway,'dist/src/index.js')],env:{...process.env,GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false',AGENT_MCP_STATE_DIR:path.join(fixture,'quota')},stderr:'pipe'}));
- const listing=await client.listTools();for(const n of ['agent_worktree_list','agent_worktree_cleanup','agent_worktree_forget','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(t=>t.name===n));
+ const listing=await client.listTools();for(const n of ['agent_operation_status','agent_worktree_list','agent_worktree_cleanup','agent_worktree_forget','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(t=>t.name===n));
+ assert.equal(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.background.default,true);
+ assert.equal(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.unlink_links.default,false);
  assert.ok(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.idle_confirmed);
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.dry_run.default,true);
  assert.ok(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.idle_confirmed);
@@ -40,8 +43,8 @@ try{
  assert.equal((await call('agent_worktree_list')).total,2);
  const preview=await call('agent_worktree_cleanup',{job_ids:entries.map(e=>e.id),dry_run:true});assert.equal(preview.results[0].eligible,true);assert.equal(preview.results[1].ok,false);assert(await fs.stat(entries[0].worktree.path));
  const cleaned=await call('agent_worktree_cleanup',{job_ids:entries.map(e=>e.id)});assert.equal(cleaned.results[0].worktree.state,'removed');assert.equal(cleaned.results[1].ok,false);
- const compact=await call('agent_job_status',{job_id:largeId});assert(Buffer.byteLength(JSON.stringify(compact))<=65536);assert.ok(compact.payload.artifact);assert.equal(compact.result.results[0].text,reviewText);
- assert.equal((await call('agent_job_status',{job_id:largeId,verbose:true})).result.results[0].rawEvents.length,764000);
+ const compact=await call('agent_job_status',{job_id:largeId});assert(Buffer.byteLength(JSON.stringify(compact))<20*1024);assert.ok(compact.details.artifact);assert.equal(JSON.parse(await fs.readFile(compact.details.artifact.path,'utf8')).result.results[0].text,reviewText);
+ const verbose=await call('agent_job_status',{job_id:largeId,verbose:true});assert.equal(JSON.parse(await fs.readFile(verbose.details.artifact.path,'utf8')).result.results[0].rawEvents.length,764000);
  assert.equal((await call('agent_job_wait',{job_id:largeId,timeout_seconds:0})).wait.completed,true);
  assert.equal((await call('agent_job_wait',{job_id:activeId,timeout_seconds:0.1})).wait.timed_out,true);
  const abort=new AbortController(),waiting=call('agent_job_wait',{job_id:activeId,timeout_seconds:25},{signal:abort.signal});setTimeout(()=>abort.abort(),100);await assert.rejects(waiting);assert.equal((await call('agent_job_status',{job_id:activeId})).status,'running');
@@ -49,11 +52,12 @@ try{
  await fs.writeFile(path.join(jobs,activeId+'.json'),JSON.stringify({...active,status:'completed'}));
  const orphanId=randomUUID(),orphan=(await createManagedWorktree({cwd:repo,task:'orphan fixture'},orphanId)).worktree;
  await git('worktree','remove',orphan.path);await git('update-ref','-d','refs/heads/'+orphan.branch,orphan.baseCommit);
- const orphanFile=path.join(jobs,orphanId+'.json'),orphanJob={job_id:orphanId,kind:'agent_implement',cwd:orphan.path,status:'failed',ownerPid:process.pid,startedAt:'2020-01-01T00:00:00Z',lastActivityAt:'2020-01-01T00:00:00Z',worktree:orphan,result:{text:'Historical partial work',error:'fixture error'}};
- await fs.writeFile(orphanFile,JSON.stringify(orphanJob));
+ const trackedPids=Array.from({length:160},(_,i)=>1_900_000_000+i);
+ const orphanFile=path.join(jobs,orphanId+'.json'),orphanJob={job_id:orphanId,kind:'agent_implement',cwd:orphan.path,status:'failed',ownerPid:process.pid,startedAt:'2020-01-01T00:00:00Z',finishedAt:'2020-01-01T00:10:00Z',lastActivityAt:'2020-01-01T00:10:00Z',worktree:orphan,result:{text:'Historical partial work',error:'fixture error',childCleanedUp:false,processCleanup:{verified:false,remainingPids:[],trackedPids,at:'2020-01-01T00:10:00Z'}}};
+ await fs.writeFile(orphanFile,JSON.stringify(await persistJobPayload(orphanJob,jobs)));
  assert.equal((await call('agent_worktree_forget',{job_id:orphanId})).worktree.eligible,true);
  assert.equal(JSON.parse(await fs.readFile(orphanFile,'utf8')).worktree.state,'preserved');
- assert.equal((await call('agent_worktree_forget',{job_id:orphanId,dry_run:false,verified:true,verification_summary:'All references confirmed absent'})).record_only,true);
+ const forgotten=await call('agent_worktree_forget',{job_id:orphanId,dry_run:false,verified:true,acknowledge_process_warning:true,verification_summary:'All references confirmed absent; retained PID warning reviewed'});assert.equal(forgotten.record_only,true);assert.equal(forgotten.trackedProcessCheck,undefined);
  assert.equal((await call('agent_worktree_list')).total,0);assert.equal((await call('agent_job_status',{job_id:orphanId})).result.text,'Historical partial work');
  console.log(JSON.stringify({pass:true,host:'codex',bulkDryRun:true,safeBatch:true,oldWarning:true,compactBytes:Buffer.byteLength(JSON.stringify(compact)),fullBytes:Buffer.byteLength(JSON.stringify(full)),verboseRestored:true,waitCompleted:true,waitTimeout:true,waitCancellationLeavesJobRunning:true}));
 }finally{await client.close();for(const entry of entries){if(await fs.stat(entry.worktree.path).catch(()=>false)){await fs.unlink(path.join(entry.worktree.path,'retain.txt')).catch(()=>{});await git('worktree','remove',entry.worktree.path);await git('update-ref','-d','refs/heads/'+entry.worktree.branch,entry.worktree.baseCommit);}}await fs.rm(fixture,{recursive:true,force:true});if(previousStorage===undefined)delete process.env.AGENT_MCP_WORKTREE_DIR;else process.env.AGENT_MCP_WORKTREE_DIR=previousStorage;}

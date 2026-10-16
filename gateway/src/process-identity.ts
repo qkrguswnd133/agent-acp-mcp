@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import {execFileSync} from 'node:child_process';
+import {readProcessInventory,type ProcessInventory} from './process-inventory.js';
 
 export interface IdentityOptions {platform?:NodeJS.Platform;procRoot?:string;uid?:number;}
 /** /proc stat comm can contain spaces and parentheses; field 22 is starttime. */
@@ -9,6 +9,7 @@ export function linuxStartTicks(stat:string):string|undefined {
   const fields=stat.slice(end+1).trim().split(/\s+/);
   return /^\d+$/.test(fields[19]??'')?fields[19]:undefined;
 }
+/** Shell-free Linux registry identity; Windows callers use the async variant. */
 export function processIdentity(pid:number,options:IdentityOptions={}):string|undefined {
   if(!Number.isSafeInteger(pid)||pid<1)return undefined;
   const platform=options.platform??process.platform;
@@ -25,7 +26,23 @@ export function processIdentity(pid:number,options:IdentityOptions={}):string|un
       if(!ticks||!/^[0-9a-f-]{36}$/i.test(boot))return undefined;
       return `linux:${boot}:${ticks}:${uid}`;
     }
-    if(platform==='win32')return execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`],{encoding:'utf8',timeout:3000,windowsHide:true}).trim();
   }catch{}
   return undefined;
+}
+
+let pendingWindowsInventory:Promise<ProcessInventory>|undefined;
+/** Async Windows callers share an in-flight inventory, never a stale PID cache. */
+export async function processIdentityAsync(pid:number,options:IdentityOptions&{snapshot?:()=>Promise<ProcessInventory>}={}):Promise<string|undefined>{
+  if(!Number.isSafeInteger(pid)||pid<1)return undefined;
+  if((options.platform??process.platform)!=='win32')return processIdentity(pid,options);
+  try{
+    let inventory:ProcessInventory;
+    if(options.snapshot)inventory=await options.snapshot();
+    else{
+      const pending=pendingWindowsInventory??=readProcessInventory({platform:'win32'});
+      try{inventory=await pending;}finally{if(pendingWindowsInventory===pending)pendingWindowsInventory=undefined;}
+    }
+    const key=inventory.processes.find(row=>row.pid===pid)?.creationKey;
+    return typeof key==='string'&&/^windows:\d{15,20}$/.test(key)?key.slice('windows:'.length):undefined;
+  }catch{return undefined;}
 }

@@ -2,7 +2,9 @@
 
 ## 2.6.0 Linux / WSL 업데이트
 
-현재 배포는 **2.6.3**, Gateway는 **2.6.2**, Windows Monitor는 **1.3.1**입니다. Gateway 2.6.2는 기록과 PID 경고를 보존하는 명시적 forget을 지원하며, PID 재사용 판정·전체 추적 목록 표시·옛 Gradle 홈의 명시적 정리를 지원합니다. Monitor 1.3.1은 WSL 확인 완료 후 게이지가 남는 표시 오류를 수정합니다. Windows 설치 방식은 그대로이며 Linux·WSL은 [별도 Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치합니다. Windows용 ZIP이나 Node 모듈 폴더를 임의 복사하지 말고 `Agent-ACP-MCP-Linux-*.tar.gz`와 서명된 Linux manifest를 사용하세요.
+현재 배포는 **2.7.0**, Gateway는 **2.7.0**, Windows Monitor는 **1.3.1**입니다. junction 안전 검사, 백그라운드 worktree 정리, 자동 만료와 감사 기록이 있는 잠금, 무관 프로세스 오인 방지, 20 KiB 미만 응답과 patch 대응 표시를 지원합니다. Windows 업데이트 방법은 그대로이며 Linux·WSL은 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치합니다. Windows ZIP이나 Node 모듈을 임의 복사하지 말고 서명된 Linux tar.gz를 사용하세요.
+
+**2.7.0 도구 변경:** cleanup·forget·migrate·recover는 dry_run도 `operation_id`를 즉시 반환합니다. `agent_operation_status`로 완료/실패와 결과를 확인하세요. `background=false`는 기존 동기 동작을 선택하지만 큰 폴더에서는 호스트 요청 제한에 걸릴 수 있습니다. `verbose=true`도 전체 결과의 artifact 경로를 반환합니다. 업데이트 후 MCP를 재연결하고 배포본의 Parent 지침을 병합하세요. 현재 개인 설정·지침은 자동 변경하지 않습니다.
 
 Linux의 기본 프로그램 경로는 `~/.local/share/agent-acp-mcp`, 상태 경로는 `~/.local/state/agent-acp-mcp`입니다. 기존 MCP 설정에 `AGENT_MCP_STATE_DIR`이 있으면 첫 설치의 `--state-dir`에 동일한 **절대 경로**를 지정하세요. 기존 작업·설정은 충돌 시 덮어쓰지 않으며 백업을 보존합니다. 구버전 Gateway는 먼저 MCP 연결을 해제해야 합니다. 사용자 CLI와 로그인 정보는 변경하지 않습니다.
 
@@ -79,7 +81,7 @@ Codex 결과는 CLI JSON의 실행 정보를 우선 사용하고, 값이 없으�
 
 **2.3.0 이전 후 호출 변경:** `auto` 모델·effort는 Parent가 작업에 따라 선택해야 합니다. MCP를 재연결해 `agent_models`와 새 입력 설명을 불러오고, `instructions/` 템플릿의 Parent 선택 규칙을 현재 에이전트 지침에 병합하세요. 단일 provider는 `model`, `effort`, `selection_reason`, 복수/auto 라우팅은 `provider_options.<provider>`를 사용합니다. 고정 환경설정과 충돌하는 값이나 미해결 auto는 실행 전에 거절됩니다. 모니터는 선택값과 실제 확인값을 구분합니다.
 
-**2.5.0 작업 관리:** MCP 재연결 후 worktree 이동·복구 도구와 새 입력 설명을 불러오세요. 기존 worktree는 자동 이동하거나 일괄 삭제하지 않습니다. 리뷰 본문인 `result.text`와 `result.results[*].text`는 항상 전체를 반환합니다. 명령 출력·rawEvents 등은 줄이고 원본은 `state/jobs`의 artifact에 보존합니다. 응답의 기본 예산은 64 KiB이며 본문 보존으로 초과하면 `payload.responseLimitExceededByReview=true`와 본문 바이트 수를 표시합니다. `verbose=true`는 원본 로그까지 복원합니다. 호출 앱 자체의 출력 제한은 별도로 적용될 수 있습니다. 안전 조건을 만족하는 `cleanEmpty` worktree만 완료·실패·취소 후 자동 정리됩니다.
+**2.5.0 작업 관리:** MCP 재연결 후 worktree 이동·복구 도구와 새 입력 설명을 불러오세요. 기존 worktree는 자동 이동하거나 일괄 삭제하지 않습니다. 2.7.0에서는 본문·PID·명령 진단을 전체 artifact로 보존하고 MCP 응답을 20 KiB 미만으로 제한합니다. `details.artifact.path`로 전체 JSON을 읽고, `verbose=true`로 명시적으로 파일 경로를 요청할 수 있습니다. 안전 조건을 만족하는 `cleanEmpty` worktree만 완료·실패·취소 후 자동 정리됩니다.
 
 **v2.2.0 / Monitor 1.1.0 사용자:** Electron의 `app.asar` 압축 해제 오류 때문에 앱 내 업데이트가 설치 준비 중 멈출 수 있습니다. 이번 v2.2.1 ZIP의 `Update.ps1`을 한 번 실행하세요. Monitor 1.1.1에서 해당 오류를 수정했습니다.
 
