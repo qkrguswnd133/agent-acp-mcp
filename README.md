@@ -29,6 +29,8 @@ Windows Monitor의 업데이트 창에는 **WSL Gateway** 목록이 있습니다
 
 ## 업데이트
 
+**2.7.0 / Gateway 2.7.0 / Monitor 1.3.1:** junction 안전 검사와 명시적 링크 제거, 소유자·만료를 기록하는 정리 잠금, 백그라운드 maintenance, PID 재사용에 따른 무관 프로세스 오인 방지, 20 KiB 미만 MCP 응답, cherry-pick 대응 표시를 추가했습니다. `operation_id`는 접수이며 `agent_operation_status`로 완료를 확인합니다. Windows와 Linux/WSL에 동일한 수정이 포함됩니다. [원인·수정·검증 및 제한](gateway/MAINTENANCE-SAFETY.md)을 확인하세요.
+
 **2.6.3 / Gateway 2.6.2 / Monitor 1.3.1:** `forget`을 파일 삭제와 분리했습니다. 경로·브랜치·Git 등록이 모두 없는 종료 작업은 PID 경고를 명시적으로 확인한 뒤 목록에서 숨길 수 있습니다. 원래 작업 상태·결과 첨부·PID 경고를 보존하며, `cleanup`의 프로세스 차단은 유지합니다.
 
 **2.6.2 / Gateway 2.6.1 / Monitor 1.3.1:** PID 생성 시각으로 재사용을 구분합니다. 정리·forget의 PID별 근거와 전체 추적 목록 위치를 표시하며, 옛 작업별 Gradle 홈의 목록·명시적 정리 도구를 추가했습니다. 확인 불가 상태는 계속 차단하고 기존 기록과 사용자 공용 캐시는 보존합니다. [동작과 사용법](gateway/JOB-LIFECYCLE.md#process-identity-and-historical-pid-reuse)을 확인하세요.
