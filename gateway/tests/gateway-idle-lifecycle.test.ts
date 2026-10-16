@@ -7,7 +7,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
-test('idle gateway stays alive with host stdin open and exits promptly on EOF without provider calls',{timeout:30000},async()=>{
+test('idle gateway stays alive with host stdin open and exits promptly on EOF without provider calls',{timeout:60000},async()=>{
  const source=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),root=await fs.mkdtemp(path.join(os.tmpdir(),'gateway-idle-lifecycle-')),gateway=path.join(root,'gateway');
  let child:ReturnType<typeof spawn>|undefined;
  try{
@@ -20,7 +20,8 @@ test('idle gateway stays alive with host stdin open and exits promptly on EOF wi
   child=spawn(process.execPath,[path.join(gateway,'dist/src/index.js')],{cwd:gateway,windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false',AGENT_MCP_STATE_DIR:path.join(root,'state')}});
   let stderr='';child.stderr!.on('data',value=>{stderr+=String(value);});child.stdout!.on('data',()=>{});
   const exited=new Promise<number|null>((resolve,reject)=>{child!.once('exit',resolve);child!.once('error',reject);});
-  for(let i=0;i<100&&!stderr.includes('agent_bridge_start');i++){assert.equal(child.exitCode,null,stderr);await new Promise(resolve=>setTimeout(resolve,25));}
+  const startupDeadline=Date.now()+15_000;
+  while(!stderr.includes('agent_bridge_start')&&Date.now()<startupDeadline){assert.equal(child.exitCode,null,stderr);assert.equal(child.signalCode,null,stderr);await new Promise(resolve=>setTimeout(resolve,25));}
   assert.match(stderr,/agent_bridge_start/);
   await new Promise(resolve=>setTimeout(resolve,200));assert.equal(child.exitCode,null,stderr);
   child.stdin!.end();let timeout:NodeJS.Timeout|undefined;

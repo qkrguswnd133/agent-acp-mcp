@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {spawn} from 'node:child_process';
 import {parseClaudeTerminalResult,runClaudeCommand} from '../src/claude-execution.js';
-import {safeChildEnv} from '../src/process.js';
+import {safeChildEnv,spawnPlan,terminateProcessWithSnapshot} from '../src/process.js';
 import {selectedInput} from './selection-fixture.js';
 
 const hanging='setInterval(()=>{},1000);';
@@ -25,15 +26,54 @@ test('Final-looking Claude prose is not a completion signal and deadline remains
 
 async function fixture(source:string,run:(provider:any,root:string)=>Promise<void>){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'claude-completion-')),command=path.join(root,process.platform==='win32'?'cli.cmd':'cli.sh');
+ const stopFile=root+'.stop',pidFile=path.join(root,'fixture-process.json');
  const env={CLAUDE_CLI:command,CLAUDE_CONFIG_DIR:root,AGENT_MCP_STATE_DIR:path.join(root,'state'),CLAUDE_MODEL:'auto',CLAUDE_EFFORT:'auto',GRADLE_USER_HOME:path.join(root,'existing-gradle-cache')};
  const previous=new Map(Object.keys(env).map(key=>[key,process.env[key]]));
  try{
-  await fs.writeFile(path.join(root,'cli.mjs'),`import fs from 'node:fs';import path from 'node:path';const args=process.argv.slice(2);const id=args[args.indexOf('--session-id')+1];const transcript=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','fixture',id+'.jsonl');fs.mkdirSync(path.dirname(transcript),{recursive:true});${source}`);
+  // A deliberately hanging mock still needs independent teardown when safe
+  // production cleanup cannot prove ownership during a slow/unavailable scan.
+  // Only this fixture knows the unique stop path; no PID is killed here.
+  await fs.writeFile(path.join(root,'cli.mjs'),`import fs from 'node:fs';import path from 'node:path';fs.writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({pid:process.pid}));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)}))process.exit(0);},50).unref();const args=process.argv.slice(2);const id=args[args.indexOf('--session-id')+1];const transcript=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','fixture',id+'.jsonl');fs.mkdirSync(path.dirname(transcript),{recursive:true});${source}`);
   if(process.platform==='win32')await fs.writeFile(command,`@echo off\r\n"${process.execPath}" "%~dp0cli.mjs" %*\r\n`);
   else{await fs.writeFile(command,`#!/bin/sh\n"${process.execPath}" "$(dirname "$0")/cli.mjs" "$@"\n`);await fs.chmod(command,0o755);}
   Object.assign(process.env,env);const {ClaudeProvider}=await import(`../src/providers/claude.js?completion=${Math.random()}`);await run(new ClaudeProvider(),root);
- }finally{for(const [key,value] of previous){if(value===undefined)delete process.env[key];else process.env[key]=value;}await fs.rm(root,{recursive:true,force:true});}
+ }finally{
+  for(const [key,value] of previous){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  // Keep the stop marker outside the mock cwd so removal retries cannot erase
+  // it before the mock observes it. All paths belong to this temporary fixture.
+  await fs.writeFile(stopFile,'stop');
+  const pid=await fs.readFile(pidFile,'utf8').then(text=>JSON.parse(text).pid as unknown).catch(()=>undefined),deadline=Date.now()+10_000;
+  if(typeof pid==='number'&&Number.isSafeInteger(pid)&&pid>0){
+   while(true){
+    try{process.kill(pid,0);}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')break;throw error;}
+    if(Date.now()>=deadline)throw Error(`Fixture mock ${pid} did not stop; preserved at ${root}`);
+    await new Promise(resolve=>setTimeout(resolve,50));
+   }
+  }
+  while(true){
+   try{await fs.rm(root,{recursive:true,force:true});break;}catch(error){if(!['EBUSY','EPERM','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code??'')||Date.now()>=deadline)throw error;await new Promise(resolve=>setTimeout(resolve,100));}
+  }
+  await fs.unlink(stopFile);
+ }
 }
+
+test('mock teardown cooperatively stops a surviving child when ownership inventory is unavailable',{skip:process.platform!=='win32'},async()=>{
+ let childPid:number|undefined;
+ await fixture(`process.stdout.write(JSON.stringify({pid:process.pid})+'\\n');${hanging}`,async(_provider,root)=>{
+  const plan=spawnPlan(process.env.CLAUDE_CLI!,['--session-id','fixture'],root);
+  const wrapper=spawn(plan.command,plan.args,{cwd:root,env:safeChildEnv(),windowsHide:true,windowsVerbatimArguments:plan.windowsVerbatimArguments,stdio:['pipe','pipe','pipe']});
+  try{
+   childPid=await new Promise<number>((resolve,reject)=>{
+    let text='';const timer=setTimeout(()=>reject(Error('Fixture startup deadline')),10_000);
+    wrapper.once('error',error=>{clearTimeout(timer);reject(error);});
+    wrapper.stdout.on('data',chunk=>{text+=String(chunk);try{const data=JSON.parse(text.trim());clearTimeout(timer);resolve(data.pid);}catch{}});
+   });
+   await terminateProcessWithSnapshot(wrapper,{snapshot:async()=>{throw Error('Injected unavailable process inventory');}});
+   assert.ok(wrapper.exitCode!==null||wrapper.signalCode!==null);assert.doesNotThrow(()=>process.kill(childPid!,0));
+  }finally{if(wrapper.exitCode===null&&wrapper.signalCode===null)wrapper.kill('SIGKILL');wrapper.stdin.destroy();wrapper.stdout.destroy();wrapper.stderr.destroy();wrapper.unref();}
+ });
+ assert.throws(()=>process.kill(childPid!,0),(error:any)=>error.code==='ESRCH');
+});
 const transcriptSource=`fs.writeFileSync(transcript,JSON.stringify({type:'assistant',sessionId:id,cwd:process.cwd(),effort:'high',message:{model:'claude-observed',content:[{type:'text',text:'Partial transcript answer'}],usage:{input_tokens:17,output_tokens:2}}}));`;
 test('Hanging Claude successful result preserves model, effort, usage, session and JSONL attribution',()=>fixture(
  `fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR,'env.json'),JSON.stringify({gradle:process.env.GRADLE_USER_HOME,args,cwd:process.cwd()}));${transcriptSource}process.stdout.write(JSON.stringify({type:'result',is_error:false,session_id:id,result:'Complete answer',effort:'high',modelUsage:{'claude-observed':{inputTokens:31}},usage:{input_tokens:31,output_tokens:4}}));${hanging}`,

@@ -7,7 +7,9 @@ let status=1;
 try{
  const requested=process.argv.slice(2),smoke=requested[0]==='--smoke';
  const files=requested.length&&!smoke?requested:readdirSync(new URL('../dist/tests/',import.meta.url)).filter(name=>name.endsWith('.test.js')).map(name=>`dist/tests/${name}`);
- const args=smoke?['dist/tests/smoke.js']:['--test',...files];
+ // Windows fixtures start CIM/PowerShell and native process trees. Unbounded
+ // file concurrency overloads those OS services and obscures lifecycle tests.
+ const args=smoke?['dist/tests/smoke.js']:['--test',...(process.platform==='win32'?['--test-concurrency=4']:[]),...files];
  const env=sandbox.testEnvironment(owned);delete env.NODE_TEST_CONTEXT;
  const result=spawnSync(process.execPath,['--import',new URL('./test-sandbox-preload.mjs',import.meta.url).href,...args],{cwd:fileURLToPath(root),env,stdio:'inherit',windowsHide:true});
  if(result.error)throw result.error;status=result.status??1;
