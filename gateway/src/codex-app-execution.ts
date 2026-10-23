@@ -89,8 +89,10 @@ export async function runCodexAppCommand(command:LaunchCommand,args:string[],opt
  };
  const notification=(row:Row)=>{
   const p=row.params;if(!record(p)||!threadId||p.threadId!==threadId)return;
-  if(row.method==='thread/settings/updated'){if(!terminal&&record(p.threadSettings)){recordProtocol(row);captureSettings(p.threadSettings,'app_server.thread/settings/updated');}return;}
   if(!turnId){if(turnSubmitted){if(queued.length<1000)queued.push(row);else fail({code:'app_server_protocol_error',message:'Too many notifications before the turn/start acknowledgement'});}return;}
+  // Preserve wire order when the acknowledgement and notifications arrive in
+  // one chunk: a settings update must not overtake a queued terminal event.
+  if(row.method==='thread/settings/updated'){if(!terminal&&record(p.threadSettings)){recordProtocol(row);captureSettings(p.threadSettings,'app_server.thread/settings/updated');}return;}
   const eventTurn=p.turnId??p.turn?.id;if(eventTurn!==turnId)return;
   if(terminal&&row.method!=='thread/tokenUsage/updated')return;
   recordProtocol(row);

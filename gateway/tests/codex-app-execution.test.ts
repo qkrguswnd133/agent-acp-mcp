@@ -73,8 +73,8 @@ test('unavailable configuration fails before model work, without fallback or rep
  const f=await fixture(`${ack}${complete}`,{configuration:{other:'not configuration'}});
  try{const result=await run(f);assert.equal(result.completion.confirmed,false);assert.equal(result.protocolError?.code,'app_server_config_unavailable');const requests=await fs.readFile(f.requests,'utf8');assert.doesNotMatch(requests,/thread\/start|turn\/start/);}finally{await f.dispose();}
 });
-test('same-thread settings updates preserve history and are associated with the executed turn',async()=>{
- const f=await fixture(`${ack}note('thread/settings/updated',{threadSettings:{model:'gpt-6-astra',effort:'xhigh',serviceTier:'default'}});${complete}note('thread/settings/updated',{threadSettings:{model:'other',effort:'low',serviceTier:'ultrafast'}});`);
+test('same-thread settings retain wire order across queued completion before the turn acknowledgement',async()=>{
+ const f=await fixture(`note('thread/settings/updated',{threadSettings:{model:'gpt-6-astra',effort:'xhigh',serviceTier:'default'}});${complete}note('thread/settings/updated',{threadSettings:{model:'other',effort:'low',serviceTier:'ultrafast'}});${ack}`);
  try{const result=await run(f);assert.equal(result.settingsHistory.length,2);assert.equal(result.appliedSettings?.source,'app_server.thread/settings/updated');assert.equal(result.appliedSettings?.speed,'standard');assert.equal(result.appliedSettings?.effort,'xhigh');assert.equal(result.appliedSettings?.turnId,turn);}finally{await f.dispose();}
 });
 test('individual permission refusal does not cancel a completed turn',async()=>{

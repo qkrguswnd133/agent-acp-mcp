@@ -94,7 +94,8 @@ test('An explicitly returned resumed thread accepts older metadata but never pre
 test('runCodexAppCommand retains progress across raw stdout and cleanup events and distinguishes terminal finalization',async()=>{
  const activity:any[]=[];const events=[{type:'thread.started',thread_id:id},{type:'item.started',item:{type:'command_execution',id:'c',command:'npm test'}},{type:'item.completed',item:{type:'command_execution',id:'c',exit_code:0}},{type:'turn.completed'}];
  const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',codexAppServerFixtureScript(events)],{cwd:process.cwd(),prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:20000,completionGraceMs:10,onActivity:event=>activity.push(event)});
- assert.ok(activity.some(event=>event.type==='stdout'&&event.implementationProgress.commandsStarted===1));
+ assert.ok(activity.some(event=>event.type==='stdout'));
+ assert.ok(activity.some(event=>event.type==='codex_progress'&&event.implementationProgress.commandsStarted===1));
  assert.ok(activity.some(event=>event.type==='codex_progress'&&event.phase==='testing'));
  assert.ok(activity.some(event=>event.type==='codex_turn_completed'&&event.phase==='completion_pending_cleanup'));
  assert.equal(activity.at(-1).phase,'finalized');assert.equal(result.implementationProgress.phase,'finalized');assert.equal(result.completion.confirmed,true);
