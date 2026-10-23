@@ -17,6 +17,8 @@ CODEX_MODEL = "auto"
 CODEX_EFFORT = "auto"
 # Speed: standard (default), fast, ultrafast only when agent_models advertises it.
 CODEX_SPEED = "standard"
+# Optional: clean new job-created ignored build/.gradle artifacts after fresh idle checks.
+AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS = "false"
 GROK_MODEL = "auto"
 GROK_EFFORT = "auto"
 # Speed: standard only; independent Grok speed control is not verified.

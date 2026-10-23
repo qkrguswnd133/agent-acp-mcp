@@ -8,7 +8,7 @@ import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {resolveGitExecutable} from '../src/git-read-policy.js';
-import {createManagedWorktree,cleanupManagedWorktree,inspectManagedWorktree,managedWorktreeStorageRoot,migrateManagedWorktree,rollbackManagedWorktreeMigration,recoverManagedWorktree,type ManagedWorktree} from '../src/managed-worktree.js';
+import {createManagedWorktree,cleanupManagedWorktree,cleanupJobCreatedIgnoredArtifacts,inspectManagedWorktree,managedWorktreeStorageRoot,migrateManagedWorktree,rollbackManagedWorktreeMigration,recoverManagedWorktree,type ManagedWorktree} from '../src/managed-worktree.js';
 import {JobManager} from '../src/jobs.js';
 const exec=promisify(execFile);
 const testStorage=await fs.mkdtemp(path.join(os.tmpdir(),'managed-worktree-storage-test-'));
@@ -109,12 +109,12 @@ test('auto creates worktree only on implementation conflict and cleanup requires
   const second=await m.start('agent_implement',{cwd:repo,task:'isolated',workspace_mode:'auto'});
   assert.ok(second.worktree);assert.notEqual(second.cwd,repo);await finish(m,second.job_id);
   await git(repo,'merge','--ff-only',second.worktree!.branch);
-  await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD','test verified',{verified:true}),/active job/);
-  release();await finish(m,first.job_id);
+  const preview=await m.cleanupWorktree(second.job_id,'HEAD','test verified',{verified:true,dryRun:true});assert.ok('eligible' in preview.worktree&&preview.worktree.eligible);
   await assert.rejects(()=>m.cleanupWorktree(second.job_id,'HEAD',''),/summary/);
   const restarted=new JobManager(path.join(root,'jobs'),async()=>{throw Error('Must not rerun');});
   assert.equal((await restarted.worktreeStatus(second.job_id)).worktree.baseCommit,second.worktree?.baseCommit);
   assert.equal((await restarted.cleanupWorktree(second.job_id,'HEAD','no changes; fixture tests passed',{verified:true})).worktree.state,'removed');
+  release();await finish(m,first.job_id);
   await restarted.close();
  }finally{release?.();await m.close();await fs.rm(root,{recursive:true,force:true});}
 });
@@ -255,12 +255,19 @@ test('metadata-only checkout is damaged, not clean empty; explicit recovery reta
  }
 });
 
-test('partial and staged-deletion checkouts cannot use recovery cleanup',async()=>{
+test('partial checkout restores only missing files; remaining edits and staged deletions are preserved',async()=>{
  const {root,repo}=await fixture();await fs.writeFile(path.join(repo,'second.txt'),'second');await git(repo,'add','.');await git(repo,'commit','-m','second');
  const {worktree:w}=await createManagedWorktree({cwd:repo,task:'partial'},randomUUID());
  try{
   await fs.unlink(path.join(w.path,'file.txt'));
-  assert.equal((await recoverManagedWorktree(w,'',{dryRun:true})).eligible,false);assert.equal((await cleanupManagedWorktree(w,'','',{dryRun:true})).eligible,false);
+  assert.equal((await recoverManagedWorktree(w,'',{dryRun:true})).eligible,true);assert.equal((await cleanupManagedWorktree(w,'','',{dryRun:true})).eligible,false);
+  await fs.writeFile(path.join(w.path,'second.txt'),'keep user edit');
+  assert.match((await recoverManagedWorktree(w,'',{dryRun:true})).reason!,/remaining files/);
+  assert.equal(await fs.readFile(path.join(w.path,'second.txt'),'utf8'),'keep user edit');
+  await git(w.path,'restore','second.txt');
+  await recoverManagedWorktree(w,'Reviewed partial deletion; only restore absent paths');
+  assert.equal(await fs.readFile(path.join(w.path,'file.txt'),'utf8'),'base');assert.equal(await fs.readFile(path.join(w.path,'second.txt'),'utf8'),'second');
+  await fs.unlink(path.join(w.path,'file.txt'));
   await git(w.path,'add','file.txt');await fs.unlink(path.join(w.path,'second.txt'));
   assert.match((await recoverManagedWorktree(w,'',{dryRun:true})).reason!,/staged/);
  }finally{await git(w.path,'restore','--source=HEAD','--staged','--worktree','.');await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
@@ -453,6 +460,10 @@ test('5000 ignored artifacts use bounded Git passes and report measured cleanup 
  try{
   const writes=[];for(let i=0;i<5000;i++)writes.push(fs.writeFile(path.join(w.path,'build','nested',`artifact-${i}.txt`),'fixture output'));
   await Promise.all(writes);
+  const status=await inspectManagedWorktree(w);
+  assert.ok('ignoredFileCount' in status);assert.equal(status.ignoredFileCount,5002);assert.equal(status.changedFileCount,0);assert.equal(status.changes,'');assert.equal(status.cleanEmpty,false);
+  assert.deepEqual(status.ignoredDirectories,[{path:'.gradle/',fileCount:1},{path:'build/',fileCount:5001}]);assert.equal('ignoredFiles' in status,false);
+  assert.ok(Buffer.byteLength(JSON.stringify(status))<8000,'Status must summarize build output rather than embed 5000 filenames');
   const started=Date.now(),preview=await cleanupManagedWorktree(w,'','',{dryRun:true,removeIgnoredArtifacts:true,onPhase:(name,ms)=>{phases['preview.'+name]=ms;}});
   assert.equal(preview.eligible,true,preview.reason);assert.equal(preview.ignoredArtifactPaths?.length,5002);phases.previewTotal=Date.now()-started;
   const applied=Date.now(),result=await cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,onPhase:(name,ms)=>{phases[name]=ms;}});
@@ -467,6 +478,88 @@ test('batched artifact checks still stop when the index changes immediately befo
   await assert.rejects(()=>cleanupManagedWorktree(w,'','',{removeIgnoredArtifacts:true,beforeMutation:async()=>{
    if(!changed){changed=true;await git(w.path,'add','--force','.gradle/cache.bin');}
   }}),/Git index, configuration or ignore rules changed/);
+  assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+
+test('cleanup accepts an integration commit that remains an ancestor after later original commits',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'ancestor integration'},randomUUID());
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'integrated change');await git(w.path,'add','.');await git(w.path,'commit','-m','work');
+  await git(repo,'merge','--ff-only',w.branch);const integrated=await git(repo,'rev-parse','HEAD');
+  await fs.writeFile(path.join(repo,'later.txt'),'later original work');await git(repo,'add','.');await git(repo,'commit','-m','later');
+  const preview=await cleanupManagedWorktree(w,integrated,'Verified earlier integration and tests',{dryRun:true});assert.equal(preview.eligible,true,preview.reason);assert.equal(preview.integrationCommit,integrated);
+  assert.equal((await cleanupManagedWorktree(w,integrated,'Verified earlier integration and tests')).state,'removed');
+  assert.equal(await fs.readFile(path.join(repo,'later.txt'),'utf8'),'later original work');
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('cleanup rechecks pinned original HEAD at its final mutation boundary',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'integration race'},randomUUID());
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'integrated change');await git(w.path,'add','.');await git(w.path,'commit','-m','work');await git(repo,'merge','--ff-only',w.branch);
+  const integrated=await git(repo,'rev-parse','HEAD');let changed=false;
+  await assert.rejects(()=>cleanupManagedWorktree(w,integrated,'Verified integration',{beforeMutation:async()=>{
+   if(!changed){changed=true;await fs.writeFile(path.join(repo,'later.txt'),'concurrent original edit');await git(repo,'add','.');await git(repo,'commit','-m','concurrent original commit');}
+  }}),/Original HEAD changed/);
+  assert.equal(await git(w.path,'rev-parse','HEAD'),integrated);assert.equal(await git(repo,'rev-parse',w.branch),integrated);
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('checkout-only cleanup preserves unmerged commits and branch without claiming integration',async()=>{
+ const {root,repo}=await fixture();const {worktree:w}=await createManagedWorktree({cwd:repo,task:'preserve branch'},randomUUID());
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'keep source commit');await git(w.path,'add','.');await git(w.path,'commit','-m','source');const tip=await git(w.path,'rev-parse','HEAD');
+  assert.equal((await cleanupManagedWorktree(w,'HEAD','reviewed',{dryRun:true})).eligible,false);
+  assert.match((await cleanupManagedWorktree(w,'','',{preserveBranch:true,dryRun:true})).reason!,/verification summary/);
+  await fs.writeFile(path.join(w.path,'file.txt'),'keep uncommitted edit');
+  assert.equal((await cleanupManagedWorktree(w,'','Review source branch',{preserveBranch:true,dryRun:true})).eligible,false);
+  await git(w.path,'restore','file.txt');
+  const preview=await cleanupManagedWorktree(w,'','Reviewed reworked integration; retain source commits',{preserveBranch:true,dryRun:true});
+  assert.equal(preview.eligible,true,preview.reason);assert.equal(preview.branchPreserved,true);assert.equal(preview.checkoutOnly,true);assert.equal(preview.integrationVerified,false);
+  const result=await cleanupManagedWorktree(w,'','Reviewed reworked integration; retain source commits',{preserveBranch:true});
+  assert.equal(result.state,'removed');assert.equal(result.integrationCommit,undefined);assert.equal(result.integrationMethod,undefined);assert.equal(result.recoveryBranchPreserved,true);
+  assert.equal(await git(repo,'rev-parse',w.branch),tip);assert.equal(await git(repo,'show',w.branch+':file.txt'),'keep source commit');
+ }finally{if(await fs.stat(w.path).catch(()=>undefined))await git(repo,'worktree','remove',w.path);await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('automatic build cleanup requires a baseline and fresh ownership and keeps the committed checkout',async()=>{
+ const {root,repo,w}=await ignoredFixture();let checks=0;
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'unmerged implementation');await git(w.path,'add','file.txt');await git(w.path,'commit','-m','implementation');const tip=await git(w.path,'rev-parse','HEAD');
+  assert.match((await cleanupJobCreatedIgnoredArtifacts({...w,ignoredArtifactBaseline:undefined})).reason!,/baseline/);
+  const preview=await cleanupJobCreatedIgnoredArtifacts(w);assert.equal(preview.dryRun,true);assert.equal(preview.eligible,true);assert.equal(preview.ignoredArtifactPaths.length,2);
+  await assert.rejects(()=>cleanupJobCreatedIgnoredArtifacts(w,{dryRun:false}),/fresh idle ownership/);
+  const result=await cleanupJobCreatedIgnoredArtifacts(w,{dryRun:false,beforeMutation:async()=>{checks++;}});
+  assert.equal(result.eligible,true);assert.equal(result.removedBytes,Buffer.byteLength('build outputcache'));assert.ok(checks>=3);
+  assert.equal(await git(w.path,'rev-parse','HEAD'),tip);assert.equal(await git(repo,'rev-parse',w.branch),tip);assert.equal(await fs.readFile(path.join(w.path,'file.txt'),'utf8'),'unmerged implementation');
+  assert.equal(await fs.stat(path.join(w.path,'build')).catch(()=>undefined),undefined);assert.equal(await fs.stat(path.join(w.path,'.gradle')).catch(()=>undefined),undefined);
+ }finally{await disposeIgnoredFixture(root,repo,w);}
+});
+
+test('automatic cleanup never adopts existing build roots or other ignored user data',async()=>{
+ const {root,repo}=await fixture();let w:ManagedWorktree|undefined;
+ try{
+  await fs.writeFile(path.join(repo,'.gitignore'),'build/\n.gradle/\n.env\n');await fs.mkdir(path.join(repo,'build'));await fs.writeFile(path.join(repo,'build','source.txt'),'existing source');
+  await git(repo,'add','.');await git(repo,'add','--force','build/source.txt');await git(repo,'commit','-m','protected build root');
+  w=(await createManagedWorktree({cwd:repo,task:'protected output'},randomUUID())).worktree;
+  assert.deepEqual(w.ignoredArtifactBaseline?.protectedRoots,['build/']);
+  await fs.writeFile(path.join(w.path,'build','new-cache.bin'),'protected output');await fs.writeFile(path.join(w.path,'.env'),'private user data');
+  await fs.mkdir(path.join(w.path,'.gradle'));await fs.writeFile(path.join(w.path,'.gradle','new-cache.bin'),'disposable');
+  const result=await cleanupJobCreatedIgnoredArtifacts(w,{dryRun:false,beforeMutation:async()=>{}});
+  assert.deepEqual(result.ignoredArtifactPaths,['.gradle/new-cache.bin']);assert.equal(result.removedBytes,10);
+  assert.equal(await fs.readFile(path.join(w.path,'build','new-cache.bin'),'utf8'),'protected output');assert.equal(await fs.readFile(path.join(w.path,'.env'),'utf8'),'private user data');
+ }finally{
+  if(w&&await fs.stat(w.path).catch(()=>undefined)){await fs.unlink(path.join(w.path,'build','new-cache.bin'));await fs.unlink(path.join(w.path,'.env'));await git(repo,'worktree','remove',w.path);}
+  await fs.rm(root,{recursive:true,force:true});
+ }
+});
+
+test('automatic artifact cleanup preserves outputs alongside uncommitted user changes',async()=>{
+ const {root,repo,w}=await ignoredFixture();
+ try{
+  await fs.writeFile(path.join(w.path,'file.txt'),'user edit');
+  const result=await cleanupJobCreatedIgnoredArtifacts(w);assert.equal(result.eligible,false);assert.match(result.reason!,/Tracked or untracked changes/);
   assert.equal(await fs.readFile(path.join(w.path,'.gradle','cache.bin'),'utf8'),'cache');
  }finally{await disposeIgnoredFixture(root,repo,w);}
 });

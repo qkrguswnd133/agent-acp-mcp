@@ -4,12 +4,12 @@ import {workspaceConflict,workspaceConflictMessage} from './workspace-lock.js';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import type {RunInput} from './types.js';
-import {createManagedWorktree,inspectManagedWorktree,cleanupManagedWorktree,migrateManagedWorktree,rollbackManagedWorktreeMigration,recoverManagedWorktree,forgetManagedWorktree,type ManagedWorktree} from './managed-worktree.js';
+import {createManagedWorktree,inspectManagedWorktree,cleanupManagedWorktree,cleanupJobCreatedIgnoredArtifacts,migrateManagedWorktree,rollbackManagedWorktreeMigration,recoverManagedWorktree,forgetManagedWorktree,type ManagedWorktree} from './managed-worktree.js';
 import {persistJobPayload,presentJobPayload} from './job-payload.js';
 import {verifyInterruptedOwnership,verifyFinishedOwnership} from './interrupted-ownership.js';
 import {classifyProcessCleanup,verifyTrackedProcessesAbsent} from './process-cleanup.js';
 import {acquireMaintenanceLock} from './maintenance-lock.js';
-import {readProcessInventory,type ProcessInventory} from './process-inventory.js';
+import {readProcessInventory,validCreationTime,type ProcessInventory} from './process-inventory.js';
 import {inspectWorktreeLinks} from './worktree-links.js';
 
 type Runner=(kind:string,input:RunInput,signal:AbortSignal,hooks:{onActivity:(event:Record<string,unknown>)=>void})=>Promise<any>;
@@ -20,7 +20,13 @@ const terminal=new Set<Status>(['completed','failed','cancelled','interrupted'])
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function ownerAlive(pid:unknown){if(!Number.isSafeInteger(pid)||Number(pid)<1)return true;try{process.kill(Number(pid),0);return true;}catch(error){return (error as NodeJS.ErrnoException).code!=='ESRCH';}}
 function unconfirmedChildCleanup(result:any):boolean{const evidence=classifyProcessCleanup(result);return evidence.reported&&evidence.state!=='verified';}
-interface CleanupOptions {dryRun?:boolean;verified?:boolean;emptyOnly?:boolean;automatic?:boolean;allowPatchEquivalent?:boolean;idleConfirmed?:boolean;removeIgnoredArtifacts?:boolean;unlinkLinks?:boolean;onPhase?:(name:string,ms:number)=>void}
+function freshProcessEvidenceAvailable(result:any):boolean{
+ if(!result||typeof result!=='object')return true;
+ if(result.childCleanedUp===false&&!result.processCleanup)return false;
+ if(result.processCleanup&&(!Array.isArray(result.processCleanup.trackedPids)||!Array.isArray(result.processCleanup.remainingPids)))return false;
+ return !Array.isArray(result.results)||result.results.every(freshProcessEvidenceAvailable);
+}
+interface CleanupOptions {dryRun?:boolean;verified?:boolean;emptyOnly?:boolean;automatic?:boolean;allowPatchEquivalent?:boolean;preserveBranch?:boolean;idleConfirmed?:boolean;removeIgnoredArtifacts?:boolean;unlinkLinks?:boolean;onPhase?:(name:string,ms:number)=>void}
 export const MAX_JOB_WAIT_SECONDS=25;
 function stallEvidence(job:Job,stallMs:number){
  const last=Date.parse(job.lastActivityAt),idleMs=Number.isFinite(last)?Math.max(0,Date.now()-last):null;
@@ -112,6 +118,10 @@ export class JobManager {
     finally{
       clearInterval(flush);entry.finalizing=true;job.finishedAt=new Date().toISOString();
       if(job.worktree?.state==='preserved'){
+        if(process.env.AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS==='true'){
+          try{(job as any).worktreeArtifactCleanup=await this.reserveMaintenance(job.job_id,false,()=>this.cleanupGeneratedArtifacts(job));}
+          catch(error){(job as any).worktreeArtifactCleanup={eligible:false,warning:true,reason:error instanceof Error?error.message:String(error),...Object.fromEntries(Object.entries(error&&typeof error==='object'?error:{}))};}
+        }
         try{
           const links=await inspectWorktreeLinks(job.worktree.path);
           if(links.outsideWorktreeLinkCount||!links.linksScanComplete){
@@ -184,7 +194,7 @@ export class JobManager {
     this.file(id);let reserved=false;
     const reserve=this.starting.then(async()=>{
       await this.maintenanceCheck();if(this.maintenanceReservations.has(id))throw Error('Worktree maintenance already in progress');
-      const job=await this.readJob(id);reserved=true;this.maintenanceReservations.set(id,job.worktree?[job.worktree.path,...(recordOnly?[]:[job.worktree.originalCwd])]:[job.cwd]);
+      const job=await this.readJob(id);reserved=true;this.maintenanceReservations.set(id,job.worktree?[job.worktree.path]:[job.cwd]);
     });
     this.starting=reserve.catch(()=>{});
     const task=reserve.then(operation).finally(()=>{if(reserved)this.maintenanceReservations.delete(id);this.maintenanceTasks.delete(task);});
@@ -201,6 +211,46 @@ export class JobManager {
     const entry=this.active.get(id);if(entry)entry.job.maintenanceLockRecovery=structuredClone(job.maintenanceLockRecovery);
   }
   private async phase<T>(name:string,fn:()=>Promise<T>,report?:((name:string,ms:number)=>void)):Promise<T>{const start=performance.now();try{return await fn();}finally{report?.(name,performance.now()-start);}}
+  private async cleanupGeneratedArtifacts(job:Job){
+    if(!job.worktree||!terminal.has(job.status)||job.status==='interrupted')throw Error('Generated-artifact cleanup requires a terminal owned job');
+    const evidence=classifyProcessCleanup(job.result);
+    if(evidence.invalidPids||!freshProcessEvidenceAvailable(job.result))throw Error('Generated-artifact cleanup has insufficient process evidence; preserved');
+    let inventory:Promise<ProcessInventory>|undefined;const snapshot=()=>inventory??=readProcessInventory();
+    const lock=await acquireMaintenanceLock(this.file(job.job_id)+'.cleanup.lock',{operation:'generated_artifacts',jobId:job.job_id,processInventory:snapshot});
+    try{
+      await this.assertTargetWorktreeIdle(job.job_id,job.worktree.path,snapshot);
+      const trackedProcessCheck=await this.trackedProcessesAbsent(evidence.trackedPids,{snapshot,startedAt:job.startedAt,finishedAt:job.finishedAt,cleanupAt:evidence.cleanupAt,trackedProcesses:evidence.trackedProcesses,rootPids:[...evidence.rootPids,job.ownerPid],rootProcesses:evidence.rootProcesses,rootAnchorSource:'job_owner_and_observed_provider_roots'});
+      const reused=new Set(trackedProcessCheck.reusedPids??[]);
+      const idleCheck=await this.finishedOwnership({ownerPid:job.ownerPid,workspacePaths:[job.worktree.path],startedAt:job.startedAt,trackedPids:evidence.trackedPids.filter(pid=>!reused.has(pid)),rootPids:evidence.rootPids.filter(pid=>!reused.has(pid))},{snapshot});
+      const result=await cleanupJobCreatedIgnoredArtifacts(job.worktree,{dryRun:false,beforeMutation:()=>lock.assertOwned()});
+      return {...result,automatic:true,optIn:'AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS',trackedProcessCheck,idleCheck};
+    }finally{await lock.release();}
+  }
+  /** Maintenance mutates only this isolated checkout. Other jobs sharing the
+   * original Git repository do not own it. Persisted owners are rechecked with
+   * process creation evidence; a running label alone is not proof of work. */
+  private async assertTargetWorktreeIdle(id:string,target:string,snapshot:()=>Promise<ProcessInventory>){
+    let staleOwnerRecord=false;
+    const overlapping=(job:Job)=>job.job_id!==id&&!!job.cwd&&workspaceConflict({cwd:target,kind:'agent_implement'},job);
+    const blocker=(job:Job,liveness:string,currentCreatedAt:string|null=null)=>Object.assign(Error(`Target worktree has an active or unverified job; preserved. Blocking job ${job.job_id}, owner PID ${job.ownerPid}, liveness: ${liveness}`),{blockingJob:{job_id:job.job_id,ownerPid:job.ownerPid,status:job.status,cwd:job.cwd,liveness,currentCreatedAt,lastActivityAt:job.lastActivityAt??null},workspacePath:target});
+    for(const entry of this.active.values())if(overlapping(entry.job)&&(!terminal.has(entry.job.status)||entry.finalizing))throw blocker(entry.job,entry.finalizing?'in_process_finalizing':'in_process_active');
+    for(const name of await fs.readdir(this.directory)){
+      if(!name.endsWith('.json'))continue;
+      let other:Job;try{other=JSON.parse(await fs.readFile(path.join(this.directory,name),'utf8'));}catch{throw Error(`Unreadable job record ${name}; cannot confirm target worktree is idle`);}
+      if(!overlapping(other)||terminal.has(other.status)||this.active.has(other.job_id))continue;
+      // This manager has no live entry for a persisted record owned by itself;
+      // readJob reports the same record as interrupted, never running.
+      if(other.ownerPid===process.pid){staleOwnerRecord=true;continue;}
+      if(!Number.isSafeInteger(other.ownerPid)||other.ownerPid<1)throw blocker(other,'unknown_owner_identity');
+      let inventory:ProcessInventory;try{inventory=await snapshot();}catch{throw blocker(other,'inventory_unavailable');}
+      const owner=inventory.processes.find(row=>row.pid===other.ownerPid);
+      if(!owner){if(inventory.complete){staleOwnerRecord=true;continue;}throw blocker(other,'inventory_incomplete');}
+      const created=validCreationTime(owner.createdAt),started=validCreationTime(other.startedAt);
+      if(created!==undefined&&started!==undefined&&created>started){staleOwnerRecord=true;continue;}
+      throw blocker(other,created===undefined?'owner_creation_unknown':'owner_alive',owner.createdAt);
+    }
+    return {staleOwnerRecord};
+  }
   private async cleanupExclusive(id:string,integrationRef:string,verificationSummary:string,options:CleanupOptions){
     await this.maintenanceCheck();
     let job=await this.readJob(id);const currentStatus=job.status;if(!job.worktree)throw Error('Job has no managed worktree');
@@ -215,7 +265,7 @@ export class JobManager {
     if(job.worktree.state==='removed')return {job_id:id,worktree:job.worktree,already_removed:true};
     const cleanupEvidence=classifyProcessCleanup(job.result),cleanupReview=unconfirmedChildCleanup(job.result);
     if(cleanupEvidence.invalidPids)throw Error('Provider child cleanup has invalid tracked PID evidence; worktree preserved');
-    if(!interrupted&&cleanupReview&&(options.automatic||!options.idleConfirmed||!verificationSummary.trim()))throw Error('Provider child cleanup is unconfirmed; idle_confirmed=true and verification_summary are required before fresh process rechecking; worktree preserved');
+    if(!interrupted&&cleanupReview&&!freshProcessEvidenceAvailable(job.result))throw Error('Provider child cleanup is unconfirmed and tracked process evidence is unavailable; worktree preserved');
     const recorded=interrupted?JSON.parse(await fs.readFile(this.file(id),'utf8')):undefined;
     if(recorded&&(recorded.job_id!==id||recorded.ownerPid!==job.ownerPid||recorded.cwd!==job.cwd))throw Error('Interrupted job record changed during inspection; preserved');
     const lockFile=this.file(id)+'.cleanup.lock';
@@ -227,28 +277,21 @@ export class JobManager {
     const reviewedFailure=job.status==='failed'||job.status==='cancelled'||(job.status==='completed'&&!!job.result?.error);
     // Failed/cancelled committed work requires actual ancestry, never patch equivalence.
     const allowPatchEquivalent=reviewedFailure?false:options.allowPatchEquivalent;
-    const inspection=await this.phase('worktree_scan',()=>cleanupManagedWorktree(job.worktree!,integrationRef,verificationSummary,{dryRun:true,emptyOnly:options.emptyOnly,allowPatchEquivalent,removeIgnoredArtifacts:options.removeIgnoredArtifacts,unlinkLinks:options.unlinkLinks,onPhase:options.onPhase,beforeMutation:()=>lock.assertOwned()}),options.onPhase);
+    const inspection=await this.phase('worktree_scan',()=>cleanupManagedWorktree(job.worktree!,integrationRef,verificationSummary,{dryRun:true,emptyOnly:options.emptyOnly,allowPatchEquivalent,preserveBranch:options.preserveBranch,removeIgnoredArtifacts:options.removeIgnoredArtifacts,unlinkLinks:options.unlinkLinks,onPhase:options.onPhase,beforeMutation:()=>lock.assertOwned()}),options.onPhase);
     if(!inspection.eligible)throw Object.assign(Error(inspection.reason??'Worktree not eligible for cleanup'),inspection);
     const empty=inspection.empty===true;
     const requiresFailureReview=!empty&&reviewedFailure;
     if(requiresFailureReview&&(options.automatic||(!options.dryRun&&(!options.idleConfirmed||options.verified!==true||!verificationSummary.trim()))))throw Error('Failed or cancelled committed work requires verified=true, idle_confirmed=true and verification_summary after parent review');
-    if(!empty&&!options.dryRun&&(options.verified!==true||!verificationSummary.trim()))throw Error('Parent verification and summary are required');
-    // Conservatively protect work owned by other live gateway processes sharing job storage.
-    for(const name of await fs.readdir(this.directory)){
-      if(!name.endsWith('.json'))continue;
-      let other:Job;try{other=JSON.parse(await fs.readFile(path.join(this.directory,name),'utf8'));}catch{throw Error('Unreadable job record; cannot confirm idle workspace');}
-      if(other.job_id===id||terminal.has(other.status)||!other.cwd)continue;
-      const alive=ownerAlive(other.ownerPid);
-      if(alive&&(workspaceConflict({cwd:job.worktree.path,kind:'agent_implement'},other)||(!empty&&workspaceConflict({cwd:job.worktree.originalCwd,kind:'agent_implement'},other))))throw Error('Original or isolated workspace has an active job; preserved');
-    }
-    if([...this.active.values()].some(e=>e.job.job_id!==id&&(!terminal.has(e.job.status)||e.finalizing)&&(workspaceConflict({cwd:job.worktree!.path,kind:'agent_implement'},e.job)||(!empty&&workspaceConflict({cwd:job.worktree!.originalCwd,kind:'agent_implement'},e.job)))))throw Error('Original or isolated workspace still has an active job');
-    const ownershipInput={ownerPid:job.ownerPid,workspacePaths:[job.worktree.path,job.worktree.originalCwd,job.worktree.repository]};
+    if((!empty||options.preserveBranch)&&!options.dryRun&&(options.verified!==true||!verificationSummary.trim()))throw Error('Parent verification and summary are required');
+    const targetIdle=await this.assertTargetWorktreeIdle(id,job.worktree.path,snapshot);
+    const ownershipInput={ownerPid:job.ownerPid,workspacePaths:[job.worktree.path],startedAt:job.startedAt,trackedPids:cleanupEvidence.trackedPids,rootPids:cleanupEvidence.rootPids};
     const processContext={snapshot,startedAt:job.startedAt,finishedAt:job.finishedAt,cleanupAt:cleanupEvidence.cleanupAt??(job.runtimeEvidence?.processCleanup as any)?.at,trackedProcesses:cleanupEvidence.trackedProcesses,rootPids:[...cleanupEvidence.rootPids,...(Number.isSafeInteger(job.ownerPid)&&job.ownerPid>0?[job.ownerPid]:[])],rootProcesses:cleanupEvidence.rootProcesses,rootAnchorSource:'job_owner_and_observed_provider_roots'};
     let trackedProcessCheck=cleanupReview?await this.phase('pid_check',()=>this.trackedProcessesAbsent(cleanupEvidence.trackedPids,processContext),options.onPhase):undefined;
-    const idleCheck=await (interrupted?this.interruptedOwnership(ownershipInput,{snapshot}):requiresFailureReview||cleanupReview||lock.recovered.length>0?this.finishedOwnership(ownershipInput,{snapshot}):Promise.resolve(undefined)).catch(error=>{if(trackedProcessCheck&&error&&typeof error==='object')error.processCheck=trackedProcessCheck;throw error;});
+    if(trackedProcessCheck?.reusedPids?.length){const reused=new Set(trackedProcessCheck.reusedPids);ownershipInput.trackedPids=ownershipInput.trackedPids.filter(pid=>!reused.has(pid));ownershipInput.rootPids=ownershipInput.rootPids.filter(pid=>!reused.has(pid));}
+    const idleCheck=await (interrupted?this.interruptedOwnership(ownershipInput,{snapshot}):requiresFailureReview||cleanupReview||targetIdle.staleOwnerRecord||lock.recovered.length>0?this.finishedOwnership(ownershipInput,{snapshot}):Promise.resolve(undefined)).catch(error=>{if(trackedProcessCheck&&error&&typeof error==='object')error.processCheck=trackedProcessCheck;throw error;});
 
-    if(options.dryRun)return {job_id:id,worktree:inspection,dry_run:true,eligible:true,requires_parent_verification:!empty,lockRecovery:lock.recovered,...(interrupted||requiresFailureReview||cleanupReview?{requires_idle_confirmation:true,idleCheck,trackedProcessCheck}:{})};
-    try{job.worktree=await this.phase('remove',()=>cleanupManagedWorktree(job.worktree!,integrationRef,verificationSummary,{emptyOnly:options.emptyOnly,allowPatchEquivalent,removeIgnoredArtifacts:options.removeIgnoredArtifacts,unlinkLinks:options.unlinkLinks,onPhase:options.onPhase,beforeMutation:()=>lock.assertOwned()}),options.onPhase);}
+    if(options.dryRun)return {job_id:id,worktree:inspection,dry_run:true,eligible:true,requires_parent_verification:!empty||options.preserveBranch===true,lockRecovery:lock.recovered,...(interrupted||requiresFailureReview||cleanupReview?{requires_idle_confirmation:interrupted||requiresFailureReview,idleCheck,trackedProcessCheck}:{})};
+    try{job.worktree=await this.phase('remove',()=>cleanupManagedWorktree(job.worktree!,integrationRef,verificationSummary,{emptyOnly:options.emptyOnly,allowPatchEquivalent,preserveBranch:options.preserveBranch,removeIgnoredArtifacts:options.removeIgnoredArtifacts,unlinkLinks:options.unlinkLinks,onPhase:options.onPhase,beforeMutation:()=>lock.assertOwned()}),options.onPhase);}
     catch(error){
       if(error&&typeof error==='object'&&('removedIgnoredPaths' in error||'unlinkedPaths' in error)){
         (job as any).worktreeCleanup={state:'preserved',reason:String(error),removedIgnoredPaths:(error as any).removedIgnoredPaths,ignoredArtifactPaths:(error as any).ignoredArtifactPaths,unlinkedPaths:(error as any).unlinkedPaths};
@@ -256,9 +299,9 @@ export class JobManager {
       }
       throw error;
     }
-    if(requiresFailureReview||cleanupReview)(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:true,verificationSummary};
+    if(requiresFailureReview||cleanupReview)(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:options.idleConfirmed===true,automaticFreshCheck:!interrupted&&!requiresFailureReview,verificationSummary};
     if(recorded){job.status=recorded.status;if(recorded.error===undefined)delete job.error;else job.error=recorded.error;(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:true,verificationSummary,scope:'owner, descendants and observable workspace references; detached/manual writers reviewed by parent'};}
-    const entry=this.active.get(id);if(entry)entry.job.worktree=job.worktree;
+    const entry=this.active.get(id);if(entry){entry.job.worktree=job.worktree;if((job as any).worktreeIdleCheck)(entry.job as any).worktreeIdleCheck=(job as any).worktreeIdleCheck;}
     this.warningCache=undefined;
     await lock.assertOwned();await this.save(job);return {job_id:id,worktree:job.worktree,lockRecovery:lock.recovered,...(cleanupReview?{idleCheck,trackedProcessCheck}:{})};
     }finally{await lock.release();}
@@ -340,7 +383,7 @@ export class JobManager {
     const interrupted=job.status==='interrupted';
     const cleanupEvidence=classifyProcessCleanup(job.result),cleanupReview=unconfirmedChildCleanup(job.result);
     if(cleanupEvidence.invalidPids)throw Error('Provider child cleanup has invalid tracked PID evidence; preserved');
-    if(!interrupted&&cleanupReview)throw Error('Provider child cleanup is unconfirmed; physical maintenance remains blocked');
+    if(!interrupted&&cleanupReview&&!freshProcessEvidenceAvailable(job.result))throw Error('Provider child cleanup is unconfirmed and tracked process evidence is unavailable; physical maintenance preserved');
     if(interrupted&&!options.dryRun&&(!options.idleConfirmed||!options.summary?.trim()))throw Error('Interrupted maintenance requires idle_confirmed=true and a verification summary confirming no manually launched or untracked workspace writers');
     if(action!=='migrate'&&!options.dryRun&&(!options.verified||!options.summary?.trim()))throw Error('Recovery requires verified=true and a verification summary');
     const recorded=interrupted?JSON.parse(await fs.readFile(this.file(id),'utf8')):undefined;
@@ -350,22 +393,19 @@ export class JobManager {
     const lock=await this.phase('lock',()=>acquireMaintenanceLock(lockFile,{operation:action,jobId:id,processInventory:snapshot}),options.onPhase);
     try{
     await this.lockAudit(id,lock.recovered);
-      for(const name of await fs.readdir(this.directory)){
-        if(!name.endsWith('.json'))continue;let other:Job;try{other=JSON.parse(await fs.readFile(path.join(this.directory,name),'utf8'));}catch{throw Error('Unreadable job record; idle state unknown');}
-        if(other.job_id!==id&&!terminal.has(other.status)&&ownerAlive(other.ownerPid)&&other.cwd&&(workspaceConflict({cwd:original.path,kind:'agent_implement'},other)||workspaceConflict({cwd:original.originalCwd,kind:'agent_implement'},other)))throw Error('Original or isolated workspace has an active job');
-      }
+      const targetIdle=await this.assertTargetWorktreeIdle(id,original.path,snapshot);
       const relative=path.relative(original.path,job.cwd);
-      if([...this.active.values()].some(e=>e.job.job_id!==id&&(!terminal.has(e.job.status)||e.finalizing)&&(workspaceConflict({cwd:original.path,kind:'agent_implement'},e.job)||workspaceConflict({cwd:original.originalCwd,kind:'agent_implement'},e.job))))throw Error('Original or isolated workspace still has an active job');
       if(action==='migrate'&&(relative.startsWith('..'+path.sep)||relative==='..'||path.isAbsolute(relative)))throw Error('Job cwd is outside its managed worktree; migration refused');
     const processContext={snapshot,startedAt:job.startedAt,finishedAt:job.finishedAt,cleanupAt:cleanupEvidence.cleanupAt??(job.runtimeEvidence?.processCleanup as any)?.at,trackedProcesses:cleanupEvidence.trackedProcesses,rootPids:[...cleanupEvidence.rootPids,...(Number.isSafeInteger(job.ownerPid)&&job.ownerPid>0?[job.ownerPid]:[])],rootProcesses:cleanupEvidence.rootProcesses,rootAnchorSource:'job_owner_and_observed_provider_roots'};
       let trackedProcessCheck=cleanupReview?await this.phase('pid_check',()=>this.trackedProcessesAbsent(cleanupEvidence.trackedPids,processContext),options.onPhase):undefined;
-      const ownershipInput={ownerPid:job.ownerPid,workspacePaths:[original.path,original.originalCwd,original.repository]};
-      const idleCheck=await (interrupted?this.interruptedOwnership(ownershipInput,{snapshot}):cleanupReview||lock.recovered.length>0?this.finishedOwnership(ownershipInput,{snapshot}):Promise.resolve(undefined)).catch(error=>{if(trackedProcessCheck&&error&&typeof error==='object')error.processCheck=trackedProcessCheck;throw error;});
+      const ownershipInput={ownerPid:job.ownerPid,workspacePaths:[original.path],startedAt:job.startedAt,trackedPids:cleanupEvidence.trackedPids,rootPids:cleanupEvidence.rootPids};
+      if(trackedProcessCheck?.reusedPids?.length){const reused=new Set(trackedProcessCheck.reusedPids);ownershipInput.trackedPids=ownershipInput.trackedPids.filter(pid=>!reused.has(pid));ownershipInput.rootPids=ownershipInput.rootPids.filter(pid=>!reused.has(pid));}
+      const idleCheck=await (interrupted?this.interruptedOwnership(ownershipInput,{snapshot}):cleanupReview||targetIdle.staleOwnerRecord||lock.recovered.length>0?this.finishedOwnership(ownershipInput,{snapshot}):Promise.resolve(undefined)).catch(error=>{if(trackedProcessCheck&&error&&typeof error==='object')error.processCheck=trackedProcessCheck;throw error;});
 
       const result=action==='migrate'?await migrateManagedWorktree(original,{dryRun:options.dryRun,targetRoot:options.targetRoot,onPhase:options.onPhase,beforeMutation:()=>lock.assertOwned()}):await recoverManagedWorktree(original,options.summary??'',{dryRun:options.dryRun,action,unlinkLinks:options.unlinkLinks,onPhase:options.onPhase,beforeMutation:()=>lock.assertOwned()});
-      if(options.dryRun)return {job_id:id,worktree:result,dry_run:true,lockRecovery:lock.recovered,...(interrupted||cleanupReview?{requires_idle_confirmation:true,idleCheck,trackedProcessCheck,ownershipNote:'Process scan cannot identify every detached or manually launched writer; parent must confirm the workspace is idle before applying.'}:{})};
+      if(options.dryRun)return {job_id:id,worktree:result,dry_run:true,lockRecovery:lock.recovered,...(interrupted||cleanupReview?{requires_idle_confirmation:interrupted,idleCheck,trackedProcessCheck,...(interrupted?{ownershipNote:'Process scan cannot identify every detached or manually launched writer; parent must confirm the workspace is idle before applying.'}:{})}:{})};
       const oldCwd=job.cwd;job.worktree=result;
-      if(cleanupReview)(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:true,verificationSummary:options.summary};
+      if(cleanupReview)(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:options.idleConfirmed===true,automaticFreshCheck:!interrupted,verificationSummary:options.summary};
       if(recorded){job.status=recorded.status;if(recorded.error===undefined)delete job.error;else job.error=recorded.error;(job as any).worktreeIdleCheck={...idleCheck,trackedProcessCheck,parentConfirmed:true,verificationSummary:options.summary,scope:'owner, descendants and observable workspace references; detached/manual writers reviewed by parent'};}
       if(action==='migrate'){
         job.cwd=path.join(result.path,relative);(job as any).worktreeMigration={previousCwd:oldCwd,currentCwd:job.cwd,at:new Date().toISOString(),restartRequired:true};
@@ -374,7 +414,7 @@ export class JobManager {
         if(action==='migrate'){try{await rollbackManagedWorktreeMigration(original,result,{beforeMutation:()=>lock.assertOwned()});}catch(rollback){throw Error(`Job save and migration rollback failed. Worktree destination: ${result.path}; source: ${original.path}; ${String(rollback)}`);}}
         throw Error(`Worktree ${action} completed${action==='migrate'?' and rolled back':''}, but job metadata save failed: ${String(error)}`);
       }
-      const entry=this.active.get(id);if(entry){entry.job.worktree=result;entry.job.cwd=job.cwd;if(action==='migrate')(entry.job as any).worktreeMigration=(job as any).worktreeMigration;}
+      const entry=this.active.get(id);if(entry){entry.job.worktree=result;entry.job.cwd=job.cwd;if((job as any).worktreeIdleCheck)(entry.job as any).worktreeIdleCheck=(job as any).worktreeIdleCheck;if(action==='migrate')(entry.job as any).worktreeMigration=(job as any).worktreeMigration;}
       this.warningCache=undefined;return {job_id:id,cwd:job.cwd,worktree:result,lockRecovery:lock.recovered,...(cleanupReview?{idleCheck,trackedProcessCheck}:{}),...(action==='migrate'?{restartRequired:true}:{})};
     }finally{await lock.release();}
   }

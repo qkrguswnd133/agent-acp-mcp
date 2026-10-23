@@ -3,7 +3,11 @@
     "Gateway 2.7.1: CODEX_SPEED·CLAUDE_SPEED·GROK_SPEED 설정을 추가했습니다. 모델·effort와 독립적이며 모든 기본값은 standard입니다. 값을 생략해도 Standard를 요청하고 개인 설정 파일을 변경하지 않습니다.",
     "Codex는 선택 모델이 광고한 fast·ultrafast, Claude는 supportsFastMode를 확인한 모델의 fast만 허용합니다. 미지원 설정에서 모델을 자동 변경하거나 작업을 재실행하지 않습니다. Grok은 별도 속도 제어가 확인되지 않아 standard만 허용합니다.",
     "agent_status·agent_models에 speedPolicy와 지원 속도 정보를 추가하고, 실행 결과에서 요청값과 실제 관측값을 구분합니다. 관측하지 못한 값은 unavailable이며 보고된 fallback은 경고로 남깁니다.",
-    "Windows·Linux/WSL의 Codex TOML·Claude MCP JSON 설정 예제와 문서를 갱신했습니다. Codex 고속 모드는 사용량 소모가 늘 수 있고 Claude Fast는 별도 usage credits를 사용하므로 명시적으로 선택하세요."
+    "Windows·Linux/WSL의 Codex TOML·Claude MCP JSON 설정 예제와 문서를 갱신했습니다. Codex 고속 모드는 사용량 소모가 늘 수 있고 Claude Fast는 별도 usage credits를 사용하므로 명시적으로 선택하세요.",
+    "정리 충돌 검사를 실제 대상 worktree로 좁히고 차단한 job·owner·프로세스 근거를 표시합니다. 정상 완료 작업의 미확인 정리는 최신 PID·작업공간 검사로 다시 판단하며 관련성 미확인 상태는 보존합니다.",
+    "integration_ref가 현재 HEAD의 조상이면 허용합니다. preserve_branch=true는 브랜치와 커밋을 남기는 checkout-only 정리를 제공하고, 변경 없는 index와 남은 파일을 검증한 부분 checkout 복구를 지원합니다.",
+    "ignored 산출물은 파일 수·상위 폴더로 요약하고 작업 목록·리뷰 본문을 우선 보존합니다. 새 worktree의 build/.gradle 자동 정리는 명시적 opt-in이며 기존 데이터·링크·미검증 프로세스는 보존합니다.",
+    "Codex structured event와 일치하는 세션 JSONL에서 마지막 명령·단계·변경 진행을 관측합니다. 완료 후 프로세스 정리 중인 단계를 구분하며 CPU·미관측 값은 추측하지 않습니다."
   ],
   "monitor": [
     "Monitor 1.4.1: 독립 실행 설정 및 Codex 환경설정에서 provider별 SPEED 값을 전달합니다. 전체 업데이트의 WSL → Windows 순서와 설정·작업 기록 보존 동작은 유지합니다.",

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertInterruptedOwnershipAbsent,verifyInterruptedOwnership,type ProcessSnapshotEntry} from '../src/interrupted-ownership.js';
+import {assertInterruptedOwnershipAbsent,verifyInterruptedOwnership,processOwnershipSnapshot,type ProcessSnapshotEntry} from '../src/interrupted-ownership.js';
 
 const input={ownerPid:42,workspacePaths:['C:\\worktrees\\one\\repo','C:\\dev\\repo']};
 const processEntry=(pid:number,parentPid=1,commandLine:string|null='unrelated.exe',name='unrelated.exe'):ProcessSnapshotEntry=>({pid,parentPid,commandLine,name});
@@ -34,4 +34,32 @@ test('reviewed terminal jobs allow a live gateway but reject remaining workspace
  assert.doesNotThrow(()=>finished([processEntry(77,42,'codex -C C:\\other-repo','codex.exe')]));
  assert.throws(()=>finished([processEntry(77,42,'codex -C C:\\worktrees\\one\\repo','codex.exe')]),/references/);
  assert.throws(()=>finished([processEntry(77,42,null,'codex.exe')]),/unreadable/);
+});
+test('target-only scan ignores original repository preview servers but still blocks isolated workspace use',()=>{
+ const target={...input,workspacePaths:[input.workspacePaths[0]]};
+ const inspect=(row:ProcessSnapshotEntry)=>assertInterruptedOwnershipAbsent(target,[...self,row],'win32',100,true);
+ assert.doesNotThrow(()=>inspect(processEntry(77,1,'node C:\\dev\\repo\\node_modules\\next dev','node.exe')));
+ assert.doesNotThrow(()=>inspect(processEntry(77,1,'node C:\\other\\C:\\worktrees\\one\\repo','node.exe')));
+ assert.throws(()=>inspect(processEntry(77,1,'node --cwd="C:\\worktrees\\one\\repo"','node.exe')),/references/);
+ assert.throws(()=>inspect({...processEntry(77),cwd:input.workspacePaths[0]}),/references/);
+});
+test('unreadable pre-existing session-0 services need complete independent ancestry before becoming warnings',()=>{
+ const earlier='2026-10-20T00:00:00Z',startedAt='2026-10-23T00:00:00Z';
+ const rows=[{...processEntry(100,50,'node gateway.js','node.exe'),sessionId:1,createdAt:earlier},{...processEntry(50,1),sessionId:1,createdAt:earlier},{...processEntry(1,0,null,'System'),sessionId:0,createdAt:earlier}];
+ const service={...processEntry(77,1,null,'node.exe'),sessionId:0,createdAt:'2026-10-21T00:00:00Z'};
+ const inspect=(entry:ProcessSnapshotEntry,extra:Partial<typeof input>&{trackedPids?:number[]}={})=>assertInterruptedOwnershipAbsent({...input,startedAt,...extra},[...rows,entry],'win32',100,true);
+ const result=inspect(service);assert.equal(result.processWarnings.length,1);assert.equal(result.processWarnings[0].pid,77);assert.match(result.processWarnings[0].reason,/independent/);
+ for(const entry of [{...service,sessionId:1},{...service,createdAt:null},{...service,createdAt:'2026-10-23T01:00:00Z'},{...service,parentPid:999},{...service,parentPid:42}])assert.throws(()=>inspect(entry),/unreadable/);
+ assert.throws(()=>inspect(service,{trackedPids:[77]}),/unreadable/);
+ assert.throws(()=>inspect({...service,commandLine:'node C:\\worktrees\\one\\repo'}),/references/);
+});
+test('Windows ownership projection preserves generation, session and cwd evidence in one inventory call',async()=>{
+ let scans=0;const createdAt='2026-10-20T00:00:00Z';
+ const snapshot=await processOwnershipSnapshot({platform:'win32',snapshot:async()=>{scans++;return {complete:true,observedAt:createdAt,processes:[{pid:77,parentPid:1,imageName:'node.exe',commandLine:null,createdAt,creationKey:'windows:638965152000000000',observedAt:createdAt,sessionId:0,cwd:'C:\\other'}]};}});
+ assert.equal(scans,1);assert.equal(snapshot[0].createdAt,createdAt);assert.equal(snapshot[0].creationKey,'windows:638965152000000000');assert.equal(snapshot[0].sessionId,0);assert.equal(snapshot[0].cwd,'C:\\other');
+});
+test('terminal owner exemption never hides a reused gateway PID now referencing the target',()=>{
+ const old={...input,startedAt:'2026-10-20T00:00:00Z',workspacePaths:[input.workspacePaths[0]]};
+ const reused={...processEntry(42,1,'node C:\\worktrees\\one\\repo','node.exe'),createdAt:'2026-10-21T00:00:00Z'};
+ assert.throws(()=>assertInterruptedOwnershipAbsent(old,[...self,reused],'win32',100,true),/references/);
 });

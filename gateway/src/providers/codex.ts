@@ -173,11 +173,11 @@ export class CodexProvider implements ProviderAdapter{
   const shellEnvironment=await codexShellEnvironment(providerChildEnv(gradle?.env??{}));
   const r=await runCodexCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity},runStartedAt);
   statusCache=undefined;const parsed=parseEvents(r.stdout);
-  const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt);
+  const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt,undefined,undefined,{returnedThreadId:parsed.threadId});
   if(!parsed.text&&session.completed&&session.text)parsed.text=session.text;
   if(parsed.usage==='unavailable'&&session.usage)parsed.usage=session.usage;
   const runtime={...codexRuntimeMetadata(parsed.model,parsed.effort,session),speed:parsed.speed??'unavailable',speedSource:parsed.speed?'cli_json':'unavailable',observedSpeeds:parsed.observedSpeeds};
-  const executionMetadata={completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};
+  const executionMetadata={implementationProgress:r.implementationProgress,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};
   const shellExecution={selectedShell:shellEnvironment.shell??null,...codexShellFailure(parsed.commandExecutions)};
   const interrupted=interruptionKind(r.timedOut,signal);
   const confirmedCompletion=parsed.completed||session.completed;

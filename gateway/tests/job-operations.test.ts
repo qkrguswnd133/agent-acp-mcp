@@ -147,10 +147,12 @@ test('maintenance requires terminal idle ownership and confirmed child cleanup',
   await fs.writeFile(f.file,JSON.stringify({...f.record,result:{error:null,results:[{childCleanedUp:false}]}}));await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),/child cleanup/);
   await fs.writeFile(f.file,JSON.stringify(f.record));const otherId=randomUUID(),otherFile=path.join(f.jobs,otherId+'.json');
   for(const cwd of [f.w.originalCwd,f.w.path]){
-   await fs.writeFile(otherFile,JSON.stringify({job_id:otherId,kind:'agent_implement',status:'running',cwd,ownerPid:process.pid}));await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),/active job/);
+   const active={job_id:otherId,kind:'agent_implement',status:'running',cwd,ownerPid:process.pid};await fs.writeFile(otherFile,JSON.stringify(active));
+   (f.m as any).active.set(otherId,{job:active,finalizing:false,done:Promise.resolve(),controller:new AbortController()});
+   try{if(cwd===f.w.path)await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),error=>String(error).includes(otherId)&&String(error).includes(String(process.pid)));else assert.ok('worktree' in await f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}));}finally{(f.m as any).active.delete(otherId);}
   }
   // Completion can be persisted before provider/job finalization has finished.
-  const finalizing={job_id:otherId,kind:'agent_implement',status:'completed',cwd:f.w.originalCwd,ownerPid:process.pid};await fs.writeFile(otherFile,JSON.stringify(finalizing));
+  const finalizing={job_id:otherId,kind:'agent_implement',status:'completed',cwd:f.w.path,ownerPid:process.pid};await fs.writeFile(otherFile,JSON.stringify(finalizing));
   (f.m as any).active.set(otherId,{job:finalizing,finalizing:true,done:Promise.resolve(),controller:new AbortController()});
   try{await assert.rejects(()=>f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot}),/active job|finalizing/);}finally{(f.m as any).active.delete(otherId);}
   await fs.unlink(otherFile);await fs.writeFile(f.file,JSON.stringify({...f.record,status:'failed',result:{error:'task failed'}}));const preview=await f.m.worktreeMaintenance(f.id,'migrate',{dryRun:true,targetRoot});assert.ok('eligible' in preview.worktree&&preview.worktree.eligible);
@@ -289,19 +291,17 @@ test('interrupted cleanup requires idle confirmation and process scan, preservin
  }finally{await disposeFixture(f);}
 });
 
-test('unknown cleanup preserves successful and failed work until explicit review and fresh tracked-PID/workspace checks',async t=>{
+test('terminal unknown cleanup automatically rechecks tracked PIDs and target workspace without an extra idle acknowledgement',async t=>{
  for(const status of ['completed','failed']){
   let scans=0,pidScans=0;const pids=Array.from({length:30},(_,i)=>1_900_000_000+i);
-  const f=await maintenanceFixture(t,undefined,async()=>{scans++;return {processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()};},async (actual,context)=>{pidScans++;assert.deepEqual(actual,pids);assert.equal(typeof context,'object');if(typeof context==='object'){assert.ok(context.startedAt);assert.ok(context.rootPids?.length);assert.equal(context.rootAnchorSource,'job_owner_and_observed_provider_roots');}return {processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:actual,absentPids:actual};});
+  const f=await maintenanceFixture(t,undefined,async input=>{scans++;assert.deepEqual(input.workspacePaths,[f.w.path]);return {processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()};},async (actual,context)=>{pidScans++;assert.deepEqual(actual,pids);assert.equal(typeof context,'object');if(typeof context==='object'){assert.ok(context.startedAt);assert.ok(context.rootPids?.length);assert.equal(context.rootAnchorSource,'job_owner_and_observed_provider_roots');}return {processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:actual,absentPids:actual};});
   const originalResult={error:status==='failed'?'historical failure':null,results:[{provider:'codex',text:'finished implementation',usage:{totalTokens:44},rawEvents:'x'.repeat(80000),childCleanedUp:false,processCleanup:{verified:false,trackedPids:pids,remainingPids:[]}}]};
   const record={...f.record,status,result:originalResult};await fs.writeFile(f.file,JSON.stringify(await persistJobPayload(record,f.jobs)));
   try{
-   await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','',{automatic:true,emptyOnly:true}),/child cleanup is unconfirmed/);
-   await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','reviewed'),/idle_confirmed/);
    const shown=await f.m.status(f.id);const tree=await f.m.worktreeStatus(f.id);assert.equal(shown.result.results[0].processCleanup.trackedPidCount,30);assert.equal(shown.processEvidence.source,'artifact');assert.equal(tree.processEvidence.file,shown.processEvidence.file);
-   const preview=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true,dryRun:true});assert.ok('eligible' in preview&&preview.eligible);assert.ok(await fs.stat(f.w.path));assert.equal(scans,1);assert.equal(pidScans,1);
-   const result=await f.m.cleanupWorktree(f.id,'HEAD','Parent checked workspace',{idleConfirmed:true});assert.equal(result.worktree.state,'removed');assert.equal(scans,2);assert.equal(pidScans,2);
-   const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,status);assert.equal(saved.result.error,originalResult.error);assert.deepEqual(saved.result.results[0].usage,{totalTokens:44});assert.equal(saved.worktreeIdleCheck.parentConfirmed,true);
+   const preview=await f.m.cleanupWorktree(f.id,'HEAD','',{dryRun:true});assert.ok('eligible' in preview&&preview.eligible);assert.equal('requires_idle_confirmation' in preview&&preview.requires_idle_confirmation,false);assert.ok(await fs.stat(f.w.path));assert.equal(scans,1);assert.equal(pidScans,1);
+   const result=await f.m.cleanupWorktree(f.id,'HEAD','',{automatic:true,emptyOnly:true});assert.equal(result.worktree.state,'removed');assert.equal(scans,2);assert.equal(pidScans,2);
+   const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,status);assert.equal(saved.result.error,originalResult.error);assert.deepEqual(saved.result.results[0].usage,{totalTokens:44});assert.equal(saved.worktreeIdleCheck.parentConfirmed,false);assert.equal(saved.worktreeIdleCheck.automaticFreshCheck,true);
   }finally{await disposeFixture(f);}
  }
 });
@@ -403,4 +403,73 @@ test('orphaned interrupted forget retains persisted status and requires warning 
   await f.m.worktreeMaintenance(f.id,'forget',{verified:true,acknowledgeProcessWarning:true,summary:'Record owner absent; preserve interrupted evidence'});
   const saved=JSON.parse(await fs.readFile(f.file,'utf8'));assert.equal(saved.status,'running');assert.equal((await f.m.status(f.id)).status,'interrupted');assert.ok(saved.worktree.forgetAudit.processWarnings.length);assert.equal((await f.m.listWorktrees()).total,0);
  }finally{await disposeFixture(f);}
+});
+
+test('target worktree blockers report live owner evidence, ignore unrelated jobs and recognize reused owner PIDs',async t=>{
+ const f=await maintenanceFixture(t),otherId=randomUUID(),otherFile=path.join(f.jobs,otherId+'.json');let scans=0;
+ const other={...f.record,job_id:otherId,status:'running',ownerPid:999999,startedAt:'2026-10-20T01:00:00Z',cwd:f.w.path};
+ let createdAt='2026-10-20T00:00:00Z';const snapshot=async()=>{scans++;return {complete:true,observedAt:'2026-10-23T00:00:00Z',processes:[{pid:999999,parentPid:1,imageName:'node.exe',createdAt,observedAt:'2026-10-23T00:00:00Z',commandLine:'node gateway.js'}]};};
+ const check=()=>(f.m as any).assertTargetWorktreeIdle(f.id,f.w.path,snapshot);
+ try{
+  await fs.writeFile(otherFile,JSON.stringify({...other,cwd:f.w.originalCwd}));await check();assert.equal(scans,0);
+  await fs.writeFile(otherFile,JSON.stringify(other));await assert.rejects(check,(error:any)=>error.blockingJob.job_id===otherId&&error.blockingJob.ownerPid===999999&&error.blockingJob.liveness==='owner_alive'&&error.message.includes(otherId));
+  createdAt='2026-10-21T00:00:00Z';assert.equal((await check()).staleOwnerRecord,true);
+  await fs.writeFile(otherFile,JSON.stringify({...other,ownerPid:process.pid}));assert.equal((await check()).staleOwnerRecord,true);
+  await assert.doesNotReject(()=>(f.m as any).assertTargetWorktreeIdle(f.id,f.w.path,async()=>{throw Error('must not query for an unowned current-manager record');}));
+  await fs.writeFile(otherFile,JSON.stringify(other));await assert.rejects(()=>(f.m as any).assertTargetWorktreeIdle(f.id,f.w.path,async()=>{throw Error('unavailable');}),(error:any)=>error.blockingJob.liveness==='inventory_unavailable');
+ }finally{await fs.unlink(otherFile);await disposeFixture(f);}
+});
+
+test('target maintenance reservation permits original repository jobs and blocks the actual worktree',async t=>{
+ const f=await maintenanceFixture(t);let release!:()=>void,entered=false;
+ const reserved=(f.m as any).reserveMaintenance(f.id,false,async()=>{entered=true;await new Promise<void>(resolve=>release=resolve);});
+ try{
+  while(!entered)await delay(1);
+  await assert.rejects(()=>f.m.start('agent_ask',{cwd:f.w.path,task:'target'}),new RegExp(f.id));
+  const started=await f.m.start('agent_ask',{cwd:f.repo,task:'original'});await f.m.wait(started.job_id,5);
+ }finally{release();await reserved;await disposeFixture(f);}
+});
+
+test('checkout-only cleanup requires explicit parent verification even for an empty worktree',async t=>{
+ const f=await maintenanceFixture(t);
+ try{
+  const preview:any=await f.m.cleanupWorktree(f.id,'HEAD','parent review',{dryRun:true,preserveBranch:true});assert.equal(preview.requires_parent_verification,true);
+  await assert.rejects(()=>f.m.cleanupWorktree(f.id,'HEAD','parent review',{preserveBranch:true}),/Parent verification/);
+  const removed=await f.m.cleanupWorktree(f.id,'HEAD','parent review',{preserveBranch:true,verified:true});assert.equal(removed.worktree.state,'removed');assert.equal(await fixtureGit(f.repo,'rev-parse',f.w.branch),f.w.baseCommit);
+ }finally{await disposeFixture(f);}
+});
+
+test('automatic empty-worktree finalization retains fresh cleanup proof in memory and persisted history',async t=>{
+ const f=await maintenanceFixture(t),manager=new JobManager(f.jobs,async()=>({error:null,text:'done',childCleanedUp:false,processCleanup:{verified:false,trackedPids:[],remainingPids:[]}}),undefined,undefined,async()=>({processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()}),async pids=>({processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:pids,absentPids:pids}));
+ try{
+  const started=await manager.start('agent_implement',{cwd:f.repo,task:'fixture',workspace_mode:'isolated'}),done=await manager.wait(started.job_id,25,true);
+  assert.equal(done.worktree.state,'removed');assert.equal(done.worktreeIdleCheck.automaticFreshCheck,true);assert.equal(done.worktreeIdleCheck.parentConfirmed,false);assert.equal(done.result.childCleanedUp,false);
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.jobs,started.job_id+'.json'),'utf8')).worktreeIdleCheck.automaticFreshCheck,true);
+ }finally{await manager.close();await disposeFixture(f);}
+});
+
+test('opt-in terminal artifact cleanup preserves commits and original result; ownership failure only warns',async t=>{
+ const previous=process.env.AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS;
+ try{for(const mode of ['disabled','enabled','blocked']){
+  process.env.AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS=mode==='disabled'?'false':'true';
+  const f=await maintenanceFixture(t);await fixtureGit(f.repo,'worktree','remove',f.w.path);
+  await fs.writeFile(path.join(f.repo,'.gitignore'),'build/\n');await fixtureGit(f.repo,'add','.');await fixtureGit(f.repo,'commit','-m','ignore build');
+  let target:string|undefined,scans=0;
+  const manager=new JobManager(f.jobs,async(_kind,input)=>{
+   target=input.cwd;await fs.writeFile(path.join(input.cwd,'base.txt'),'committed implementation');await fixtureGit(input.cwd,'add','.');await fixtureGit(input.cwd,'commit','-m','implementation');
+   await fs.mkdir(path.join(input.cwd,'build'));await fs.writeFile(path.join(input.cwd,'build','generated.bin'),'generated');
+   return {error:null,text:'implementation succeeded',usage:{totalTokens:17},processCleanup:{verified:false,trackedPids:[],remainingPids:[]}};
+  },undefined,undefined,async input=>{scans++;assert.ok(input.workspacePaths.length===1);if(mode==='blocked')throw Error('Provider ownership unproven');return {processScan:'passed',ownerMayServeOtherJobs:true,checkedAt:new Date().toISOString()};},async pids=>({processExitScan:'passed',checkedAt:new Date().toISOString(),trackedPids:pids,absentPids:pids}));
+  let jobId:string|undefined;
+  try{
+   const started=await manager.start('agent_implement',{cwd:path.join(f.repo,'nested'),task:'fixture',workspace_mode:'isolated'});jobId=started.job_id;
+   const result=await manager.wait(jobId,25,true);assert.equal(result.status,'completed');assert.equal(result.result.text,'implementation succeeded');assert.equal(result.result.usage.totalTokens,17);
+   const artifact=path.join(target!,'build','generated.bin');assert.equal(!!await fs.stat(artifact).catch(()=>undefined),mode!=='enabled');
+   assert.equal(result.worktree.state,'preserved');assert.notEqual(await fixtureGit(result.worktree.path,'rev-parse','HEAD'),result.worktree.baseCommit);
+   if(mode==='disabled'){assert.equal(result.worktreeArtifactCleanup,undefined);assert.equal(scans,0);}else if(mode==='blocked'){assert.match(result.worktreeArtifactCleanup.reason,/ownership unproven/);}else{assert.equal(result.worktreeArtifactCleanup.removedBytes,9);assert.ok(result.worktreeArtifactCleanup.removedIgnoredPaths.includes('nested/build/generated.bin'));}
+  }finally{
+   await manager.close();if(target){await fs.unlink(path.join(target,'build','generated.bin')).catch(()=>{});await fs.rmdir(path.join(target,'build')).catch(()=>{});if(jobId){const saved=JSON.parse(await fs.readFile(path.join(f.jobs,jobId+'.json'),'utf8'));await fixtureGit(f.repo,'worktree','remove',saved.worktree.path);}}
+   await f.m.close();
+  }
+ }}finally{if(previous===undefined)delete process.env.AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS;else process.env.AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS=previous;}
 });

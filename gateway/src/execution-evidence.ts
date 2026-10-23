@@ -18,8 +18,8 @@ export function implementationProgress(kind:string,activity:any,now=Date.now()){
  if(typeof kind!=='string'||!kind.endsWith('implement')||!p||!Number.isFinite(Date.parse(p.startedAt)))return {status:'unavailable',reason:'No structured implementation progress from this provider'};
  const elapsedSeconds=Math.max(0,Math.floor((now-Date.parse(p.startedAt))/1000));
  const slow=elapsedSeconds>=300&&p.successfulReads>=20&&p.successfulWrites===0&&p.commandsStarted===0;
- return {...p,elapsedSeconds,status:slow?'exploration_without_observed_execution':'observed_activity',
+ return {...p,elapsedSeconds,status:p.phase==='completion_pending_cleanup'?'completion_pending_cleanup':slow?'exploration_without_observed_execution':'observed_activity',
   warning:slow?'At least 5 minutes and 20 successful reads without an observed file write or command. Review scope and the next concrete implementation step.':null,
   nextAction:slow?'parent_review_scope_and_next_step':null,automaticCancellation:false,
-  coverage:'ACP client file and terminal operations only; other modifications are not inferred'};
+  coverage:typeof p.coverage==='string'?p.coverage:'ACP client file and terminal operations only; other modifications are not inferred'};
 }

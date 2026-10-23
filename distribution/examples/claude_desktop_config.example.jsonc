@@ -33,6 +33,8 @@
         "CODEX_EFFORT": "auto",
         // standard (default), fast, ultrafast when advertised by agent_models.
         "CODEX_SPEED": "standard",
+        // Optional new-worktree build/.gradle artifact cleanup after fresh idle checks.
+        "AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS": "false",
         "CODEX_WINDOWS_SANDBOX": "unelevated",
         "CODEX_IMPLEMENT_SANDBOX": "workspace-write"
       }

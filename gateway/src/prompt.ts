@@ -15,6 +15,7 @@ export function buildPrompt(kind:AgentKind,input:RunInput,provider:string):strin
     role,
     !writable?readOnlyWorkflow:'',
     writable?implementationWorkflow:'',
+    writable?'Do not create symlinks or directory junctions to the original workspace, including its node_modules or build caches. Such links can expose files outside the isolated write scope and block safe cleanup. If required dependencies are unavailable inside the assigned workspace, report the missing dependency and ask the parent to arrange an approved setup.':'',
     writable?'Use Gradle --no-daemon and reuse the existing Gradle cache for verification. Preserve the gateway-provided GRADLE_USER_HOME when present. Do not delete build artifacts (including build/ and .gradle/) or run clean solely for cleanup; the parent will use agent_worktree_cleanup with remove_ignored_artifacts=true after reviewing integration. Do not leave background build/test servers running; report any surviving process IDs.':'',
     writable?'Do not download missing Gradle distributions, dependencies or other external resources without explicit user authorization. Gradle --offline alone does not prevent its Wrapper from downloading a missing distribution: check the existing wrapper cache first. If the required distribution or dependency is missing, report the missing item and required verification command to the parent. Report any observed external download and its target; do not claim no network traffic solely because logs are silent.':'',
     `Task: ${input.task}`,

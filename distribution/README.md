@@ -1,5 +1,11 @@
 # 설치, 업데이트, 릴리스
 
+## 2.7.2 작업 폴더 정리 개선
+
+대상 worktree의 작업·프로세스만 검사하며 정상 완료 작업의 `unverified` 상태는 정리 시 최신 증거로 재확인합니다. 이전 병합 커밋을 `integration_ref`로 사용할 수 있고, `preserve_branch=true`는 브랜치와 커밋을 남기고 checkout만 정리합니다. ignored 산출물 요약·부분 복구·Codex 진행 상태도 개선했습니다. [안전 조건과 사용법](gateway/WORKTREE-MAINTENANCE-2.7.2.md)을 확인하세요.
+
+새 managed worktree에서 생성한 ignored `build/`·`.gradle/` 산출물을 완료 후 자동 정리하려면 MCP의 `env`에 `AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS="true"`를 지정합니다. 기본은 `false`이며 이전 worktree에는 소급 적용하지 않습니다. 실제 관련 프로세스·파일 변경·링크 검사에 실패하면 보존합니다. 개인 설정은 업데이트가 자동 변경하지 않으므로 필요한 항목만 병합하고 MCP를 재연결하세요.
+
 ## 에이전트 실행 속도 설정
 
 MCP 서버 `env`에 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED`를 지정할 수 있으며 모두 기본값은 `standard`입니다. `model`·`effort`와 별도이고 생략해도 Standard를 요청합니다. Codex는 선택 모델이 광고한 `fast`·`ultrafast`, Claude는 지원 모델의 `fast`를 명시적으로 선택할 수 있습니다. Claude Fast는 별도 usage credits를 사용합니다. Grok은 현재 `standard`만 지원합니다. [설정·실제 관측값 설명](gateway/EXECUTION-SPEED.md)을 확인하고 샘플의 주석에 따라 설정한 뒤 MCP를 재연결하세요.

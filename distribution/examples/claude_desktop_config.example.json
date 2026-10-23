@@ -20,6 +20,7 @@
         "CODEX_IMPLEMENT_SANDBOX": "workspace-write",
         "GROK_SPEED": "standard",
         "CLAUDE_SPEED": "standard",
+        "AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS": "false",
         "CODEX_SPEED": "standard"
       }
     }

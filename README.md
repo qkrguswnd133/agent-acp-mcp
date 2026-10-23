@@ -39,6 +39,8 @@ Windows Monitor의 업데이트 창에는 **WSL Gateway** 목록이 있습니다
 
 ## 업데이트
 
+**2.7.2 / Gateway 2.7.1 / Monitor 1.4.1:** provider별 Standard 기본 속도 설정, 대상 worktree로 좁힌 정리 검사, 완료 작업의 최신 프로세스 재검사, 이전 병합 ref 허용, 브랜치를 보존하는 checkout-only 정리, 부분 checkout 복구, ignored 산출물 요약과 Codex 진행 상태를 추가했습니다. 새 작업의 ignored build/.gradle 자동 정리는 명시적으로 켜는 선택 기능입니다. [동작과 제한](gateway/WORKTREE-MAINTENANCE-2.7.2.md)을 확인하세요.
+
 **2.7.0 / Gateway 2.7.0 / Monitor 1.3.1:** junction 안전 검사와 명시적 링크 제거, 소유자·만료를 기록하는 정리 잠금, 백그라운드 maintenance, PID 재사용에 따른 무관 프로세스 오인 방지, 20 KiB 미만 MCP 응답, cherry-pick 대응 표시를 추가했습니다. `operation_id`는 접수이며 `agent_operation_status`로 완료를 확인합니다. Windows와 Linux/WSL에 동일한 수정이 포함됩니다. [원인·수정·검증 및 제한](gateway/MAINTENANCE-SAFETY.md)을 확인하세요.
 
 **2.6.3 / Gateway 2.6.2 / Monitor 1.3.1:** `forget`을 파일 삭제와 분리했습니다. 경로·브랜치·Git 등록이 모두 없는 종료 작업은 PID 경고를 명시적으로 확인한 뒤 목록에서 숨길 수 있습니다. 원래 작업 상태·결과 첨부·PID 경고를 보존하며, `cleanup`의 프로세스 차단은 유지합니다.

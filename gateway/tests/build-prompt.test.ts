@@ -7,6 +7,7 @@ test('all implementation providers preserve artifacts and require authorization 
   assert.match(prompt,/Gradle --no-daemon/);assert.match(prompt,/Do not delete build artifacts/);
   assert.match(prompt,/remove_ignored_artifacts=true/);assert.match(prompt,/without explicit user authorization/);
   assert.match(prompt,/--offline alone does not prevent/);assert.match(prompt,/required verification command/);
+  assert.match(prompt,/Do not create symlinks or directory junctions to the original workspace/);
  }
  assert.doesNotMatch(buildPrompt('agent_review',{cwd:process.cwd(),task:'Review'},'Codex'),/Use the available shell for local builds/);
 });

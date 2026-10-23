@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 
-export interface RecordedProcessIdentity {pid:number;createdAt:string|null;imageName:string|null;observedAt:string;parentPid?:number|null;creationKey?:string|null;commandLine?:string|null;cwd?:string|null;}
+export interface RecordedProcessIdentity {pid:number;createdAt:string|null;imageName:string|null;observedAt:string;parentPid?:number|null;creationKey?:string|null;commandLine?:string|null;cwd?:string|null;sessionId?:number|null;}
 export interface ProcessInventory {processes:RecordedProcessIdentity[];observedAt:string;complete:boolean;}
 type Execute=(file:string,args:string[])=>Promise<string>;
 const execute:Execute=(file,args)=>new Promise((resolve,reject)=>execFile(file,args,{windowsHide:true,timeout:10000,maxBuffer:16*1024*1024,encoding:'utf8'},(error,stdout)=>error?reject(error):resolve(stdout)));
@@ -17,13 +17,13 @@ export function parseWindowsInventory(text:string,observedAt:string):ProcessInve
  return {complete:true,observedAt,processes:rows.map(row=>({pid:row.ProcessId,parentPid:row.ParentProcessId,
   createdAt:typeof row.CreatedAt==='string'&&Number.isFinite(Date.parse(row.CreatedAt))?row.CreatedAt:null,
   creationKey:typeof row.CreationKey==='string'&&/^\d+$/.test(row.CreationKey)?'windows:'+row.CreationKey:null,
-  imageName:typeof row.Name==='string'?row.Name:null,commandLine:typeof row.CommandLine==='string'?row.CommandLine:null,observedAt}))};
+  imageName:typeof row.Name==='string'?row.Name:null,commandLine:typeof row.CommandLine==='string'?row.CommandLine:null,sessionId:Number.isSafeInteger(row.SessionId)&&row.SessionId>=0?row.SessionId:null,observedAt}))};
 }
 /** One Windows CIM query returns both candidates and all available ancestors. */
 export async function readProcessInventory(options:{platform?:NodeJS.Platform;procRoot?:string;execute?:Execute;clockTicks?:number;now?:()=>number}={}):Promise<ProcessInventory>{
  const platform=options.platform??process.platform,run=options.execute??execute,observedAt=new Date((options.now??Date.now)()).toISOString();
  if(platform==='win32'){
-  const script="$ErrorActionPreference='Stop';[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);@(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='CreatedAt';e={if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null}}},@{n='CreationKey';e={if($_.CreationDate){$_.CreationDate.ToUniversalTime().Ticks.ToString()}else{$null}}}) | ConvertTo-Json -Compress";
+  const script="$ErrorActionPreference='Stop';[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);@(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,Name,CommandLine,SessionId,@{n='CreatedAt';e={if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null}}},@{n='CreationKey';e={if($_.CreationDate){$_.CreationDate.ToUniversalTime().Ticks.ToString()}else{$null}}}) | ConvertTo-Json -Compress";
   return parseWindowsInventory(await run(path.join(process.env.SystemRoot??'C:/Windows','System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-Command',script]),observedAt);
  }
  if(platform!=='linux')throw Error('Creation-identity process inventory unsupported on this platform');

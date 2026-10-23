@@ -1,5 +1,9 @@
 # Managed worktrees for parallel implementation
 
+## 2.7.2 maintenance refinements
+
+See [current behavior and safety limits](WORKTREE-MAINTENANCE-2.7.2.md): cleanup checks the actual target worktree, completed unverified jobs receive fresh process checks, integration refs may be ancestors of HEAD, and `preserve_branch=true` provides explicit checkout-only removal without claiming integration. Partial recovery restores only missing tracked files with no surviving/index edits. Status separates ignored counts from changes, and optional new-artifact cleanup is disabled by default. These refinements supersede older restrictions described below.
+
 ## 2.7.0 maintenance protocol
 
 `agent_worktree_cleanup`, `agent_worktree_forget`, `agent_worktree_migrate` and `agent_worktree_recover` now default to `background=true`, including dry runs. The immediate response contains `operation_id`, not a completed result. Poll `agent_operation_status(operation_id)` until `completed`, `failed` or `interrupted`, then inspect `result`, each bulk item and `timings`. A completed operation may contain skipped bulk targets. Do not start a duplicate operation while one is queued/running. `background=false` retains synchronous execution for older integrations, but may exceed host request limits on large trees. All existing inputs remain accepted.

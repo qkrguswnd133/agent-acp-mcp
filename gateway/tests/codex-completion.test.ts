@@ -56,18 +56,18 @@ test('Session task_complete recovery is scoped to matching session, cwd and exec
   assert.equal((await readCodexSessionTelemetry(cwd,id,started,started+1000,root)).completed,undefined);
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
-test('Missing terminal stream is recovered from session task_complete while the CLI is still alive',async()=>{
+test('Missing terminal stream is recovered despite a large session header while the CLI is still alive',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'codex-recovery-')),previous=process.env.CODEX_HOME;
  const id='00000000-0000-7000-8000-000000000056',cwd=process.cwd(),now=new Date().toISOString();
  try{
   process.env.CODEX_HOME=root;const folder=path.join(root,'sessions',...now.slice(0,10).split('-'));await fs.mkdir(folder,{recursive:true});
   await fs.writeFile(path.join(folder,`rollout-check-${id}.jsonl`),[
-   {type:'session_meta',payload:{id,cwd}},
+   {type:'session_meta',payload:{id,cwd,developer_instructions:'fixture '.repeat(80_000)}},
    {type:'turn_context',payload:{cwd,model:'gpt-6-astra',effort:'high'}},
    {type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:51}}}},
    {type:'event_msg',payload:{type:'task_complete',last_agent_message:'Recovered without stream final'}}
   ].map(row=>JSON.stringify({...row,timestamp:now})).join('\n'));
-  const result=await runCodexCommand(process.execPath,['-e',event({type:'thread.started',thread_id:id})+hang],{cwd,env:safeChildEnv(),timeoutMs:20_000,completionGraceMs:10});
+  const result=await runCodexCommand(process.execPath,['-e',event({type:'thread.started',thread_id:id})+hang],{cwd,env:safeChildEnv(),timeoutMs:20_000,completionGraceMs:10},Date.parse(now));
   assert.equal(result.stopReason,'completed');assert.equal(result.completion.source,'session_jsonl');assert.equal(result.recovered?.text,'Recovered without stream final');assert.equal(result.recovered?.model,'gpt-6-astra');assert.deepEqual(result.recovered?.usage,{input_tokens:51});
  }finally{if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;await fs.rm(root,{recursive:true,force:true});}
 });
