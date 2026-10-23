@@ -11,6 +11,7 @@ import {createManagedWorktree} from '../src/managed-worktree.js';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {terminateProcess} from '../src/process.js';
+import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 
 const sourceGateway=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const terminal=new Set(['completed','failed','cancelled','interrupted']);
@@ -29,32 +30,15 @@ async function fixture(t:any){
  // provider never launches shell commands. Copies stay inside this fixture.
  if(process.platform==='win32')await fs.cp(path.join(sourceGateway,'runtime'),path.join(gateway,'runtime'),{recursive:true,filter:async source=>!(await fs.lstat(source)).isSymbolicLink()});
  const cli=path.join(root,process.platform==='win32'?'fixture-codex.cmd':'fixture-codex.sh');
- await fs.writeFile(path.join(root,'fake.mjs'),`
-import fs from 'node:fs/promises';
-import readline from 'node:readline';
-const args=process.argv.slice(2),emit=value=>process.stdout.write(JSON.stringify(value)+'\\n');
-if(args[0]==='--version'){console.log('codex-cli 0.162.1-fixture');}
-else if(args[0]==='login'&&args[1]==='status'){console.log('Logged in using ChatGPT fixture');}
-else if(args[0]==='app-server'){
- for await(const line of readline.createInterface({input:process.stdin})){
-  const request=JSON.parse(line);if(request.id===undefined)continue;
-  let result={};
-  if(request.method==='account/read')result={account:{type:'chatgpt',email:'fixture@example.invalid'}};
-  else if(request.method==='account/rateLimits/read')result={rateLimits:{primary:{usedPercent:1,windowDurationMins:300,resetsAt:2000000000}}};
-  else if(request.method==='model/list')result={data:[{model:'gpt-6-astra',supportedReasoningEfforts:[{reasoningEffort:'high'}]}],nextCursor:null};
-  else if(request.method!=='initialize')throw Error('Unexpected fixture RPC '+request.method);
-  emit({jsonrpc:'2.0',id:request.id,result});
- }
-}else if(args[0]==='exec'){
- for await(const chunk of process.stdin){};
- await fs.writeFile(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,startedAt:Date.now()}));
- emit({type:'thread.started',thread_id:'ba72a0ee-c4e5-4f41-a4f4-f1e138f382a3',model:'gpt-6-astra',reasoning_effort:'high'});
- emit({type:'item.completed',item:{type:'agent_message',text:'Fixture partial response'}});
- await new Promise(resolve=>setTimeout(resolve,2500));
- emit({type:'item.completed',item:{type:'agent_message',text:'MCP_JOB_COMPLETED'}});
- emit({type:'turn.completed',usage:{input_tokens:10,output_tokens:4}});
-}else{throw Error('Unexpected CLI invocation '+JSON.stringify(args));}
-`);
+ await fs.writeFile(path.join(root,'fake.mjs'),codexAppServerFixtureScript([
+  {type:'thread.started',thread_id:'ba72a0ee-c4e5-4f41-a4f4-f1e138f382a3',model:'gpt-6-astra',reasoning_effort:'high'},
+  {type:'item.completed',item:{type:'agent_message',text:'MCP_JOB_COMPLETED'}},
+  {type:'turn.completed',usage:{input_tokens:10,output_tokens:4}},
+ ],{
+  models:[{model:'gpt-6-astra',supportedReasoningEfforts:[{reasoningEffort:'high'}]}],
+  startup:`if(args[0]==='--version'){console.log('codex-cli 0.164.0-fixture');process.exit(0);}if(args[0]==='login'&&args[1]==='status'){console.log('Logged in using ChatGPT fixture');process.exit(0);}if(args[0]!=='app-server')throw Error('Unexpected CLI invocation '+JSON.stringify(args));`,
+  beforeTurn:`fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,startedAt:Date.now()}));note('item/completed',{item:{id:'fixture-partial',type:'agentMessage',text:'Fixture partial response'}});await new Promise(resolve=>setTimeout(resolve,2500));`,
+ }));
  await fs.writeFile(cli,process.platform==='win32'?`@echo off\r\n"${process.execPath}" "%~dp0fake.mjs" %*\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${path.join(root,'fake.mjs')}" "$@"\n`);
  if(process.platform!=='win32')await fs.chmod(cli,0o755);
  const child=spawn(process.execPath,[path.join(gateway,'dist','src','index.js')],{
@@ -87,7 +71,7 @@ else if(args[0]==='app-server'){
  const start=async()=>{
   const job=await call('agent_ask',{provider:'codex',cwd,task:'Read-only protocol fixture. Do not change files.',max_runtime_minutes:1});assert.match(job.job_id,/^[0-9a-f-]{36}$/);
   for(let i=0;i<200;i++){if(await fs.stat(marker).catch(()=>undefined))return job;await delay(50);}
-  assert.fail('Mock Codex exec did not start: '+JSON.stringify(await call('agent_job_status',{job_id:job.job_id}))+'; '+stderr);
+  assert.fail('Mock Codex app-server turn did not start: '+JSON.stringify(await call('agent_job_status',{job_id:job.job_id}))+'; '+stderr);
  };
  return {child,exited,request,notify,call,start,gateway,root,stateRoot:process.platform==='linux'?path.join(root,'runtime-state'):path.join(gateway,'state'),stderr:()=>stderr};
 }

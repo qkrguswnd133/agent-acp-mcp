@@ -9,7 +9,7 @@ interface Artifact {path:string;bytes:number;sha256:string;format:'json';}
 const bytes=(value:unknown)=>Buffer.byteLength(JSON.stringify(value),'utf8');
 const digest=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const isRecord=(v:any):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp','processCleanup','processCleanupState','processCleanupWarning','runtimeEvidence','processEvidence','trackedPidCount','truncated','trackedPidsPath','forgetAudit','processWarnings','processCleanupUnchanged','processWarningAcknowledged','maintenanceLockRecovery']);
+const protectedKeys=new Set(['job_id','status','kind','provider','cwd','ownerPid','startedAt','lastActivityAt','finishedAt','error','errorKind','outcome','model','effort','observation','selection','usage','sessionId','session_id','handoff','execution','completionCriteria','implementationProgress','worktree','worktreeMigration','worktreeIdleCheck','successCount','failureCount','results','skipped','childCleanedUp','processCleanup','processCleanupState','processCleanupWarning','runtimeEvidence','processEvidence','trackedPidCount','truncated','trackedPidsPath','forgetAudit','processWarnings','processCleanupUnchanged','processWarningAcknowledged','maintenanceLockRecovery','executionSpeed','cliAppliedSettings','transport','turnId']);
 type PayloadScope='job'|'result'|'providers'|'provider'|'other';
 function markResponseLimit(job:any){
  if(job.payload?.schema===SCHEMA){
@@ -81,7 +81,7 @@ function compact(job:any){
    const required=(key:string)=>(scope==='job'&&(protectedKeys.has(key)||key==='result'))||(resultScope&&(protectedKeys.has(key)||key==='text'))||(field==='worktree'&&key==='forgetAudit')||(field==='worktree.forgetAudit'&&['processWarnings','processCleanupUnchanged','processWarningAcknowledged','at'].includes(key))||(cleanup&&['trackedPids','trackedPidCount','truncated','trackedPidsPath','verified','remainingPids','unverifiedPids'].includes(key));
    const entries=Object.entries(value).filter(([key])=>field!==''||key!=='payload').sort(([a],[b])=>Number(required(b)||protectedKeys.has(b))-Number(required(a)||protectedKeys.has(a)));
    // Essential result fields cannot be displaced by a diagnostic-heavy object.
-   const metadataLimit=field.endsWith('.usage')?24:protectedKeys.has(field.split('.').at(-1)!)?8:1;
+   const metadataLimit=/\.(?:executionSpeed|cliAppliedSettings)$/.test(field)?24:field.endsWith('.usage')?24:protectedKeys.has(field.split('.').at(-1)!)?8:1;
    const kept=entries.filter(([key],index)=>required(key)||(index<Math.max(keyLimit,scope==='job'||resultScope?0:metadataLimit)&&(keyLimit>0||Buffer.byteLength(key)<=256)));
    if(entries.length>kept.length)note(field,{originalFieldCount:entries.length,previewFieldCount:kept.length});
    const record=Object.fromEntries(kept.map(([key,item])=>[key,resultScope&&key==='text'&&typeof item==='string'?item:visit(item,field?`${field}.${key}`:key,depth+1,scope==='job'&&key==='result'?'result':scope==='result'&&key==='results'?'providers':'other')]));

@@ -7,6 +7,13 @@ import {randomUUID,createHash} from 'node:crypto';
 import {MAX_JOB_RESPONSE_BYTES,persistJobPayload,presentJobPayload} from '../src/job-payload.js';
 
 async function fixture(){return fs.mkdtemp(path.join(os.tmpdir(),'job-payload-'));}
+test('compact results preserve same-work CLI-applied speed separately from backend observation',async()=>{
+ const dir=await fixture(),job=oversized();
+ const executionSpeed={requested:'fast',settingSource:'configured',effective:'fast',effectiveSource:'app_server.thread/start',effectiveVerified:true,threadId:'thread',turnId:'turn',serviceTier:'priority',observed:'unavailable',observationSource:'unavailable',verified:false};
+ Object.assign(job.result,{executionSpeed,cliAppliedSettings:{threadId:'thread',turnId:'turn',source:'app_server.thread/start',serviceTierPresent:true,serviceTier:'priority',speed:'fast'}});
+ try{const saved=await persistJobPayload(job,dir);assert.deepEqual(saved.result.executionSpeed,executionSpeed);assert.equal(saved.result.cliAppliedSettings.threadId,'thread');assert.equal(saved.result.cliAppliedSettings.serviceTier,'priority');}
+ finally{await fs.rm(dir,{recursive:true,force:true});}
+});
 test('PID previews retain the full count, truncation marker and full-evidence file on old and new records',async()=>{
  const dir=await fixture(),pids=Array.from({length:117},(_,i)=>1000+i);
  const job={...oversized(),runtimeEvidence:{processCleanup:{verified:false,trackedPids:pids,remainingPids:[]}}};

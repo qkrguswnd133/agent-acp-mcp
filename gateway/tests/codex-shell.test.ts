@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {codexShellEnvironment,codexShellFailure} from '../src/codex-shell.js';
 import type {CommandExecution} from '../src/command-telemetry.js';
-import {codexExecutionArgs} from '../src/providers/codex.js';
+import {codexAppServerArgs} from '../src/providers/codex.js';
 
 const shellOptions=(isFile:(file:string)=>Promise<boolean>,majorVersion=async()=>7)=>({isFile:async(file:string)=>file==='C:\\Gateway\\runtime\\codex-shell\\pwsh.exe'||await isFile(file),majorVersion,gatewayRoot:'C:\\Gateway'});
 
@@ -38,15 +38,16 @@ test('a renamed PS5 executable or unusable runtime cannot pass the UTF-8 require
  assert.equal((await codexShellEnvironment({},'win32',options)).nativeShell,'C:\\Program Files\\PowerShell\\7\\pwsh.exe');
  await assert.rejects(codexShellEnvironment({CODEX_POWERSHELL_PATH:'D:\\Broken\\pwsh.exe'},'win32',{...options,majorVersion:async()=>undefined}),/CODEX_POWERSHELL_PATH did not start/);
 });
-test('all Codex runs prohibit login/profile shells while preserving their sandbox policy',()=>{
- for(const platform of ['win32','linux','darwin'] as const)for(const writable of [false,true])for(const mode of ['read-only','workspace-write','danger-full-access']){
-  const args=codexExecutionArgs(writable,platform,{CODEX_IMPLEMENT_SANDBOX:mode});
-  assert.ok(args.includes('allow_login_shell=false'));
-  assert.equal(args[args.indexOf('--sandbox')+1],writable?mode:'read-only');
+const command=(exitCode:number,output:string):CommandExecution=>({command:'git show HEAD',cwd:null,source:'codex_json',exitCode,output});
+test('app-server execution keeps sandbox, shell and nested tool policies explicit on Windows and Linux',()=>{
+ for(const platform of ['win32','linux'] as const)for(const writable of [false,true])for(const mode of ['read-only','workspace-write','danger-full-access']){
+  const args=codexAppServerArgs(writable,'standard',platform,{CODEX_IMPLEMENT_SANDBOX:mode});
+  assert.equal(args[0],'app-server');assert.equal(args.includes('--ignore-user-config'),false);
+  assert.ok(args.includes(`sandbox_mode="${writable?mode:'read-only'}"`));
+  for(const policy of ['approval_policy="never"','model_provider="openai"','features.plugins=false','features.apps=false','features.hooks=false','features.multi_agent=false','notify=[]','allow_login_shell=false','service_tier="standard"','features.fast_mode=false'])assert.ok(args.includes(policy));
   assert.ok(!args.some(value=>/bypass|dangerously/.test(value)));
  }
 });
-const command=(exitCode:number,output:string):CommandExecution=>({command:'git show HEAD',cwd:null,source:'codex_json',exitCode,output});
 const failure=command(-1,'Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access denied)');
 test('only actual failed launch evidence blocks completion; recovered attempts remain visible',()=>{
  assert.ok(codexShellFailure([failure]).error);

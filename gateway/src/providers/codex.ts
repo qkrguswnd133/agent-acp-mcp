@@ -1,7 +1,7 @@
 import {resolveUserStateRoot} from '../runtime.js';
 import path from 'node:path';
 import {gradleEnvironment,gradleTelemetry} from '../gradle-environment.js';
-import {runCodexCommand} from '../codex-execution.js';
+import {runCodexAppCommand} from '../codex-app-execution.js';
 import {spawnPlan} from '../process.js';
 import {codexShellEnvironment,codexShellFailure} from '../codex-shell.js';
 import {home,resolveExecutable,runCommand,safeChildEnv,findExecutableInChildDirs,type LaunchCommand} from '../process.js';
@@ -37,10 +37,15 @@ export function codexSandboxArgs(writable:boolean,platform:NodeJS.Platform=proce
  }
  return args;
 }
-/** Disable profile/login shell startup for every run, including explicit full
- * access. The CLI also rejects a model's request to turn login back on. */
-export function codexExecutionArgs(writable:boolean,platform:NodeJS.Platform=process.platform,env:NodeJS.ProcessEnv=process.env):string[]{
- return ['exec','--ignore-user-config',...codexSandboxArgs(writable,platform,env),'--json','-c','mcp_servers={}','-c','features.plugins=false','-c','allow_login_shell=false'];
+/** App-server has no exec-only --ignore-user-config switch. The runner reads
+ * the effective project config and disables every inherited MCP before starting
+ * the work thread. Authentication stays with the official subscription CLI. */
+export function codexAppServerArgs(writable:boolean,speed:ExecutionSpeed,platform:NodeJS.Platform=process.platform,env:NodeJS.ProcessEnv=process.env):string[]{
+ const sandbox=codexSandboxArgs(writable,platform,env);
+ return ['app-server',...sandbox.slice(2),'-c',`sandbox_mode=${JSON.stringify(sandbox[1])}`,
+  '-c','approval_policy="never"','-c','model_provider="openai"',
+  '-c','mcp_servers={}','-c','features.plugins=false','-c','features.apps=false','-c','features.hooks=false','-c','features.multi_agent=false',
+  '-c','notify=[]','-c','allow_login_shell=false',...codexSpeedArgs(speed)];
 }
 // One resolved launcher serves status, app-server telemetry and run alike.
 async function exe(){
@@ -168,31 +173,40 @@ export class CodexProvider implements ProviderAdapter{
  }
  private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
-  const args=[...codexExecutionArgs(writable),...codexSpeedArgs(speedPolicy('codex').value as ExecutionSpeed)];if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
+  const speed=speedPolicy('codex').value as ExecutionSpeed;
+  const args=codexAppServerArgs(writable,speed);
   const gradle=writable?gradleEnvironment(input.cwd):undefined;
   const shellEnvironment=await codexShellEnvironment(providerChildEnv(gradle?.env??{}));
-  const r=await runCodexCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity},runStartedAt);
+  const r=await runCodexAppCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,
+   prompt:buildPrompt(kind,input,'Codex'),model:model==='auto'?undefined:model,effort:effort==='auto'?undefined:effort,speed,
+   sandbox:codexSandboxArgs(writable)[1] as 'read-only'|'workspace-write'|'danger-full-access',signal,onActivity:hooks?.onActivity},runStartedAt);
   statusCache=undefined;const parsed=parseEvents(r.stdout);
   const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt,undefined,undefined,{returnedThreadId:parsed.threadId});
   if(!parsed.text&&session.completed&&session.text)parsed.text=session.text;
   if(parsed.usage==='unavailable'&&session.usage)parsed.usage=session.usage;
-  const runtime={...codexRuntimeMetadata(parsed.model,parsed.effort,session),speed:parsed.speed??'unavailable',speedSource:parsed.speed?'cli_json':'unavailable',observedSpeeds:parsed.observedSpeeds};
-  const executionMetadata={implementationProgress:r.implementationProgress,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};
+  const observed=codexRuntimeMetadata(parsed.model,parsed.effort,session);
+  const applied=r.appliedSettings;
+  const runtime={...observed,
+   ...(observed.model==='unavailable'&&applied?.model?{model:applied.model,modelSource:applied.source}:{}),
+   ...(observed.effort==='unavailable'&&applied?.effort?{effort:applied.effort,effortSource:applied.source}:{}),
+   speed:parsed.speed??'unavailable',speedSource:parsed.speed?'app_server':'unavailable',observedSpeeds:parsed.observedSpeeds,
+   cliAppliedSettings:applied??null,cliAppliedSettingsHistory:r.settingsHistory};
+  const executionMetadata={transport:'codex_app_server',turnId:r.turnId??null,implementationProgress:r.implementationProgress,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};
   const shellExecution={selectedShell:shellEnvironment.shell??null,...codexShellFailure(parsed.commandExecutions)};
   const interrupted=interruptionKind(r.timedOut,signal);
   const confirmedCompletion=parsed.completed||session.completed;
-  if((r.code!==0&&!(r.stopReason==='completed'&&confirmedCompletion))||parsed.error||interrupted){
-   const error=parsed.error??(interrupted==='deadline_exceeded'?'Codex execution deadline exceeded':interrupted==='cancelled'?'Codex execution cancelled':r.stderr.trim()||`Codex exited with code ${r.code}`);
+  if(!confirmedCompletion||(r.code!==0&&!(r.stopReason==='completed'&&confirmedCompletion))||parsed.error||interrupted){
+   const error=interrupted==='deadline_exceeded'?'Codex execution deadline exceeded':interrupted==='cancelled'?'Codex execution cancelled':parsed.error??(r.stderr.trim()||(!confirmedCompletion?'Codex app-server exited before a confirmed terminal result':`Codex exited with code ${r.code}`));
    const classification=classifyProviderError(parsed.errorEvidence??r.stderr);
-   const errorKind=interrupted??classification.errorKind;
+   const errorKind=interrupted??((parsed.errorEvidence as any)?.code==='cancelled'?'cancelled':classification.errorKind);
    if(!interrupted&&classification.limitKind){
     try{await quota.markLimited('codex',classification,'Codex CLI reported a runtime limit.',Date.now());}catch{/* Cache telemetry cannot replace the CLI result. */}
    }
-   return {provider:'codex',text:parsed.text,error,errorKind,shellExecution,...executionMetadata,limitKind:classification.limitKind??null,resetsAt:classification.resetsAt??null,retryAfter:classification.retryAfter??null,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.stdout};
+   return {provider:'codex',text:parsed.text,error,errorKind,shellExecution,...executionMetadata,limitKind:classification.limitKind??null,resetsAt:classification.resetsAt??null,retryAfter:classification.retryAfter??null,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.rawProtocolStdout};
   }
   if(shellExecution.error)return {provider:'codex',text:parsed.text,error:shellExecution.error,errorKind:'shell_launch_failed',shellExecution,...executionMetadata,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions};
   try{await quota.markAvailable('codex','runtime_success',runStartedAt);}catch{/* Cache telemetry cannot replace the CLI result. */}
-  return {provider:'codex',text:parsed.text,error:null,errorKind:null,shellExecution,...executionMetadata,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.stdout};
+  return {provider:'codex',text:parsed.text,error:null,errorKind:null,shellExecution,...executionMetadata,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,...runtime,...(parsed.threadId?{sessionId:parsed.threadId}:{}),usage:parsed.usage,commandExecutions:parsed.commandExecutions,rawEvents:r.rawProtocolStdout};
  }
  async cliStatus(){return this.status(true);}
  async update(){return {provider:'codex',updated:false,supported:false,reason:'Codex update is installation-dependent (Desktop/native/npm). Update Codex outside the gateway, then agent_cli_status will re-detect the version.'};}

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {readClaudeSessionTelemetry} from '../src/claude-session.js';
+import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 
 async function fakeCli(source:string){
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-command-fixture-'));
@@ -63,11 +64,12 @@ test('Claude implementation grants Bash only for writable runs and returns trans
 test('Codex records command execution events on success and failure without reading assistant prose',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-codex-run-'));
  try{for(const fail of ['0','1']){
- const cli=await fakeCli(`if(process.env.AGENT_ACP_MCP_DELEGATED!=='1')throw Error('missing delegation marker');const argv=process.argv.slice(2);if(!argv.includes('--ignore-user-config')||!argv.includes('mcp_servers={}')||!argv.includes('features.plugins=false'))throw Error('nested MCP enabled');const events=[{type:'thread.started',thread_id:'thread-fixture'},{type:'item.started',item:{id:'command-1',type:'command_execution',command:'npm test',cwd:'C:/fixture'}},{type:'item.completed',item:{id:'command-1',type:'command_execution',command:'npm test',aggregated_output:'all passed',exit_code:0}},{type:'item.completed',item:{type:'agent_message',text:'I ran pytest and it passed'}},{type:${fail==='1'?'\'turn.failed\'':'\'turn.completed\''},error:${fail==='1'?"{message:'task failed'}":'undefined'},usage:{input_tokens:3}}];process.stdout.write(events.map(x=>JSON.stringify(x)).join('\\n'));`);
+ const events=[{type:'thread.started',thread_id:'thread-fixture'},{type:'item.started',item:{id:'command-1',type:'command_execution',command:'npm test',cwd:'C:/fixture'}},{type:'item.completed',item:{id:'command-1',type:'command_execution',command:'npm test',cwd:'C:/fixture',aggregated_output:'all passed',exit_code:0}},{type:'item.completed',item:{type:'agent_message',text:'I ran pytest and it passed'}},{type:fail==='1'?'turn.failed':'turn.completed',error:fail==='1'?{message:'task failed'}:undefined,usage:{input_tokens:3}}];
+ const cli=await fakeCli(codexAppServerFixtureScript(events,{startup:`if(args[0]==='--version'){console.log('codex-cli fixture');process.exit(0);}`,beforeTurn:`if(process.env.AGENT_ACP_MCP_DELEGATED!=='1')throw Error('missing delegation marker');if(args[0]!=='app-server'||!args.includes('mcp_servers={}')||!args.includes('features.plugins=false')||!args.includes('features.apps=false'))throw Error('nested MCP enabled');`}));
  try{await envRun({CODEX_CLI:cli.command,CODEX_MODEL:'auto',CODEX_EFFORT:'auto',AGENT_MCP_STATE_DIR:root},async()=>{
   const {CodexProvider}=await import(`../src/providers/codex.js?fixture=${Math.random()}`);
   const result=await new CodexProvider().run('agent_implement',selectedInput({task:'run tests',cwd:process.cwd()}, 'codex'));
-  assert.equal(result.error,fail==='1'?'task failed':null);assert.deepEqual(result.usage,{input_tokens:3});
+  assert.equal(result.error,fail==='1'?'task failed':null);assert.equal((result.usage as any).input_tokens,3);
   assert.deepEqual(result.commandExecutions,[{command:'npm test',cwd:'C:/fixture',exitCode:0,output:'all passed',source:'codex_json'}]);
   assert.equal(result.text,'I ran pytest and it passed');
  });}finally{await fs.rm(cli.dir,{recursive:true,force:true});}

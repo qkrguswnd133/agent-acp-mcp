@@ -5,11 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {QuotaCache} from '../src/quota-cache.js';
+import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 
 async function fakeCli(stdout:string,stderr='',code=0,prelude=''){
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-provider-results-'));
  const script=path.join(directory,'cli.mjs');
- await fs.writeFile(script,`import fs from 'node:fs';import path from 'node:path';if(process.argv[2]==='app-server'){const counter=path.join(path.dirname(process.argv[1]),'app-server-count');let count=0;try{count=Number(fs.readFileSync(counter,'utf8'))||0}catch{}fs.writeFileSync(counter,String(count+1));let buffer='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{buffer+=chunk;let index;while((index=buffer.indexOf('\\n'))>=0){const line=buffer.slice(0,index);buffer=buffer.slice(index+1);try{const request=JSON.parse(line);if(request.method==='initialize')process.stdout.write(JSON.stringify({id:request.id,result:{}})+'\\n');if(request.method==='model/list')process.stdout.write(JSON.stringify({id:request.id,result:{data:[],nextCursor:null}})+'\\n');if(request.method==='account/read')process.stdout.write(JSON.stringify({id:request.id,result:{account:null}})+'\\n');if(request.method==='account/rateLimits/read')process.stdout.write(JSON.stringify({id:request.id,result:{rateLimits:{primary:{usedPercent:10,resetsAt:1999999999}}}})+'\\n')}catch{}}});}else{${prelude}process.stdout.write(${JSON.stringify(stdout)});process.stderr.write(${JSON.stringify(stderr)});process.exit(${code});}`);
+ const events=stdout.split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
+ await fs.writeFile(path.join(directory,'app-server.mjs'),codexAppServerFixtureScript(events,{
+  threadResult:{},beforeTurn:prelude,exitCode:code,stderr,
+  startup:`const counter=path.join(path.dirname(process.argv[1]),'app-server-count');let count=0;try{count=Number(fs.readFileSync(counter,'utf8'))||0}catch{}fs.writeFileSync(counter,String(count+1));`,
+ }));
+ await fs.writeFile(script,`import fs from 'node:fs';import path from 'node:path';if(process.argv[2]==='app-server'){await import('./app-server.mjs');}else{${prelude}process.stdout.write(${JSON.stringify(stdout)});process.stderr.write(${JSON.stringify(stderr)});process.exit(${code});}`);
  if(process.platform==='win32'){
   const command=path.join(directory,'cli.cmd');
   await fs.writeFile(command,`@echo off\r\n"${process.execPath}" "%~dp0cli.mjs" %*\r\n`);
@@ -44,7 +50,7 @@ test('Codex failure retains matching transcript model/effort, partial output and
   assert.equal(result.error,'fixture failure');assert.equal(result.text,'partial');
   assert.equal(result.model,'observed-model');assert.equal(result.modelSource,'session_jsonl');
   assert.equal(result.effort,'high');assert.equal(result.requestedModel,'requested-model');
-  assert.deepEqual(result.usage,{input_tokens:10});
+  assert.equal((result.usage as any).input_tokens,10);
  });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
 });
 
@@ -97,7 +103,7 @@ test('Codex does not report successful exit-zero streams with turn.failed as suc
  try{await withEnv({CODEX_CLI:cli.command,CODEX_MODEL:'auto',AGENT_MCP_STATE_DIR:state},async()=>{
  const {CodexProvider}=await loadProvider('codex');
   const result=await new CodexProvider().run('agent_ask',selectedInput({task:'fixture',cwd:process.cwd()}, 'codex'));
-  assert.equal(result.error,'rate_limit_exceeded');assert.equal(result.errorKind,'rate_limited');assert.equal(result.sessionId,'thread-fixture');assert.deepEqual(result.usage,{input_tokens:3});
+  assert.equal(result.error,'rate_limit_exceeded');assert.equal(result.errorKind,'rate_limited');assert.equal(result.sessionId,'thread-fixture');assert.equal((result.usage as any).input_tokens,3);
  });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
 });
 
@@ -198,7 +204,7 @@ test('Codex does not claim success after an unrecovered shell launch failure',as
  const cli=await fakeCli(events);const state=await fs.mkdtemp(path.join(os.tmpdir(),'codex-shell-result-'));
  try{await withEnv({CODEX_CLI:cli.command,CODEX_MODEL:'auto',CODEX_EFFORT:'auto',AGENT_MCP_STATE_DIR:state},async()=>{
   const {CodexProvider}=await loadProvider('codex');const result=await new CodexProvider().run('agent_review',selectedInput({task:'fixture',cwd:process.cwd()},'codex'));
-  assert.equal(result.errorKind,'shell_launch_failed');assert.equal(result.text,'Unable to inspect the files.');assert.equal(result.sessionId,'shell-fixture');assert.deepEqual(result.usage,{input_tokens:7});assert.equal(result.commandExecutions?.length,1);assert.equal(result.selection?.effort.source,'parent');
+  assert.equal(result.errorKind,'shell_launch_failed');assert.equal(result.text,'Unable to inspect the files.');assert.equal(result.sessionId,'shell-fixture');assert.equal((result.usage as any).input_tokens,7);assert.equal(result.commandExecutions?.length,1);assert.equal(result.selection?.effort.source,'parent');
  });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
 });
 

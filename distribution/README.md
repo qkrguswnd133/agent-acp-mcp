@@ -1,5 +1,10 @@
 # 설치, 업데이트, 릴리스
 
+## 2.8.0 Codex app-server와 CLI 적용 속도
+
+Codex는 같은 작업을 실행하는 공식 CLI app-server의 응답으로 모델·effort·적용 속도를 확인합니다. `executionSpeed.effectiveVerified=true`이면 `effective`를 **CLI 적용 속도**로 보고합니다. backend 관측값(`observed`)은 별도이며 없으면 unavailable입니다. Windows·Linux/WSL에 동일하게 적용됩니다. 기존 로그인과 설정은 유지하며 CLI를 자동 업데이트하지 않습니다. [속도와 증거 구분](gateway/EXECUTION-SPEED.md)을 확인하세요.
+
+
 ## 2.7.3 Windows 업데이트 차단 수정
 
 오래된 `queued`·`running`·`cancelling` 기록의 owner PID가 다른 프로세스에 재사용된 경우 생성 시각과 남은 자식 프로세스를 확인합니다. 무관한 PID는 종료하지 않고 작업 기록도 수정·삭제하지 않습니다. 실제 살아 있는 소유자, 불명확한 생성 정보 또는 관련 자식 프로세스가 있으면 계속 차단합니다. Monitor 사전 검사와 Windows 설치 단계의 판정 차이로 발생하던 거절을 보완했습니다.
@@ -18,7 +23,7 @@ MCP 서버 `env`에 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED`를 지정할 수
 
 ## 2.6.0 Linux / WSL 업데이트
 
-현재 배포는 **2.7.3**, Gateway는 **2.7.1**, Windows Monitor는 **1.4.1**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
+현재 배포는 **2.8.0**, Gateway는 **2.8.0**, Windows Monitor는 **1.4.1**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
 
 **2.7.0 도구 변경:** cleanup·forget·migrate·recover는 dry_run도 `operation_id`를 즉시 반환합니다. `agent_operation_status`로 완료/실패와 결과를 확인하세요. `background=false`는 기존 동기 동작을 선택하지만 큰 폴더에서는 호스트 요청 제한에 걸릴 수 있습니다. `verbose=true`도 전체 결과의 artifact 경로를 반환합니다. 업데이트 후 MCP를 재연결하고 배포본의 Parent 지침을 병합하세요. 현재 개인 설정·지침은 자동 변경하지 않습니다.
 

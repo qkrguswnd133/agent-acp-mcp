@@ -1,0 +1,11 @@
+{
+  "gateway": [
+    "Codex 작업 실행을 공식 CLI app-server의 단일 thread/start·turn/start 흐름으로 전환했습니다. Windows와 Linux/WSL에 동일하게 적용됩니다.",
+    "같은 작업의 CLI 적용 속도를 executionSpeed.effective/effectiveVerified로 반환합니다. 요청 속도·CLI 적용 속도·backend 관측값을 구분하며, 모델·effort·세션·토큰·부분 결과를 함께 보존합니다.",
+    "상속된 MCP를 작업 시작 전에 개별 비활성화하고 플러그인·앱·후크·재귀 위임을 차단합니다. 기존 sandbox, 취소·마감, 완료 확정, 사용량 오류와 프로세스 정리 정책을 유지합니다. 프로토콜 실패 시 작업을 자동 재실행하지 않습니다."
+  ],
+  "monitor": [
+    "Monitor 1.4.1을 유지합니다. 배포 2.8.0에서 Windows Gateway와 Linux/WSL Gateway를 함께 제공합니다.",
+    "기존 설정과 기록을 유지한 채 모니터의 전체 업데이트 또는 Linux agent-acp update로 적용하세요. Gateway 교체 후 MCP를 재연결해야 합니다."
+  ]
+}

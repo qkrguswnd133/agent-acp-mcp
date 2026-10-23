@@ -133,7 +133,7 @@ export function spawnPlan(launch:LaunchCommand,args:readonly string[],cwd?:strin
   return {...invocation,windowsVerbatimArguments:batch};
 }
 
-export interface CommandOptions {cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void;onStdoutChunk?:(chunk:string)=>void;onStdoutLine?:(line:string)=>void;completion?:()=>boolean|Promise<boolean>;completionGraceMs?:number;trackDescendants?:boolean;}
+export interface CommandOptions {cwd?:string;env?:NodeJS.ProcessEnv;stdin?:string;keepStdinOpen?:boolean;timeoutMs?:number;signal?:AbortSignal;onSpawn?:(p:ChildProcess)=>void;onActivity?:(event:Record<string,unknown>)=>void;onStdoutChunk?:(chunk:string)=>void;onStdoutLine?:(line:string)=>void;completion?:()=>boolean|Promise<boolean>;completionGraceMs?:number;trackDescendants?:boolean;onStopping?:(reason:NonNullable<CommandResult['stopReason']>)=>void|Promise<void>;}
 export async function runCommand(launch:LaunchCommand,args:string[],options:CommandOptions={}):Promise<CommandResult>{
   if(options.signal?.aborted)return {code:null,signal:null,stdout:'',stderr:'',timedOut:false,stopReason:'cancelled'};
   const invocation=spawnPlan(launch,args,options.cwd);
@@ -147,7 +147,7 @@ export async function runCommand(launch:LaunchCommand,args:string[],options:Comm
   p.stdout?.on('data',d=>{stdout+=String(d);options.onStdoutChunk?.(String(d));lineBuffer+=String(d);const lines=lineBuffer.split(/\r?\n/);lineBuffer=lines.pop()??'';for(const line of lines)options.onStdoutLine?.(line);options.onActivity?.({type:'stdout',at:new Date().toISOString()});});
   p.stderr?.on('data',d=>{stderr+=String(d);options.onActivity?.({type:'stderr',at:new Date().toISOString()});});
   p.stdin?.on('error',()=>{/* EPIPE after a terminal event must not crash the host. */});
-  if(options.stdin!==undefined){p.stdin?.end(options.stdin);}else p.stdin?.end();
+  if(options.keepStdinOpen){if(options.stdin!==undefined)p.stdin?.write(options.stdin);}else if(options.stdin!==undefined){p.stdin?.end(options.stdin);}else p.stdin?.end();
   let timer:NodeJS.Timeout|undefined,watch:NodeJS.Timeout|undefined,grace:NodeJS.Timeout|undefined,hardStop:NodeJS.Timeout|undefined,finishing=false,probing=false;
   let settle!:(code:number|null,signal:NodeJS.Signals|null)=>void;
   const stop=(reason:NonNullable<CommandResult['stopReason']>)=>{
@@ -155,7 +155,12 @@ export async function runCommand(launch:LaunchCommand,args:string[],options:Comm
     // Never depend on close: inherited pipes and broken native teardown can
     // leave it pending even after taskkill or the root's exit event.
     hardStop=setTimeout(()=>settle(p.exitCode,p.signalCode),7000);
-    void terminateProcess(p).catch(()=>false).finally(()=>settle(p.exitCode,p.signalCode));
+    // Interactive protocols can send an interrupt first. The hook is bounded
+    // independently of provider cooperation and never extends the hard stop.
+    void (async()=>{
+      if(options.onStopping){let bound:NodeJS.Timeout|undefined;try{await Promise.race([Promise.resolve().then(()=>options.onStopping!(reason)),new Promise<void>(done=>{bound=setTimeout(done,500);})]);}catch{}finally{clearTimeout(bound);}}
+      await terminateProcess(p).catch(()=>false);
+    })().finally(()=>settle(p.exitCode,p.signalCode));
   };
   const abort=()=>stop('cancelled');
   return new Promise<CommandResult>((resolve,reject)=>{

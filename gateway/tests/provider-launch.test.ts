@@ -12,6 +12,7 @@ import {runGrok,type RunGrokDependencies} from '../src/acp.js';
 import {readCodexStatus} from '../src/codex-app-server.js';
 import {getSessionUsage} from '../src/usage.js';
 import {home,runCommand,spawnPlan,type LaunchCommand} from '../src/process.js';
+import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 
 const windows={skip:process.platform!=='win32'};
 const noNode:NpmLaunchOptions={currentRuntime:null,nodeCandidates:[],searchPath:false};
@@ -83,17 +84,13 @@ test('Grok health fingerprint detects npm and native updates without a changed s
   }finally{await fs.rm(fixture.root,{recursive:true,force:true});}
 });
 
-const codexScript=String.raw`import fs from 'node:fs';import path from 'node:path';import {spawn} from 'node:child_process';import {fileURLToPath} from 'node:url';
-const dir=path.dirname(fileURLToPath(import.meta.url));const args=process.argv.slice(2);
+const codexScript=codexAppServerFixtureScript([{type:'thread.started',thread_id:'codex-launch'},{type:'item.completed',item:{type:'agent_message',text:'codex launch answer'}},{type:'turn.completed',usage:{input_tokens:1}}],{startup:String.raw`import {spawn} from 'node:child_process';import {fileURLToPath} from 'node:url';
+const dir=path.dirname(fileURLToPath(import.meta.url));
 const record=v=>fs.appendFileSync(path.join(dir,'records.jsonl'),JSON.stringify(v)+'\n');record({pid:process.pid,args,cwd:process.cwd()});
 if(args[0]==='--version'){process.stdout.write('codex-cli 9.9.9');process.exit(0);}
 if(args[0]==='login'){process.stdout.write('Logged in using ChatGPT');process.exit(0);}
 if(args[0]==='echo'){process.stdout.write(JSON.stringify({args:args.slice(1),cwd:process.cwd()}));process.exit(0);}
-if(args[0]==='app-server'){let buffer='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);try{const m=JSON.parse(line);if(typeof m.id!=='number')continue;const result=m.method==='account/rateLimits/read'?{rateLimits:{primary:{usedPercent:10}}}:m.method==='account/read'?{account:{type:'chatgpt',email:'person@example.test'}}:{};process.stdout.write(JSON.stringify({id:m.id,result})+'\n');}catch{}}});}
-if(args[0]==='exec'){let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
- if(input.includes('HANG_FIXTURE')){const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});record({grandchild:child.pid});return;}
- process.stdout.write([{type:'thread.started',thread_id:'codex-launch'},{type:'item.completed',item:{type:'agent_message',text:'codex launch answer'}},{type:'turn.completed',usage:{input_tokens:1}}].map(x=>JSON.stringify(x)).join('\n')+'\n');});}
-`;
+`,onRequest:`record({pid:process.pid,request});`,beforeTurn:`if(JSON.stringify(request.params).includes('HANG_FIXTURE')){const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});record({grandchild:child.pid});continue;}`});
 const codexManifest={name:codexNpmPackage.name,type:'module',bin:{codex:'bin/codex.js'},engines:{node:'>=16'}};
 
 async function withEnv(values:Record<string,string|undefined>,action:()=>Promise<void>){
@@ -236,13 +233,14 @@ test('Codex provider status, app-server and run use the official package bin wit
     const result=await provider.run('agent_ask',selectedInput({task:'fixture',cwd}));
     assert.equal(result.error,null);assert.equal(result.text,'codex launch answer');assert.equal(result.sessionId,'codex-launch');
     const seen=await records(log);
-    assert.deepEqual(seen.map(r=>r.args[0]).sort(),['--version','--version','app-server','app-server','exec','login'].sort());
-    const exec=seen.find(r=>r.args[0]==='exec');
-    assert.deepEqual(exec.args,['exec','--ignore-user-config','--sandbox','read-only','-c','windows.sandbox="unelevated"','--json','-c','mcp_servers={}','-c','features.plugins=false','-c','allow_login_shell=false','-c','service_tier="standard"','-c','features.fast_mode=false','--model','fixture-model','-c','model_reasoning_effort="high"','-']);
-    same(exec.cwd,cwd);
+    assert.deepEqual(seen.filter(r=>r.args).map(r=>r.args[0]).sort(),['--version','--version','app-server','app-server','app-server','login'].sort());
+    const thread=seen.find(r=>r.request?.method==='thread/start'),turn=seen.find(r=>r.request?.method==='turn/start');
+    const execution=seen.find(r=>r.args&&r.pid===thread.pid);
+    assert.equal(execution.args.includes('exec'),false);assert.ok(execution.args.includes('features.plugins=false'));assert.ok(execution.args.includes('allow_login_shell=false'));assert.ok(execution.args.includes('features.fast_mode=false'));
+    same(execution.cwd,cwd);same(thread.request.params.cwd,cwd);assert.equal(thread.request.params.model,'fixture-model');assert.equal(thread.request.params.config.model_reasoning_effort,'high');assert.equal(thread.request.params.sandbox,'read-only');assert.equal(thread.request.params.approvalPolicy,'never');assert.equal(turn.request.params.threadId,result.sessionId);assert.equal(thread.pid,turn.pid);
     // The app-server reader accepts the same descriptor directly.
     const launch=await resolveNpmLaunch(fixture.shim,codexNpmPackage,withNode);
-    const live=await readCodexStatus(launch);assert.equal(live.account.account.email,'person@example.test');
+    const live=await readCodexStatus(launch);assert.equal(live.account.account.email,'fixture@example.invalid');
   });}finally{for(const dir of [fixture.root,state,cwd])await fs.rm(dir,{recursive:true,force:true});}
 });
 

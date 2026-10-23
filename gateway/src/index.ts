@@ -60,7 +60,7 @@ const maintenanceInput={background:z.boolean().default(true).describe('Return op
 const dispatchMaintenance=(kind:string,input:any,run:(phase:(name:string,ms:number)=>void)=>Promise<unknown>)=>input.background!==false?operations.start(kind,input,run):run(()=>{});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.7.1'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.8.0'});
  server.registerTool('agent_operation_status',{
    description:'Read a background worktree maintenance operation and per-phase timings. Requests and polling cancellation never cancel the operation. Inspect status and result; verbose returns full details through an artifact.',
    inputSchema:z.object({operation_id:z.string().uuid(),verbose:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
@@ -114,7 +114,7 @@ function createServer(){
    inputSchema:z.object({...maintenanceInput,unlink_links:z.boolean().default(false).describe('Explicitly unlink untracked symlinks/junctions only after review; external target metadata must remain unchanged and a fresh full scan must pass before Git removal. Default preserves all links.'),job_id:z.string().uuid(),action:z.enum(['restore','remove']).default('restore'),dry_run:z.boolean().default(true),verified:z.literal(true).optional(),idle_confirmed:z.literal(true).optional().describe('Required for interrupted-job apply alongside fresh successful Windows/Linux ownership checks and parent workspace/process review.'),verification_summary:z.string().max(4000).default('')}),annotations:{readOnlyHint:false,destructiveHint:true,openWorldHint:false}
  },tracked(async(input)=>{try{return reply(await dispatchMaintenance('recover',input,phase=>jobs.worktreeMaintenance(input.job_id,input.action,{dryRun:input.dry_run,verified:input.verified,idleConfirmed:input.idle_confirmed,summary:input.verification_summary,unlinkLinks:input.unlink_links,onPhase:phase})),input.verbose);}catch(e){return errorReply(e);}}));
  server.registerTool('agent_job_status',{
-   description:'Read background job progress and final provider results. Poll while queued/running/cancelling. Check outcome, successCount, failureCount, skipped, and handoff even when some providers succeeded. Outcome success means provider turn execution, not verified completion criteria. Inspect execution.commands, completionCriteria, processExit and processWarnings separately. implementationProgress warns when observed reading continues without writes/commands; parent should review scope/next step, never automatically cancel or replay. Missing telemetry is unavailable. Failed implementations require parent workspace review before continuing.',
+   description:'Read background job progress and final provider results. Poll while queued/running/cancelling. Check outcome, successCount, failureCount, skipped, and handoff even when some providers succeeded. Outcome success means provider turn execution, not verified completion criteria. Inspect execution.commands, completionCriteria, processExit and processWarnings separately. implementationProgress warns when observed reading continues without writes/commands; parent should review scope/next step, never automatically cancel or replay. Codex executionSpeed.effective/effectiveVerified reports the same work thread and turn CLI-applied speed; observed/verified is separate backend evidence and may remain unavailable. Missing telemetry is unavailable. Failed implementations require parent workspace review before continuing.',
    inputSchema:z.object({job_id:z.string().uuid(),verbose:z.boolean().default(false).describe('Default is a bounded summary under 20 KB. Complete results, review text and diagnostics are retained in immutable artifacts. verbose requests the full-detail artifact explicitly.')}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
  },async({job_id,verbose})=>{try{return reply(await jobs.status(job_id,true),verbose);}catch(e){return errorReply(e);}});
  server.registerTool('agent_job_wait',{
@@ -160,11 +160,11 @@ process.stdout.on('error',error=>{if((error as NodeJS.ErrnoException).code==='EP
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.7.1'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.8.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.7.1',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.8.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

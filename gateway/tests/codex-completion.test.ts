@@ -3,23 +3,25 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {runCodexCommand} from '../src/codex-execution.js';
+import {runCodexAppCommand} from '../src/codex-app-execution.js';
+import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 import {runCommand,safeChildEnv} from '../src/process.js';
 import {ownedDescendants} from '../src/process-tree.js';
 import {readCodexSessionTelemetry} from '../src/codex-session.js';
 
-const event=(value:unknown)=>`console.log(${JSON.stringify(JSON.stringify(value))});`;
 const hang='setInterval(()=>{},1000);';
 test('Codex turn.completed settles a CLI that keeps running and preserves output and usage',async()=>{
  const started=Date.now();const activity:Record<string,unknown>[]=[];
- const result=await runCodexCommand(process.execPath,['-e',event({type:'item.completed',item:{type:'agent_message',text:'검증 완료'}})+event({type:'turn.completed',usage:{input_tokens:19},model:'gpt-6-astra',reasoning_effort:'high'})+hang],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:20_000,completionGraceMs:100,onActivity:value=>activity.push(value)});
+ const script=codexAppServerFixtureScript([{type:'item.completed',item:{type:'agent_message',text:'검증 완료'}},{type:'turn.completed',usage:{input_tokens:19},model:'gpt-6-astra',reasoning_effort:'high'}]);
+ const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',script],{cwd:process.cwd(),prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:20_000,completionGraceMs:100,onActivity:value=>activity.push(value)});
  assert.equal(result.stopReason,'completed');assert.equal(result.completion.confirmed,true);assert.equal(result.timedOut,false);
- assert.match(result.stdout,/검증 완료/);assert.match(result.stdout,/input_tokens/);assert.match(result.stdout,/gpt-6-astra/);
+ assert.match(result.stdout,/검증 완료/);assert.match(result.stdout,/input_tokens/);assert.equal(result.appliedSettings?.model,'gpt-6-astra');
  assert.ok(activity.some(item=>item.type==='codex_turn_completed'));assert.ok(Date.now()-started<18000);
 });
 test('Final agent message alone never counts as successful completion; deadline retains partial output',async()=>{
  const started=Date.now();
- const result=await runCodexCommand(process.execPath,['-e',event({type:'item.completed',item:{type:'agent_message',text:'partial report'}})+hang],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:400});
+ const script=codexAppServerFixtureScript([{type:'item.completed',item:{type:'agent_message',text:'partial report'}}]);
+ const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',script],{cwd:process.cwd(),prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:1000});
  assert.equal(result.stopReason,'deadline_exceeded');assert.equal(result.timedOut,true);assert.equal(result.completion.confirmed,false);assert.match(result.stdout,/partial report/);
  assert.ok(Date.now()-started<20000,'Deadline settlement exceeded bounded process cleanup');
 });
@@ -67,14 +69,15 @@ test('Missing terminal stream is recovered despite a large session header while 
    {type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:51}}}},
    {type:'event_msg',payload:{type:'task_complete',last_agent_message:'Recovered without stream final'}}
   ].map(row=>JSON.stringify({...row,timestamp:now})).join('\n'));
-  const result=await runCodexCommand(process.execPath,['-e',event({type:'thread.started',thread_id:id})+hang],{cwd,env:safeChildEnv(),timeoutMs:20_000,completionGraceMs:10},Date.parse(now));
+  const script=codexAppServerFixtureScript([],{threadId:id});
+  const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',script],{cwd,prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:20_000,completionGraceMs:10},Date.parse(now));
   assert.equal(result.stopReason,'completed');assert.equal(result.completion.source,'session_jsonl');assert.equal(result.recovered?.text,'Recovered without stream final');assert.equal(result.recovered?.model,'gpt-6-astra');assert.deepEqual(result.recovered?.usage,{input_tokens:51});
  }finally{if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;await fs.rm(root,{recursive:true,force:true});}
 });
 test('Observed background descendants are stopped after normal Codex completion',async()=>{
- const script=`const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(hang)}],{detached:true,stdio:'ignore'});child.unref();console.log(JSON.stringify({daemonPid:child.pid}));setTimeout(()=>{${event({type:'turn.completed',usage:{input_tokens:1}})}},3500);`;
- const result=await runCodexCommand(process.execPath,['-e',script],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:20_000});
- const pid=JSON.parse(result.stdout.split('\n')[0]!).daemonPid;
+ const script=codexAppServerFixtureScript([],{beforeTurn:`const {spawn}=await import('node:child_process');const child=spawn(process.execPath,['-e',${JSON.stringify(hang)}],{detached:true,stdio:'ignore'});child.unref();note('item/completed',{item:{id:'daemon',type:'agentMessage',text:JSON.stringify({daemonPid:child.pid})}});setTimeout(()=>note('turn/completed',{turn:{id:turnId,status:'completed',items:[],error:null}}),3500);`});
+ const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',script],{cwd:process.cwd(),prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:20_000});
+ const message=result.stdout.split('\n').map(line=>JSON.parse(line)).find(event=>event.item?.id==='daemon');const pid=JSON.parse(message.item.text).daemonPid;
  try{assert.ok(result.processCleanup?.trackedPids.includes(pid));assert.deepEqual(result.processCleanup?.remainingPids,[]);assert.throws(()=>process.kill(pid,0));}
  finally{try{process.kill(pid,'SIGKILL');}catch{}}
 });

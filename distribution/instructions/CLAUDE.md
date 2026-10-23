@@ -135,3 +135,7 @@ Cleanup, forget, migrate and recover default to background=true, including dry_r
 Inspect links and linksScanComplete before cleanup. Default cleanup preserves junctions/symlinks; unlink_links=true authorizes removing untracked link objects only, after review and target metadata verification. Never force-delete or traverse their targets. Review handoff.worktreeLinkWarning, partial unlinkedPaths/removedIgnoredPaths and lockRecovery. Stale lock recovery is audited by owner birth identity/expiry; do not manually delete a live owner lease. patchEquivalentInOriginal is a historical hint, not cleanup authorization.
 
 A remaining process with unrelated or unknown workspace evidence preserves a successful turn with processCleanupWarning. Inspect processWorkspaceCheck and handoff; physical cleanup still requires its strict fresh checks. Never terminate a process solely by a reused PID or old PPID.
+
+## Codex CLI-applied speed
+
+For Codex results, report `executionSpeed.requested` and the same work thread's `executionSpeed.effective` when `effectiveVerified=true` (for example, "Fast — CLI applied"). Its `effectiveSource` identifies the app-server acknowledgement. This is separate from `executionSpeed.observed`/`verified`, which require backend/provider result evidence and may remain unavailable. Do not call all speed telemetry unavailable when the CLI-applied value is verified. Never attach a status query or another session's settings to the work result.

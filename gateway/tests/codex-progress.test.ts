@@ -5,7 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import {CodexProgress} from '../src/codex-progress.js';
 import {CodexSessionProgressReader,readCodexSessionTelemetry} from '../src/codex-session.js';
-import {runCodexCommand} from '../src/codex-execution.js';
+import {runCodexAppCommand} from '../src/codex-app-execution.js';
+import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 import {implementationProgress} from '../src/execution-evidence.js';
 import {safeChildEnv} from '../src/process.js';
 
@@ -90,9 +91,9 @@ test('An explicitly returned resumed thread accepts older metadata but never pre
  assert.equal((await reader.read(started+4000)).completed,true);
 }));
 
-test('runCodexCommand retains progress across raw stdout and cleanup events and distinguishes terminal finalization',async()=>{
+test('runCodexAppCommand retains progress across raw stdout and cleanup events and distinguishes terminal finalization',async()=>{
  const activity:any[]=[];const events=[{type:'thread.started',thread_id:id},{type:'item.started',item:{type:'command_execution',id:'c',command:'npm test'}},{type:'item.completed',item:{type:'command_execution',id:'c',exit_code:0}},{type:'turn.completed'}];
- const result=await runCodexCommand(process.execPath,['-e',`for(const e of ${JSON.stringify(events)})console.log(JSON.stringify(e));setInterval(()=>{},1000);`],{cwd:process.cwd(),env:safeChildEnv(),timeoutMs:20000,completionGraceMs:10,onActivity:event=>activity.push(event)});
+ const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',codexAppServerFixtureScript(events)],{cwd:process.cwd(),prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:20000,completionGraceMs:10,onActivity:event=>activity.push(event)});
  assert.ok(activity.some(event=>event.type==='stdout'&&event.implementationProgress.commandsStarted===1));
  assert.ok(activity.some(event=>event.type==='codex_progress'&&event.phase==='testing'));
  assert.ok(activity.some(event=>event.type==='codex_turn_completed'&&event.phase==='completion_pending_cleanup'));
@@ -106,8 +107,8 @@ test('A running Codex with only session tool events publishes attributable live 
  const file=path.join(folder,`rollout-progress-${id}.jsonl`),activity:any[]=[];
  try{
   process.env.CODEX_HOME=root;await fs.writeFile(file,lines([row('session_meta',{id,cwd},at)]));
-  const script=`console.log(JSON.stringify({type:'thread.started',thread_id:${JSON.stringify(id)}}));setTimeout(()=>require('node:fs').appendFileSync(${JSON.stringify(file)},JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'exec_command_begin',call_id:'live',command:'pytest suite.py',cwd:${JSON.stringify(cwd)}}})+'\\n'),100);setTimeout(()=>console.log(JSON.stringify({type:'turn.completed'})),6500);setInterval(()=>{},1000);`;
-  const result=await runCodexCommand(process.execPath,['-e',script],{cwd,env:safeChildEnv(),timeoutMs:20000,completionGraceMs:10,onActivity:event=>activity.push(event)},at);
+  const script=codexAppServerFixtureScript([],{threadId:id,beforeTurn:`setTimeout(()=>fs.appendFileSync(${JSON.stringify(file)},JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'exec_command_begin',call_id:'live',command:'pytest suite.py',cwd:${JSON.stringify(cwd)}}})+'\\n'),100);setTimeout(()=>note('turn/completed',{turn:{id:turnId,status:'completed',items:[],error:null}}),6500);`});
+  const result=await runCodexAppCommand(process.execPath,['--input-type=module','-e',script],{cwd,prompt:'Read-only fixture',speed:'standard',sandbox:'read-only',env:safeChildEnv(),timeoutMs:20000,completionGraceMs:10,onActivity:event=>activity.push(event)},at);
   const observed=activity.find(event=>event.type==='codex_session_progress');
   assert.equal(observed?.phase,'testing');assert.equal(observed?.implementationProgress.lastCommand.command,'pytest suite.py');
   assert.equal(observed?.implementationProgress.source,'session_jsonl');assert.equal((result.implementationProgress as any).commandsStarted,1);
