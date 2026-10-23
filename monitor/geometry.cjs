@@ -9,5 +9,10 @@ function detailBounds(bar,area,offset=bar.width/2,requestedHeight=452){
   if(y+height>area.y+area.height)y=bar.y-height-6;
   return {x:Math.round(clamp(bar.x+offset-width/2,area.x,area.x+area.width-width)),y:Math.round(clamp(y,area.y,area.y+area.height-height)),width,height};
 }
+function detailHeight(provider){
+  const windows=provider?.quota?.windows??[];
+  const count=windows.length+(provider?.provider==='claude'&&!windows.some(w=>w.id==='seven_day_fable')?1:0);
+  return 548+40*Math.min(count,3);
+}
 function contains(bounds,point){return point.x>=bounds.x&&point.x<bounds.x+bounds.width&&point.y>=bounds.y&&point.y<bounds.y+bounds.height;}
-module.exports={barBounds,detailBounds,contains};
+module.exports={barBounds,detailBounds,detailHeight,contains};

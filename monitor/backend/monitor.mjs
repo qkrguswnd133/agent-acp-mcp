@@ -31,11 +31,13 @@ export function sanitizeUsage(value){
   const result={};for(const key of allowed)if(number(value[key])!==null)result[key]=value[key];
   return Object.keys(result).length?result:null;
 }
-function observedSetting(value){return text(value)&&!['auto','unavailable','unknown'].includes(value)?value:null;}
 const secretLike=/(?:sk-ant-|sk-[a-z0-9]{12}|gh[opusr]_|Bearer\s+)/i;
-const sourceText=value=>typeof value==='string'&&/^[a-z0-9_.:-]{1,64}$/i.test(value)?value:null;
+const safeText=value=>text(value)&&value.trim()&&!/[\x00-\x1f\x7f]/.test(value)&&!secretLike.test(value)?value:null;
+function observedSetting(value){return safeText(value)&&!['auto','unavailable','unknown'].includes(value)?value:null;}
+const sourceText=value=>typeof value==='string'&&value.length<=64&&/^[a-z0-9][a-z0-9_.:-]*(?:\/[a-z0-9][a-z0-9_.:-]*)*$/i.test(value)&&!secretLike.test(value)?value:null;
+const identifierText=value=>typeof value==='string'&&/^[a-z0-9_.:-]{1,128}$/i.test(value)&&!secretLike.test(value)?value:null;
 const reasonText=value=>typeof value==='string'&&value.trim()&&value.length<=300&&!/[\x00-\x1f\x7f]/.test(value)&&!secretLike.test(value)?value.trim():null;
-function selectionAxis(v){return v&&typeof v==='object'&&text(v.value)&&!secretLike.test(v.value)&&['parent','configured'].includes(v.source)?{value:v.value,source:v.source,reason:reasonText(v.reason)}:null;}
+function selectionAxis(v){return v&&typeof v==='object'&&safeText(v.value)&&['parent','configured'].includes(v.source)?{value:v.value,source:v.source,reason:reasonText(v.reason)}:null;}
 function observationAxis(v){const value=v&&typeof v==='object'?observedSetting(v.value):null;return value?{value,source:sourceText(v.source)??'unavailable',verified:v.verified===true}:null;}
 /** Parent/configured selection stays separate from observed runtime values; legacy results yield nulls. */
 export function runSettings(r){
@@ -43,16 +45,29 @@ export function runSettings(r){
   const observation={model:observationAxis(r?.observation?.model),effort:observationAxis(r?.observation?.effort)};
   return {selection:selection.model||selection.effort?selection:null,observation:observation.model||observation.effort?observation:null};
 }
+const speedValue=value=>['standard','fast','ultrafast'].includes(value)?value:null;
+const appliedSpeedSources=new Set(['app_server.thread/start','app_server.thread/resume','app_server.thread/settings/updated']);
+/** Preserve the task's evidence only; requested speed never certifies applied or observed speed. */
+export function sanitizeExecutionSpeed(result){
+  const raw=result?.executionSpeed;
+  if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
+  const observed=speedValue(raw.observed),effective=speedValue(raw.effective);
+  const threadId=identifierText(raw.threadId),turnId=identifierText(raw.turnId),effectiveSource=sourceText(raw.effectiveSource);
+  const sameTurn=threadId!==null&&turnId!==null&&threadId===identifierText(result.sessionId)&&turnId===identifierText(result.turnId);
+  return {requested:speedValue(raw.requested),settingSource:['configured','default'].includes(raw.settingSource)?raw.settingSource:null,observed,observationSource:sourceText(raw.observationSource),verified:observed!==null&&raw.verified===true,effective,effectiveSource,effectiveVerified:result.provider==='codex'&&effective!==null&&raw.effectiveVerified===true&&sameTurn&&appliedSpeedSources.has(effectiveSource),threadId,turnId};
+}
+const jobStatuses=new Set(['queued','running','cancelling','completed','failed','cancelled','interrupted']);
+const jobStatus=value=>jobStatuses.has(value)?value:'unknown';
 export function sanitizeJob(job){
   if(!job||typeof job!=='object'||!text(job.job_id)||!text(job.cwd))return null;
   const results=Array.isArray(job.result?.results)?job.result.results:[];
-  const providers=results.filter(r=>PROVIDERS.includes(r?.provider)).map(r=>({provider:r.provider,model:observedSetting(r.model),effort:observedSetting(r.effort),...runSettings(r),sessionId:text(r.sessionId),usage:sanitizeUsage(r.usage),status:r.error?'failed':'completed',errorKind:text(r.errorKind)}));
+  const providers=results.filter(r=>PROVIDERS.includes(r?.provider)).map(r=>({provider:r.provider,model:observedSetting(r.model),effort:observedSetting(r.effort),...runSettings(r),sessionId:identifierText(r.sessionId),turnId:identifierText(r.turnId),executionSpeed:sanitizeExecutionSpeed(r),usage:sanitizeUsage(r.usage),status:r.error?'failed':'completed',errorKind:sourceText(r.errorKind)}));
   const active=job.activity;
-  if(PROVIDERS.includes(active?.provider)&&!providers.some(p=>p.provider===active.provider))providers.push({provider:active.provider,model:observedSetting(active.model),effort:observedSetting(active.effort),...runSettings(active),sessionId:text(active.sessionId),usage:sanitizeUsage(active.usage),status:text(job.status),errorKind:null});
+  if(PROVIDERS.includes(active?.provider)&&!providers.some(p=>p.provider===active.provider))providers.push({provider:active.provider,model:observedSetting(active.model),effort:observedSetting(active.effort),...runSettings(active),sessionId:identifierText(active.sessionId),turnId:identifierText(active.turnId),executionSpeed:sanitizeExecutionSpeed(active),usage:sanitizeUsage(active.usage),status:jobStatus(job.status),errorKind:null});
   const candidate=text(job.worktree?.originalCwd);
   const originalCwd=candidate&&(path.win32.isAbsolute(candidate)||path.posix.isAbsolute(candidate))?candidate:null;
   const isolated=!!originalCwd&&originalCwd!==job.cwd;
-  return {originalCwd,isolated,jobId:job.job_id,status:['queued','running','cancelling','completed','failed','cancelled','interrupted'].includes(job.status)?job.status:'unknown',project:path.win32.basename((originalCwd??job.cwd).replaceAll('/','\\')),cwd:job.cwd,startedAt:timestamp(job.startedAt),lastActivityAt:timestamp(job.lastActivityAt),finishedAt:timestamp(job.finishedAt),providers};
+  return {originalCwd,isolated,jobId:job.job_id,status:jobStatus(job.status),project:path.win32.basename((originalCwd??job.cwd).replaceAll('/','\\')),cwd:job.cwd,startedAt:timestamp(job.startedAt),lastActivityAt:timestamp(job.lastActivityAt),finishedAt:timestamp(job.finishedAt),providers};
 }
 export async function readJobs(directory,limit=20){
   let names;try{names=(await fs.readdir(directory)).filter(n=>/^[a-f0-9-]{36}\.json$/i.test(n));}catch{return [];}
@@ -120,9 +135,9 @@ export function createMonitor({gatewayRoot,home=os.homedir(),env=process.env,ada
         if(latest.effort){p.effort=latest.effort;p.effortSource='last_known_job';}
         p.observedAt=latest.at;
       }
-      // Newest settled (or metadata-bearing) run decides; an older run's selection never stands in for a newer legacy run.
-      const run=jobs.flatMap(job=>job.providers.map(r=>({...r,jobId:job.jobId,at:job.finishedAt??job.lastActivityAt??job.startedAt}))).find(r=>r.provider===p.provider&&(r.selection||r.observation||!['running','queued','cancelling'].includes(r.status)));
-      p.lastRun=run&&(run.selection||run.observation)?{jobId:run.jobId,at:run.at,selection:run.selection,observation:run.observation}:null;
+      // Keep every detail on the same newest settled (or metadata-bearing active) result, including legacy nulls.
+      const run=jobs.flatMap(job=>job.providers.map(r=>({...r,jobId:job.jobId,at:job.finishedAt??job.lastActivityAt??job.startedAt}))).sort((a,b)=>(Date.parse(b.at)||0)-(Date.parse(a.at)||0)).find(r=>r.provider===p.provider&&(r.selection||r.observation||r.executionSpeed||!['running','queued','cancelling'].includes(r.status)));
+      p.lastRun=run?{jobId:run.jobId,at:run.at,status:run.status,model:run.model,effort:run.effort,sessionId:run.sessionId,turnId:run.turnId,selection:run.selection,observation:run.observation,executionSpeed:run.executionSpeed}:null;
     }
     return {generatedAt:new Date(now()).toISOString(),providers,jobs};
   })().finally(()=>{inFlight=undefined;});}};

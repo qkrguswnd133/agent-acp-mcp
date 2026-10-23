@@ -1,6 +1,6 @@
 const {app,BrowserWindow,ipcMain,screen,Tray,Menu,nativeImage,nativeTheme,dialog}=require('electron');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{spawn,execFile}=require('node:child_process'),readline=require('node:readline');
-const {barBounds,detailBounds,contains}=require('./geometry.cjs');
+const {barBounds,detailBounds,detailHeight,contains}=require('./geometry.cjs');
 const {createUpdater,resolveGatewayRoot}=require('./update/service.cjs');
 const {updateAction}=require('./update/action.cjs');
 const {createUpdateFlow}=require('./ui/update-flow.js');
@@ -80,9 +80,9 @@ function applyPin(){for(const win of [bar,panel])if(win&&!win.isDestroyed())win.
 function togglePin(){pinned=!pinned;applyPin();savePosition();broadcast();}
 function loadPosition(){try{const s=JSON.parse(fs.readFileSync(settingsFile,'utf8'));return Number.isFinite(s.x)&&Number.isFinite(s.y)?s:undefined;}catch{return undefined;}}
 function savePosition(){if(!bar||bar.isDestroyed())return;const {x,y}=bar.getBounds();try{fs.writeFileSync(settingsFile,JSON.stringify({x,y,pinned}));}catch{}}
-function broadcast(){for(const win of [bar,panel])if(win&&!win.isDestroyed())win.webContents.send('state',{...state,pinned});}
+function broadcast(){if(panel?.isVisible()&&bar&&!bar.isDestroyed())panel.setBounds(popupBounds(bar.getBounds()));for(const win of [bar,panel])if(win&&!win.isDestroyed())win.webContents.send('state',{...state,pinned});}
 function areaFor(bounds){return screen.getDisplayMatching(bounds).workArea;}
-function popupBounds(bounds){return detailBounds(bounds,areaFor(bounds),bounds.width/2,selected==='claude'?536:452);}
+function popupBounds(bounds){const provider=state.snapshot?.providers?.find(p=>p.provider===selected)??{provider:selected};return detailBounds(bounds,areaFor(bounds),bounds.width/2,detailHeight(provider));}
 function reposition(){if(!bar||bar.isDestroyed())return;const bounds=bar.getBounds();const clamped=barBounds(bounds,areaFor(bounds),barWidth,barProgressHeight);if(bounds.x!==clamped.x||bounds.y!==clamped.y||bounds.height!==clamped.height||bounds.width!==clamped.width)bar.setBounds(clamped);if(panel?.isVisible())panel.setBounds(popupBounds(clamped));savePosition();}
 function closePanel(){panel?.hide();hideAt=0;bar?.webContents.send('provider',null);}
 function hoverStep(point,now=Date.now()){
@@ -191,10 +191,12 @@ async function runSmoke(){
     state.snapshot.providers[0].lastRun={jobId:'fixture',at:now,selection:{model:{value:'grok-4.7',source:'parent',reason:'작업 규모에 맞춤'},effort:{value:'xhigh',source:'configured'}},observation:null};
     state.snapshot.providers[1].lastRun={jobId:'fixture',at:now,selection:{model:{value:'claude-opus-5-5',source:'configured'}},observation:{model:{value:'claude-sonnet-5-5',source:'fixture',verified:true}}};broadcast();
     const settingText=provider=>(openPanel(provider),new Promise(r=>setTimeout(r,40)).then(()=>panel.webContents.executeJavaScript("[document.querySelector('#model').textContent,document.querySelector('#effort').textContent,document.querySelector('#model-detail').textContent,document.querySelector('#model').dataset.setting]")));
-    let setting=await settingText('grok');assert.deepEqual(setting.slice(0,2),['grok-4.7 · Parent 선택 · 실제 확인 불가','xhigh · 고정 설정 · 실제 확인 불가']);assert.match(setting[2],/작업 규모에 맞춤/);
-    setting=await settingText('claude');assert.match(setting[0],/claude-sonnet-5-5 · 실제 확인 · 선택 claude-opus-5-5 \(고정 설정\)/);assert.equal(setting[3],'mismatch');
+    let setting=await settingText('grok');assert.deepEqual(setting.slice(0,2),['grok-4.7','xhigh']);assert.match(setting[2],/작업 규모에 맞춤/);
+    assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#model-status').textContent"),'설정값 · 실제 확인 불가');
+    setting=await settingText('claude');assert.equal(setting[0],'claude-sonnet-5-5');assert.equal(setting[3],'mismatch');
+    assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#model-requested').textContent"),'claude-opus-5-5 · 고정 설정');
     fs.writeFileSync(path.join(out,'selection-detail.png'),await captureReady(panel));
-    setting=await settingText('codex');assert.equal(setting[0],'자동 선택 · 실행 후 확인');
+    setting=await settingText('codex');assert.equal(setting[0],'자동 선택');
     for(const p of state.snapshot.providers)delete p.lastRun;broadcast();closePanel();
 
     await bar.webContents.executeJavaScript("document.querySelector('[data-agent=grok]').dispatchEvent(new MouseEvent('mouseenter'))");
@@ -214,6 +216,26 @@ async function runSmoke(){
     openPanel('claude');await new Promise(r=>setTimeout(r,60));
     assert.match(await panel.webContents.executeJavaScript("document.querySelector('[data-window=seven_day_fable]').innerText"),/0% 사용/);
     fs.writeFileSync(path.join(out,'fable-detail.png'),await captureReady(panel));
+    for(const p of state.snapshot.providers){const model={grok:'grok-4.7',claude:'claude-sonnet-5-5',codex:'gpt-6-astra'}[p.provider];p.lastRun={jobId:'fixture',at:now,sessionId:'fixture-thread',turnId:'fixture-turn',selection:{model:{value:model,source:'parent'},effort:{value:'high',source:'parent'}},observation:{model:{value:model,source:'fixture',verified:true},effort:{value:'high',source:'fixture',verified:true}},executionSpeed:{requested:'standard',settingSource:'default',effective:p.provider==='codex'?'standard':null,effectiveVerified:p.provider==='codex',effectiveSource:'app_server.thread/start',threadId:'fixture-thread',turnId:'fixture-turn'}};}
+    broadcast();
+    for(const provider of ['grok','claude','codex']){
+      openPanel(provider);await new Promise(r=>setTimeout(r,80));
+      const layout=await panel.webContents.executeJavaScript("(()=>{const card=document.querySelector('.detail');return {speed:document.querySelector('#speed').textContent,status:document.querySelector('#speed-status').textContent,overflow:card.scrollWidth-card.clientWidth,wrapped:[...document.querySelectorAll('.setting')].every(row=>{const value=row.querySelector('.setting-value').getBoundingClientRect(),status=row.querySelector('.setting-status').getBoundingClientRect();return status.top>=value.bottom-1})}})()");
+      assert.equal(layout.speed,'Standard');assert.equal(layout.status,provider==='codex'?'CLI 적용 확인':'설정값 · 실제 확인 불가');assert.ok(layout.overflow<=1);assert.equal(layout.wrapped,true);
+      if(provider!=='grok')assert.equal(await panel.webContents.executeJavaScript("getComputedStyle(document.querySelector('#organization-row')).display"),'none');
+      fs.writeFileSync(path.join(out,`settings-${provider}.png`),await captureReady(panel));
+    }
+    const codexRun=state.snapshot.providers[2].lastRun;
+    state.snapshot.providers[2].lastRun={...codexRun,selection:{...codexRun.selection,model:{value:'gpt-6-astra-long-requested-model-identifier-that-wraps-across-several-lines',source:'parent'}},executionSpeed:{...codexRun.executionSpeed,requested:'fast'}};
+    broadcast();openPanel('codex');await new Promise(r=>setTimeout(r,80));
+    assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#speed-compare').hidden"),false);
+    assert.equal(await panel.webContents.executeJavaScript("document.querySelector('#speed-actual').textContent"),'Standard');
+    assert.ok(await panel.webContents.executeJavaScript("document.querySelector('.detail').scrollWidth-document.querySelector('.detail').clientWidth<=1"));
+    fs.writeFileSync(path.join(out,'settings-mismatch.png'),await captureReady(panel));
+    state.snapshot.providers[2].lastRun={jobId:'fixture-new',at:now,model:null,effort:null,executionSpeed:null};broadcast();await new Promise(r=>setTimeout(r,80));
+    assert.deepEqual(await panel.webContents.executeJavaScript("['model','effort','speed'].map(id=>document.getElementById(id).textContent)"),['확인 불가','확인 불가','확인 불가']);
+    fs.writeFileSync(path.join(out,'settings-unknown.png'),await captureReady(panel));
+    for(const p of state.snapshot.providers)delete p.lastRun;broadcast();openPanel('claude');await new Promise(r=>setTimeout(r,40));
     for(const [used,color] of [[70,'rgb(239, 201, 110)'],[95,'rgb(237, 133, 140)']]){state.snapshot.providers[1].quota.windows[2].usedPercent=used;broadcast();await new Promise(r=>setTimeout(r,30));assert.equal(await bar.webContents.executeJavaScript("getComputedStyle(document.querySelector('[data-agent=claude] [data-window=seven_day_fable]')).color"),color);assert.equal(await panel.webContents.executeJavaScript("getComputedStyle(document.querySelector('[data-window=seven_day_fable] b')).color"),color);}
     state.snapshot.providers[1].quota.windows.pop();broadcast();await new Promise(r=>setTimeout(r,30));assert.equal(await bar.webContents.executeJavaScript("document.querySelector('[data-agent=claude] [data-window=seven_day_fable]').textContent"),'—');assert.match(await panel.webContents.executeJavaScript("document.querySelector('[data-window=seven_day_fable]').innerText"),/확인 불가/);
 
@@ -274,7 +296,7 @@ async function runSmoke(){
     fixtureUpdate.installed.version='2.2.0';await sendUpdate();assert.match(await updates.webContents.executeJavaScript("document.querySelector('#status').textContent"),/최신 버전/);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#update').disabled"),true);fixtureUpdate.installed.version='2.1.0';
     fixtureUpdate.error='GitHub 응답 확인 실패';await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#error-panel').hidden"),false);assert.match(await updates.webContents.executeJavaScript("document.querySelector('#error-panel').textContent"),/GitHub/);fs.writeFileSync(path.join(out,'update-error.png'),await captureReady(updates));fixtureUpdate.error=null;
     fixtureUpdate.phase='downloading';fixtureUpdate.progress={received:52428800,total:164201607};await sendUpdate();assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#progress').hidden"),false);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#cancel').hidden"),false);assert.equal(await updates.webContents.executeJavaScript("document.querySelector('#update').disabled"),true);
-    assert.equal(bar.getBounds().height,96);
+    if(forcedDpi>1)assert.ok(Math.abs(bar.getBounds().height-96)<=2);else assert.equal(bar.getBounds().height,96);
     assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#update-progress').hidden"),false);
     assert.equal(await bar.webContents.executeJavaScript("document.querySelector('#update-cancel').hidden"),false);
     assert.match(await bar.webContents.executeJavaScript("document.querySelector('#update-percent').textContent"),/\d+%/);

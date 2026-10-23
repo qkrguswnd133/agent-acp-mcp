@@ -22,7 +22,11 @@ function render(){const p=state.snapshot?.providers?.find(p=>p.provider===select
     reset.textContent=`초기화 ${formatTime(window.resetsAt)}${expired?' · 마지막 확인값':''}`;row.append(label,values,reset);$('quota-windows').append(row);
   }
   const reset=timestamp(q.resetsAt);const mins=Number.isFinite(reset)?Math.ceil((reset-Date.now())/60000):0;const countdown=mins>0?mins>=60?`${Math.floor(mins/60)}시간 ${mins%60}분 후`:`${mins}분 후`:'';$('reset').textContent=`${formatTime(q.resetsAt)}${countdown?' · '+countdown:''}`;
-  for(const axis of ['model','effort']){const value=describeSetting(p,axis,formatTime),node=$(axis);node.textContent=value.text;node.title=value.title;node.dataset.setting=value.state;node.tabIndex=value.title.trim()?0:-1;$(`${axis}-detail`).textContent=value.title;}$('auth').textContent=p?`${p.authenticated===true?'로그인됨':p.authenticated===false?'로그인 필요':'확인 불가'} / ${p.version??'확인 불가'}`:'확인 중';
+  for(const axis of ['model','effort','speed']){const value=axis==='speed'?describeSpeed(p,formatTime):describeSetting(p,axis,formatTime),node=$(axis),row=$(`${axis}-row`),compare=$(`${axis}-compare`);
+    node.textContent=value.primary;row.title=value.detail;row.dataset.setting=node.dataset.setting=value.state;node.tabIndex=value.detail.trim()?0:-1;
+    $(`${axis}-status`).textContent=value.status;$(`${axis}-detail`).textContent=value.detail;
+    compare.hidden=!value.compare;$(`${axis}-requested`).textContent=value.compare?`${value.compare.requested}${value.compare.requestedSource?` · ${value.compare.requestedSource}`:''}`:'';$(`${axis}-actual`).textContent=value.compare?.actual??'';}
+  $('auth').textContent=p?`${p.authenticated===true?'로그인됨':p.authenticated===false?'로그인 필요':'확인 불가'} / ${p.version??'확인 불가'}`:'확인 중';
   const accountStale=!!state.error||state.snapshot?.generatedAt&&Date.now()-Date.parse(state.snapshot.generatedAt)>150000||p?.account?.observedAt&&Date.now()-Date.parse(p.account.observedAt)>150000;
   const account=!accountStale&&p?.enabled!==false&&p?.available!==false&&p?.authenticated===true&&p.account?.status==='authenticated'?p.account:null;
   const identity=account?.email??account?.username??account?.displayName;

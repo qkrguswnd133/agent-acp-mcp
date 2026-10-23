@@ -1,5 +1,8 @@
 # Linux Gateway installation and updates
 
+Release 2.8.1 updates Windows Monitor to 1.4.2 with readable same-task model/effort/speed details. Linux/WSL Gateway remains 2.8.0; its execution behavior is unchanged and the distribution receipt advances to 2.8.1. Linux does not include a desktop Monitor.
+
+
 Release 2.8.0 / Gateway 2.8.0 runs Codex work through the official CLI app-server. Same-work CLI-applied speed is returned separately from backend observation; Windows and Linux/WSL share this implementation. Existing installs can use `agent-acp update`; Windows Monitor can update its installed WSL Gateways through the combined update flow. Reconnect MCP afterward. Provider CLIs and personal authentication/configuration files are not upgraded or rewritten.
 
 

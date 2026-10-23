@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
-import {parseGatewayEnvironment,createMonitor,loadMonitor,sanitizeJob,readRuntimeQuota,normalizeQuota,normalizeAccount} from '../backend/monitor.mjs';
+import {parseGatewayEnvironment,createMonitor,loadMonitor,sanitizeJob,sanitizeExecutionSpeed,readRuntimeQuota,normalizeQuota,normalizeAccount} from '../backend/monitor.mjs';
 
 test('standalone config selects gateway without Codex and accepts only provider settings',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'agent-monitor-install-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
@@ -124,4 +124,92 @@ test('all provider job labels use original project while preserving actual isola
  }
  const fallback=sanitizeJob({job_id:'fixture',cwd:'C:\\dev\\ordinary',worktree:{originalCwd:'relative'},status:'completed'});
  assert.equal(fallback.project,'ordinary');assert.equal(fallback.isolated,false);
+});
+
+const speedResult=(overrides={})=>({provider:'codex',model:'gpt-task',effort:'high',sessionId:'task-thread',turnId:'task-turn',executionSpeed:{requested:'fast',settingSource:'configured',observed:'unavailable',observationSource:'unavailable',verified:false,effective:'fast',effectiveSource:'app_server.thread/start',effectiveVerified:true,threadId:'task-thread',turnId:'task-turn'},...overrides});
+
+test('speed DTO keeps same-turn CLI evidence separate from backend observations and raw metadata',()=>{
+  const result=speedResult();
+  Object.assign(result.executionSpeed,{warning:'Bearer private-warning',note:'private-note',reason:'private-reason',serviceTier:'priority',accessToken:'private-token'});
+  result.cliAppliedSettings={private:'private-applied-settings'};
+  result.observation={model:{value:'gpt-task',source:'app_server.thread/start',verified:true}};
+  const job=sanitizeJob({job_id:'job',cwd:'C:\\dev\\project',status:'completed',result:{results:[result]}});
+  assert.deepEqual(job.providers[0].executionSpeed,{requested:'fast',settingSource:'configured',observed:null,observationSource:'unavailable',verified:false,effective:'fast',effectiveSource:'app_server.thread/start',effectiveVerified:true,threadId:'task-thread',turnId:'task-turn'});
+  assert.equal(job.providers[0].observation.model.source,'app_server.thread/start');
+  assert.equal(job.providers[0].sessionId,'task-thread');assert.equal(job.providers[0].turnId,'task-turn');
+  assert.doesNotMatch(JSON.stringify(job),/private-|cliAppliedSettings|serviceTier|accessToken|warning|note/);
+  for(const source of ['app_server.thread/resume','app_server.thread/settings/updated']){
+    const candidate=speedResult();candidate.executionSpeed.effectiveSource=source;
+    assert.equal(sanitizeExecutionSpeed(candidate).effectiveVerified,true);
+  }
+});
+
+test('effective speed requires the same Codex thread and turn with recognized applied evidence',()=>{
+  const cases=[
+    {sessionId:'different-thread'}, {turnId:'different-turn'}, {sessionId:null}, {turnId:null},
+    {provider:'claude'}, {provider:'grok'},
+    {executionSpeed:{...speedResult().executionSpeed,threadId:'other-thread'}},
+    {executionSpeed:{...speedResult().executionSpeed,turnId:'other-turn'}},
+    {executionSpeed:{...speedResult().executionSpeed,effectiveSource:'configured'}},
+    {executionSpeed:{...speedResult().executionSpeed,effectiveSource:'app_server.thread/start/untrusted'}},
+    {executionSpeed:{...speedResult().executionSpeed,effectiveVerified:'true'}},
+    {executionSpeed:{...speedResult().executionSpeed,effective:'unknown'}},
+  ];
+  for(const changed of cases)assert.equal(sanitizeExecutionSpeed(speedResult(changed)).effectiveVerified,false,JSON.stringify(changed));
+  const requestOnly=sanitizeExecutionSpeed({provider:'codex',executionSpeed:{requested:'fast',settingSource:'configured',verified:true,effectiveVerified:true}});
+  assert.equal(requestOnly.observed,null);assert.equal(requestOnly.verified,false);assert.equal(requestOnly.effective,null);assert.equal(requestOnly.effectiveVerified,false);
+  const mismatch=speedResult();mismatch.executionSpeed.effective='standard';
+  assert.equal(sanitizeExecutionSpeed(mismatch).requested,'fast');assert.equal(sanitizeExecutionSpeed(mismatch).effective,'standard');assert.equal(sanitizeExecutionSpeed(mismatch).effectiveVerified,true);
+});
+
+test('missing and malformed speed metadata remain unknown and sensitive fields are discarded',()=>{
+  for(const executionSpeed of [undefined,null,'fast',false,[],42])assert.equal(sanitizeExecutionSpeed({executionSpeed}),null);
+  const result=speedResult({model:'Bearer model-secret',effort:'sk-ant-effort-secret',sessionId:'Bearer session-secret',turnId:'sk-ant-turn-secret',selection:{model:{value:'Bearer selection-secret',source:'parent'},effort:{value:'high',source:'configured',reason:'Bearer reason-secret'}},observation:{model:{value:'Bearer observation-secret',source:'provider_result',verified:true}},errorKind:'Bearer error-secret',executionSpeed:{requested:'priority',settingSource:'Bearer source-secret',observed:'default',observationSource:'sk-ant-source-secret',verified:true,effective:{value:'fast'},effectiveSource:'app_server.thread/start\nBearer secret',effectiveVerified:true,threadId:'sk-ant-thread-secret',turnId:'Bearer turn-secret',warning:'raw-warning',note:'raw-note',reason:'raw-reason',raw:{accessToken:'raw-token'}}});
+  const provider=sanitizeJob({job_id:'job',cwd:'C:\\dev\\project',status:'completed',result:{results:[result]}}).providers[0];
+  assert.deepEqual(provider.executionSpeed,{requested:null,settingSource:null,observed:null,observationSource:null,verified:false,effective:null,effectiveSource:null,effectiveVerified:false,threadId:null,turnId:null});
+  assert.equal(provider.model,null);assert.equal(provider.effort,null);assert.equal(provider.sessionId,null);assert.equal(provider.turnId,null);assert.equal(provider.observation,null);assert.equal(provider.selection.model,null);assert.equal(provider.selection.effort.reason,null);assert.equal(provider.errorKind,null);
+  assert.doesNotMatch(JSON.stringify(provider),/Bearer|sk-ant-|raw-|secret/);
+  const noSpeed=sanitizeJob({job_id:'job',cwd:'C:\\dev\\project',status:'completed',result:{results:[{provider:'codex',model:'legacy'}]}}).providers[0];
+  assert.equal(noSpeed.executionSpeed,null);assert.equal(noSpeed.turnId,null);
+});
+
+test('Claude observed speed and Grok request-only metadata retain separate evidence',()=>{
+  const claude=sanitizeExecutionSpeed({provider:'claude',executionSpeed:{requested:'fast',settingSource:'configured',observed:'standard',observationSource:'claude.result',verified:true,effective:'unavailable',effectiveSource:'unavailable',effectiveVerified:false}});
+  assert.equal(claude.requested,'fast');assert.equal(claude.observed,'standard');assert.equal(claude.verified,true);assert.equal(claude.effective,null);assert.equal(claude.effectiveVerified,false);
+  assert.equal(sanitizeExecutionSpeed({executionSpeed:{observed:'fast',verified:'true'}}).verified,false);
+  const grok=sanitizeExecutionSpeed({provider:'grok',executionSpeed:{requested:'standard',settingSource:'default',observed:'unavailable',observationSource:'unavailable',verified:false,note:'Independent speed control is not advertised.'}});
+  assert.equal(grok.requested,'standard');assert.equal(grok.observed,null);assert.equal(grok.verified,false);assert.equal(grok.effective,null);assert.equal(grok.effectiveVerified,false);
+});
+
+test('latest result scopes model, effort and speed together even when a legacy result has no metadata',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'agent-monitor-speed-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const jobs=path.join(dir,'state','jobs');await fs.mkdir(jobs,{recursive:true});
+  const first='11111111-1111-1111-1111-111111111111',second='22222222-2222-2222-2222-222222222222',third='33333333-3333-3333-3333-333333333333';
+  const write=async(id,startedAt,finishedAt,results)=>fs.writeFile(path.join(jobs,`${id}.json`),JSON.stringify({job_id:id,cwd:'C:\\dev\\project',status:'completed',startedAt,finishedAt,result:{results}}));
+  await write(first,'2026-10-02T00:00:00Z','2026-10-02T01:00:00Z',[speedResult(),{provider:'claude',model:'claude-first',effort:'medium',executionSpeed:{requested:'fast',observed:'fast',observationSource:'provider_result',verified:true}}]);
+  // This run began earlier but settled later; it must supersede the newer-started result.
+  await write(second,'2026-10-01T00:00:00Z','2026-10-03T00:00:00Z',[{provider:'codex',model:'legacy-current',effort:'low',sessionId:'legacy-thread',turnId:'legacy-turn'}]);
+  const monitor=createMonitor({gatewayRoot:dir,home:dir,env:{GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false'}});
+  let snapshot=await monitor.status();let codex=snapshot.providers[2];
+  assert.deepEqual(codex.lastRun,{jobId:second,at:'2026-10-03T00:00:00.000Z',status:'completed',model:'legacy-current',effort:'low',sessionId:'legacy-thread',turnId:'legacy-turn',selection:null,observation:null,executionSpeed:null});
+  const claude=snapshot.providers[1].lastRun;assert.equal(claude.jobId,first);assert.equal(claude.model,'claude-first');assert.equal(claude.executionSpeed.observed,'fast');assert.equal(claude.executionSpeed.verified,true);
+  assert.equal(snapshot.providers[0].lastRun,null);
+  await write(third,'2026-10-04T00:00:00Z','2026-10-04T01:00:00Z',[{provider:'codex',error:'private failure'}]);
+  snapshot=await monitor.status();codex=snapshot.providers[2];
+  assert.deepEqual(codex.lastRun,{jobId:third,at:'2026-10-04T01:00:00.000Z',status:'failed',model:null,effort:null,sessionId:null,turnId:null,selection:null,observation:null,executionSpeed:null});
+  assert.doesNotMatch(JSON.stringify(snapshot),/private failure/);
+});
+
+test('active speed metadata stays on its own run and settled results outrank same-job activity',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'agent-monitor-active-speed-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const jobs=path.join(dir,'state','jobs');await fs.mkdir(jobs,{recursive:true});
+  const id='11111111-1111-1111-1111-111111111111',job={job_id:id,cwd:'C:\\dev\\project',status:'running',startedAt:'2026-10-03T00:00:00Z',lastActivityAt:'2026-10-03T00:01:00Z',activity:speedResult()};
+  await fs.writeFile(path.join(jobs,`${id}.json`),JSON.stringify(job));
+  const monitor=createMonitor({gatewayRoot:dir,home:dir,env:{GROK_ENABLED:'false',CLAUDE_ENABLED:'false',CODEX_ENABLED:'false'}});
+  let lastRun=(await monitor.status()).providers[2].lastRun;
+  assert.equal(lastRun.jobId,id);assert.equal(lastRun.status,'running');assert.equal(lastRun.executionSpeed.effectiveVerified,true);
+  job.result={results:[{provider:'codex',model:'settled-model'}]};
+  await fs.writeFile(path.join(jobs,`${id}.json`),JSON.stringify(job));
+  lastRun=(await monitor.status()).providers[2].lastRun;
+  assert.equal(lastRun.status,'completed');assert.equal(lastRun.model,'settled-model');assert.equal(lastRun.executionSpeed,null);assert.equal(lastRun.sessionId,null);
 });

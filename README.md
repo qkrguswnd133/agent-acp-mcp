@@ -1,5 +1,10 @@
 # Agent ACP MCP
 
+## 2.8.1 모니터 실행 정보
+
+Monitor 1.4.2의 상세보기에서 같은 작업의 모델·Reasoning·속도를 확인할 수 있습니다. 값과 확인 상태를 별도 줄로 표시하며 긴 모델명도 줄바꿈합니다. Codex의 **CLI 적용 확인**과 provider의 **실행 확인**, 설정값만 있는 상태를 구분합니다. 이전 작업의 값을 섞거나 속도를 추측하지 않습니다. Gateway는 2.8.0을 유지합니다.
+
+
 ## 2.8.0 Codex app-server와 CLI 적용 속도
 
 Codex는 같은 작업을 실행하는 공식 CLI app-server의 응답으로 모델·effort·적용 속도를 확인합니다. `executionSpeed.effectiveVerified=true`이면 `effective`를 **CLI 적용 속도**로 보고합니다. backend 관측값(`observed`)은 별도이며 없으면 unavailable입니다. Windows·Linux/WSL에 동일하게 적용됩니다. 기존 로그인과 설정은 유지하며 CLI를 자동 업데이트하지 않습니다. [속도와 증거 구분](gateway/EXECUTION-SPEED.md)을 확인하세요.
@@ -9,7 +14,7 @@ Windows x64 및 Linux용 MCP 게이트웨이와 Windows 독립 실행형 Agent M
 
 ## 위임 에이전트 실행 속도
 
-**2.8.0 / Gateway 2.8.0 / Monitor 1.4.1**에 포함됩니다.
+**2.8.1 / Gateway 2.8.0 / Monitor 1.4.2**에 포함됩니다.
 
 Gateway 환경설정의 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED` 기본값은 모두 `standard`입니다. 모델·reasoning effort와 독립적인 고정 설정이며, 생략해도 Standard를 요청합니다. Windows·Linux 설정 예제에 포함되어 있습니다. 지원 모델·추가 사용량·관측값 구분은 [실행 속도 설정](gateway/EXECUTION-SPEED.md)을 확인하세요.
 
