@@ -187,8 +187,8 @@ export class CodexProvider implements ProviderAdapter{
   const observed=codexRuntimeMetadata(parsed.model,parsed.effort,session);
   const applied=r.appliedSettings;
   const runtime={...observed,
-   ...(observed.model==='unavailable'&&applied?.model?{model:applied.model,modelSource:applied.source}:{}),
-   ...(observed.effort==='unavailable'&&applied?.effort?{effort:applied.effort,effortSource:applied.source}:{}),
+   ...(observed.model==='unavailable'&&!observed.observedModels.length&&applied?.model?{model:applied.model,modelSource:applied.source}:{}),
+   ...(observed.effort==='unavailable'&&!observed.observedEfforts.length&&applied?.effort?{effort:applied.effort,effortSource:applied.source}:{}),
    speed:parsed.speed??'unavailable',speedSource:parsed.speed?'app_server':'unavailable',observedSpeeds:parsed.observedSpeeds,
    cliAppliedSettings:applied??null,cliAppliedSettingsHistory:r.settingsHistory};
   const executionMetadata={transport:'codex_app_server',turnId:r.turnId??null,implementationProgress:r.implementationProgress,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};

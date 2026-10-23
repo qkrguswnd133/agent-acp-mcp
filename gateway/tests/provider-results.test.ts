@@ -7,12 +7,12 @@ import test from 'node:test';
 import {QuotaCache} from '../src/quota-cache.js';
 import {codexAppServerFixtureScript} from './fixtures/codex-app-server-fixture.js';
 
-async function fakeCli(stdout:string,stderr='',code=0,prelude=''){
+async function fakeCli(stdout:string,stderr='',code=0,prelude='',threadResult:Record<string,unknown>={}){
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'agent-acp-provider-results-'));
  const script=path.join(directory,'cli.mjs');
  const events=stdout.split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
  await fs.writeFile(path.join(directory,'app-server.mjs'),codexAppServerFixtureScript(events,{
-  threadResult:{},beforeTurn:prelude,exitCode:code,stderr,
+  threadResult,beforeTurn:prelude,exitCode:code,stderr,
   startup:`const counter=path.join(path.dirname(process.argv[1]),'app-server-count');let count=0;try{count=Number(fs.readFileSync(counter,'utf8'))||0}catch{}fs.writeFileSync(counter,String(count+1));`,
  }));
  await fs.writeFile(script,`import fs from 'node:fs';import path from 'node:path';if(process.argv[2]==='app-server'){await import('./app-server.mjs');}else{${prelude}process.stdout.write(${JSON.stringify(stdout)});process.stderr.write(${JSON.stringify(stderr)});process.exit(${code});}`);
@@ -51,6 +51,17 @@ test('Codex failure retains matching transcript model/effort, partial output and
   assert.equal(result.model,'observed-model');assert.equal(result.modelSource,'session_jsonl');
   assert.equal(result.effort,'high');assert.equal(result.requestedModel,'requested-model');
   assert.equal((result.usage as any).input_tokens,10);
+ });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
+});
+
+test('Codex CLI settings never overwrite ambiguous same-work runtime model or effort evidence',async()=>{
+ const state=await fs.mkdtemp(path.join(os.tmpdir(),'agent-codex-mixed-')),id='00000000-0000-7000-8000-000000000006';
+ const setup=`const now=new Date(),folder=path.join(${JSON.stringify(state)},'sessions',...now.toISOString().slice(0,10).split('-'));fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'rollout-test-${id}.jsonl'),[{type:'session_meta',timestamp:now.toISOString(),payload:{id:'${id}',cwd:process.cwd()}},...['low','high'].map(effort=>({type:'turn_context',timestamp:now.toISOString(),payload:{cwd:process.cwd(),model:'observed-'+effort,effort}}))].map(v=>JSON.stringify(v)).join('\\n'));`;
+ const cli=await fakeCli([{type:'thread.started',thread_id:id},{type:'turn.completed'}].map(e=>JSON.stringify(e)).join('\n'),'',0,setup,{model:'configured-ack',reasoningEffort:'high',serviceTier:null});
+ try{await withEnv({CODEX_CLI:cli.command,CODEX_HOME:state,AGENT_MCP_STATE_DIR:state},async()=>{
+  const {CodexProvider}=await loadProvider('codex');const result=await new CodexProvider().run('agent_ask',selectedInput({cwd:process.cwd(),task:'fixture'},'codex'));
+  assert.equal(result.error,null);assert.equal(result.model,'unavailable');assert.equal(result.effort,'unavailable');assert.equal((result.cliAppliedSettings as any).model,'configured-ack');
+  assert.deepEqual(result.observedModels,['observed-low','observed-high']);assert.deepEqual(result.observedEfforts,['low','high']);
  });}finally{await fs.rm(cli.directory,{recursive:true,force:true});await fs.rm(state,{recursive:true,force:true});}
 });
 
