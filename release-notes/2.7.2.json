@@ -7,7 +7,8 @@
     "정리 충돌 검사를 실제 대상 worktree로 좁히고 차단한 job·owner·프로세스 근거를 표시합니다. 정상 완료 작업의 미확인 정리는 최신 PID·작업공간 검사로 다시 판단하며 관련성 미확인 상태는 보존합니다.",
     "integration_ref가 현재 HEAD의 조상이면 허용합니다. preserve_branch=true는 브랜치와 커밋을 남기는 checkout-only 정리를 제공하고, 변경 없는 index와 남은 파일을 검증한 부분 checkout 복구를 지원합니다.",
     "ignored 산출물은 파일 수·상위 폴더로 요약하고 작업 목록·리뷰 본문을 우선 보존합니다. 새 worktree의 build/.gradle 자동 정리는 명시적 opt-in이며 기존 데이터·링크·미검증 프로세스는 보존합니다.",
-    "Codex structured event와 일치하는 세션 JSONL에서 마지막 명령·단계·변경 진행을 관측합니다. 완료 후 프로세스 정리 중인 단계를 구분하며 CPU·미관측 값은 추측하지 않습니다."
+    "Codex structured event와 일치하는 세션 JSONL에서 마지막 명령·단계·변경 진행을 관측합니다. 완료 후 프로세스 정리 중인 단계를 구분하며 CPU·미관측 값은 추측하지 않습니다.",
+    "Windows 상태 조회와 파일 교체가 겹쳐 정상 완료가 실패로 표시되는 EPERM 경합을 보완했습니다. 원자적 상태 파일 교체만 짧게 재시도하며 작업·정리 자체는 재실행하지 않습니다."
   ],
   "monitor": [
     "Monitor 1.4.1: 독립 실행 설정 및 Codex 환경설정에서 provider별 SPEED 값을 전달합니다. 전체 업데이트의 WSL → Windows 순서와 설정·작업 기록 보존 동작은 유지합니다.",

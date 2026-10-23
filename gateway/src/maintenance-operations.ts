@@ -2,13 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {processIdentityAsync} from './process-identity.js';
+import {replaceRecord} from './atomic-record.js';
 export type OperationStatus='queued'|'running'|'completed'|'failed'|'interrupted';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class MaintenanceOperations {
  private active=new Map<string,Promise<void>>();private closed=false;private identity=processIdentityAsync(process.pid).catch(()=>undefined);
- constructor(private directory:string){}
+ constructor(private directory:string,private replace:typeof replaceRecord=replaceRecord){}
  private file(id:string){if(!uuid.test(id))throw Error('Invalid operation_id');return path.join(this.directory,id+'.json');}
- private async save(record:any){await fs.mkdir(this.directory,{recursive:true});const root=await fs.lstat(this.directory);if(!root.isDirectory()||root.isSymbolicLink())throw Error('Unsafe operation directory');const file=this.file(record.operation_id),tmp=file+'.'+randomUUID()+'.tmp';try{await fs.writeFile(tmp,JSON.stringify(record),{flag:'wx'});await fs.rename(tmp,file);}finally{await fs.unlink(tmp).catch(()=>{});}}
+ private async save(record:any){await fs.mkdir(this.directory,{recursive:true});const root=await fs.lstat(this.directory);if(!root.isDirectory()||root.isSymbolicLink())throw Error('Unsafe operation directory');const file=this.file(record.operation_id),tmp=file+'.'+randomUUID()+'.tmp';try{await fs.writeFile(tmp,JSON.stringify(record),{flag:'wx'});await this.replace(tmp,file);}finally{await fs.unlink(tmp).catch(()=>{});}}
  async start(kind:string,input:unknown,run:(phase:(name:string,elapsedMs:number)=>void)=>Promise<unknown>){
   if(this.closed)throw Error('Gateway is draining maintenance');
   const operation_id=randomUUID(),record:any={operation_id,kind,input,status:'queued',ownerPid:process.pid,startedAt:new Date().toISOString(),timings:[]};const initial=this.save(record);

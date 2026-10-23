@@ -11,6 +11,7 @@ import {classifyProcessCleanup,verifyTrackedProcessesAbsent} from './process-cle
 import {acquireMaintenanceLock} from './maintenance-lock.js';
 import {readProcessInventory,validCreationTime,type ProcessInventory} from './process-inventory.js';
 import {inspectWorktreeLinks} from './worktree-links.js';
+import {replaceRecord} from './atomic-record.js';
 
 type Runner=(kind:string,input:RunInput,signal:AbortSignal,hooks:{onActivity:(event:Record<string,unknown>)=>void})=>Promise<any>;
 type Status='queued'|'running'|'cancelling'|'completed'|'failed'|'cancelled'|'interrupted';
@@ -53,7 +54,7 @@ export class JobManager {
     await fs.mkdir(this.directory,{recursive:true});
     const destination=this.file(job.job_id),tmp=destination+'.'+randomUUID()+'.tmp';
     const stored=recordOnly?structuredClone(job):await persistJobPayload(job,this.directory);
-    try{await fs.writeFile(tmp,JSON.stringify(stored,null,2),'utf8');if(recordOnly&&await fs.readFile(destination,'utf8')!==recordOnly.expected)throw Error('Job record changed during forget; preserved');await fs.rename(tmp,destination);}finally{await fs.unlink(tmp).catch(()=>{});}
+    try{await fs.writeFile(tmp,JSON.stringify(stored,null,2),'utf8');await replaceRecord(tmp,destination,{beforeAttempt:async()=>{if(recordOnly&&await fs.readFile(destination,'utf8')!==recordOnly.expected)throw Error('Job record changed during forget; preserved');}});}finally{await fs.unlink(tmp).catch(()=>{});}
   }
   private persist(entry:Active){
     // Serialize writes; snapshot now so late progress cannot overwrite completion.

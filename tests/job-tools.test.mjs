@@ -34,6 +34,7 @@ try{
  const listing=await client.listTools();for(const n of ['agent_operation_status','agent_worktree_list','agent_worktree_cleanup','agent_worktree_forget','agent_worktree_migrate','agent_worktree_recover','agent_job_wait'])assert(listing.tools.some(t=>t.name===n));
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.background.default,true);
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.unlink_links.default,false);
+ assert.equal(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.preserve_branch.default,false);
  assert.ok(listing.tools.find(t=>t.name==='agent_worktree_cleanup').inputSchema.properties.idle_confirmed);
  assert.equal(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.dry_run.default,true);
  assert.ok(listing.tools.find(t=>t.name==='agent_worktree_migrate').inputSchema.properties.idle_confirmed);

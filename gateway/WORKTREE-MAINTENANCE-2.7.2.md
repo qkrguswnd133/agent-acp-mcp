@@ -4,6 +4,11 @@ Gateway 2.7.1 has the same behavior on Windows and Linux/WSL. Existing jobs and
 provider results are retained. Reconnect MCP after updating; installation does
 not clean or migrate existing worktrees.
 
+Windows job/operation record replacement tolerates short sharing conflicts from
+concurrent readers. Only the atomic metadata rename is retried, with a bounded
+delay; maintenance itself is never replayed and the previous record is never
+unlinked as a fallback. Record-only compare-and-swap guards run on each attempt.
+
 ## Cleanup scope and process evidence
 
 Physical maintenance checks the **target isolated worktree**, not every job or
