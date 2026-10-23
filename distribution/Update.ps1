@@ -80,30 +80,135 @@ function AssertStopped($Items) {
         throw "Installation is in use (PID $($first.Process.ProcessId), $($first.Process.Name)): $($first.Item.Target). A host may have restarted it. Disconnect MCP and exit Agent Monitor before retrying."
     }
 }
+function JobField($Value,[string]$Name) {
+    if ($null -eq $Value) { return $null }
+    $property=$Value.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $null
+}
+function JobTime($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTime]) { return $Value.ToUniversalTime().Ticks }
+    if ([string]$Value -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$') { return $null }
+    try { return [DateTimeOffset]::Parse([string]$Value,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime.Ticks }
+    catch { return $null }
+}
+function JobProcessIdentity($Process,$Recorded,[switch]$Owner) {
+    if ($null -eq $Process) { return 'absent' }
+    $birth=JobTime (JobField $Process 'CreationDate')
+    if ($null -eq $birth) { return 'unknown' }
+    $key=$null
+    foreach ($name in @('ownerCreationKey','creationKey','startIdentity','ownerStartedAt','identity')) {
+        $value=JobField $Recorded $name
+        if ($null -ne $value -and [string]$value -ne '') { $key=[string]$value; break }
+    }
+    if ($null -ne $key) {
+        if ($key -notmatch '^(?:windows:)?(\d{15,20})$') { return 'unknown' }
+        $saved=[decimal]$Matches[1];$observed=[decimal]$birth
+        # CIM exposes microseconds; Get-Process StartTime may retain 100ns ticks.
+        if ($observed -eq $saved -or ($observed % 10 -eq 0 -and $observed -eq [decimal]::Floor($saved/10)*10)) { return 'alive' }
+        return 'reused'
+    }
+    $savedValue=JobField $Recorded 'ownerCreatedAt'
+    if ($null -eq $savedValue) { $savedValue=JobField $Recorded 'createdAt' }
+    $savedTime=JobTime $savedValue
+    if ($null -ne $savedValue -and $null -eq $savedTime) { return 'unknown' }
+    if ($null -ne $savedTime) {
+        # JSON timestamps may have only millisecond precision.
+        if ([decimal]::Floor([decimal]$birth/10000) -eq [decimal]::Floor([decimal]$savedTime/10000)) { return 'alive' }
+        return 'reused'
+    }
+    if ($Owner) {
+        $started=JobTime (JobField $Recorded 'startedAt')
+        if ($null -ne $started) {
+            if ([decimal]::Floor([decimal]$birth/10000) -gt [decimal]::Floor([decimal]$started/10000)) { return 'reused' }
+            return 'alive'
+        }
+    }
+    return 'unknown'
+}
+function JobChildBlockers($Job,[int]$OwnerPid,$Owner,[string]$OwnerState,[object[]]$Processes,$ByPid) {
+    $blocking=@{};$replacementBirth=JobTime (JobField $Owner 'CreationDate')
+    foreach ($child in $Processes) {
+        if ([int]$child.ParentProcessId -ne $OwnerPid -or [int]$child.ProcessId -eq $OwnerPid) { continue }
+        $birth=JobTime (JobField $child 'CreationDate')
+        # A child born strictly after a proven replacement parent belongs to
+        # that new generation. Older or unreadable children may be survivors.
+        if ($OwnerState -eq 'reused' -and $null -ne $birth -and $null -ne $replacementBirth -and $birth -gt $replacementBirth) { continue }
+        $blocking[[int]$child.ProcessId]='surviving or unconfirmed child'
+    }
+    $cleanup=JobField (JobField $Job 'runtimeEvidence') 'processCleanup'
+    if ($null -ne $cleanup) {
+        $trackedProperty=$cleanup.PSObject.Properties['trackedPids']
+        if (-not $trackedProperty -or $trackedProperty.Value -isnot [Array]) { throw 'Tracked child evidence is missing or malformed; update blocked.' }
+        $tracked=@(JobField $cleanup 'trackedPids');$identities=@(JobField $cleanup 'trackedProcesses')
+        $count=JobField $cleanup 'trackedPidCount'
+        if ((JobField $cleanup 'truncated') -eq $true -or ($null -ne $count -and $count -gt $tracked.Count)) {
+            throw 'Tracked child evidence is truncated; disconnect and verify the parent before updating.'
+        }
+        foreach ($saved in @($identities + @(JobField $cleanup 'rootProcesses') + @(JobField $cleanup 'rootProcess'))) {
+            if ($null -eq $saved) { continue }
+            $tracked+=@(JobField $saved 'pid')
+        }
+        $tracked+=@(JobField $cleanup 'remainingPids');$tracked+=@(JobField $cleanup 'unverifiedPids');$tracked+=@(JobField $cleanup 'rootPid');$tracked+=@(JobField $cleanup 'rootPids')
+        foreach ($value in $tracked) {
+            if ($null -eq $value) { continue }
+            $trackedPid=0
+            if (-not [int]::TryParse([string]$value,[ref]$trackedPid) -or $trackedPid -le 0) { throw 'Invalid tracked child evidence; update blocked.' }
+            if (-not $ByPid.ContainsKey($trackedPid)) { continue }
+            $savedRows=@($identities + @(JobField $cleanup 'rootProcesses') + @(JobField $cleanup 'rootProcess') | Where-Object { $null -ne $_ -and (JobField $_ 'pid') -eq $trackedPid })
+            $states=@($savedRows | ForEach-Object { JobProcessIdentity $ByPid[$trackedPid] $_ })
+            # Every recorded generation must be proven different. A missing
+            # identity or an exact/unknown match remains a conservative blocker.
+            if ($states.Count -gt 0 -and -not @($states | Where-Object { $_ -ne 'reused' }).Count) { continue }
+            $blocking[$trackedPid]='tracked child is alive or its generation is unknown'
+        }
+    }
+    foreach ($childPid in $blocking.Keys | Sort-Object) {
+        $row=$ByPid[$childPid]
+        "PID $childPid ($($row.Name), created $($row.CreationDate)): $($blocking[$childPid])"
+    }
+}
 function AssertNoActiveJobs([string]$Gateway) {
     $jobs = Join-Path $Gateway 'state\jobs'
     if (-not (Test-Path -LiteralPath $jobs)) { return }
+    $processes=$null;$byPid=@{}
     foreach ($file in Get-ChildItem -LiteralPath $jobs -Force -File) {
         if ($file.Extension -ne '.json') { throw "Job state is being written or is unrecognized: $($file.Name). Finish jobs before updating." }
         try { $job=Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json; $status=[string]$job.status }
         catch { throw "Cannot verify job state: $($file.Name). Automatic shutdown is blocked." }
         if ($status -notin @('completed','failed','cancelled','interrupted')) {
             # A crashed gateway can leave nonterminal records indefinitely.
-            # Preserve them; ignore only a verifiably absent owner with no
-            # surviving direct children. Missing/malformed ownership fails closed.
+            # Preserve records byte-for-byte. A PID reused by an unrelated
+            # process is not the old owner; child identity still needs checking.
             $ownerProperty=$job.PSObject.Properties['ownerPid']
             $jobOwner=0
             if ($status -in @('queued','running','cancelling') -and $ownerProperty -and
                 [int]::TryParse([string]$ownerProperty.Value,[ref]$jobOwner) -and $jobOwner -gt 0) {
-                $owners=@(Get-CimInstance Win32_Process -Filter "ProcessId = $jobOwner" -ErrorAction Stop)
-                if (-not $owners.Count) {
-                    $children=@(Get-CimInstance Win32_Process -Filter "ParentProcessId = $jobOwner" -ErrorAction Stop)
+                if ($null -eq $processes) {
+                    $processes=@(Get-CimInstance Win32_Process -ErrorAction Stop)
+                    if (-not $processes.Count) { throw 'Complete process inventory is unavailable; update blocked.' }
+                    foreach ($row in $processes) {
+                        $processId=0;$parentId=0
+                        if (-not [int]::TryParse([string]$row.ProcessId,[ref]$processId) -or $processId -lt 0 -or
+                            -not [int]::TryParse([string]$row.ParentProcessId,[ref]$parentId) -or $parentId -lt 0 -or $byPid.ContainsKey($processId)) {
+                            throw 'Invalid process inventory; update blocked.'
+                        }
+                        $byPid[$processId]=$row
+                    }
+                }
+                $owner=$byPid[$jobOwner];$identity=JobProcessIdentity $owner $job -Owner
+                if ($identity -in @('absent','reused')) {
+                    try { $children=@(JobChildBlockers $job $jobOwner $owner $identity $processes $byPid) }
+                    catch { throw "Unfinished job ($status): $($file.Name). $($_.Exception.Message)" }
                     if (-not $children.Count) {
-                        Write-Host "Preserving interrupted job record from exited Gateway PID ${jobOwner}: $($file.Name)"
+                        $detail=if ($owner) { " ($($owner.Name), created $($owner.CreationDate.ToUniversalTime().ToString('o')))" } else { '' }
+                        Write-Host "Preserving interrupted job record with $identity Gateway PID ${jobOwner}${detail}: $($file.Name)"
                         continue
                     }
-                    throw "Unfinished job ($status): $($file.Name). Exited Gateway PID $jobOwner still has active child processes."
+                    throw "Unfinished job ($status): $($file.Name). Gateway owner is $identity; $($children -join '; ')."
                 }
+                throw "Unfinished job ($status): $($file.Name). Gateway PID $jobOwner ownership is $identity ($($owner.Name), created $($owner.CreationDate)). Wait for completion or cancel it through the parent before updating."
             }
             throw "Unfinished job ($status): $($file.Name). Wait for completion or cancel it through the parent before updating."
         }

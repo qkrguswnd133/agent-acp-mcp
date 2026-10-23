@@ -4,7 +4,7 @@ Windows x64 및 Linux용 MCP 게이트웨이와 Windows 독립 실행형 Agent M
 
 ## 위임 에이전트 실행 속도
 
-**2.7.2 / Gateway 2.7.1 / Monitor 1.4.1**에 포함됩니다.
+**2.7.3 / Gateway 2.7.1 / Monitor 1.4.1**에 포함됩니다.
 
 Gateway 환경설정의 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED` 기본값은 모두 `standard`입니다. 모델·reasoning effort와 독립적인 고정 설정이며, 생략해도 Standard를 요청합니다. Windows·Linux 설정 예제에 포함되어 있습니다. 지원 모델·추가 사용량·관측값 구분은 [실행 속도 설정](gateway/EXECUTION-SPEED.md)을 확인하세요.
 
@@ -38,6 +38,8 @@ Windows Monitor의 업데이트 창에는 **WSL Gateway** 목록이 있습니다
 `agent_status`와 `agent_models`는 CLI/프로토콜·인증·사용량·지원 정보를 확인하며 작업용 모델 프롬프트를 보내지 않습니다. 순수 로컬 패키지 검증은 릴리스에 포함된 `Verify-Package.mjs`를 사용합니다.
 
 ## 업데이트
+
+**2.7.3:** Windows 업데이터가 오래된 `cancelling` 작업의 PID를 다른 프로세스가 재사용했을 때 실행 중인 작업으로 오인하던 문제를 수정했습니다. 생성 시각과 남은 자식 프로세스 증거로 판정하며 원본 작업 기록은 그대로 보존합니다. 실제 작업·소유 관계 불명확 상태는 계속 차단합니다. Gateway·Monitor 버전과 Linux 실행 코드는 2.7.2 배포와 같습니다.
 
 **2.7.2 / Gateway 2.7.1 / Monitor 1.4.1:** provider별 Standard 기본 속도 설정, 대상 worktree로 좁힌 정리 검사, 완료 작업의 최신 프로세스 재검사, 이전 병합 ref 허용, 브랜치를 보존하는 checkout-only 정리, 부분 checkout 복구, ignored 산출물 요약과 Codex 진행 상태를 추가했습니다. 새 작업의 ignored build/.gradle 자동 정리는 명시적으로 켜는 선택 기능입니다. [동작과 제한](gateway/WORKTREE-MAINTENANCE-2.7.2.md)을 확인하세요.
 

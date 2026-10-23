@@ -1,5 +1,11 @@
 # 설치, 업데이트, 릴리스
 
+## 2.7.3 Windows 업데이트 차단 수정
+
+오래된 `queued`·`running`·`cancelling` 기록의 owner PID가 다른 프로세스에 재사용된 경우 생성 시각과 남은 자식 프로세스를 확인합니다. 무관한 PID는 종료하지 않고 작업 기록도 수정·삭제하지 않습니다. 실제 살아 있는 소유자, 불명확한 생성 정보 또는 관련 자식 프로세스가 있으면 계속 차단합니다. Monitor 사전 검사와 Windows 설치 단계의 판정 차이로 발생하던 거절을 보완했습니다.
+
+WSL 업데이트만 성공하고 Windows가 이 오류로 차단됐던 경우 새 배포를 확인한 뒤 다시 업데이트하세요. Gateway 2.7.1 / Monitor 1.4.1은 유지하며 배포 번호로 새 업데이트를 인식합니다. `cancelling`을 수동으로 `completed`로 바꾸거나 PID 번호만 보고 프로세스를 종료할 필요가 없습니다.
+
 ## 2.7.2 작업 폴더 정리 개선
 
 대상 worktree의 작업·프로세스만 검사하며 정상 완료 작업의 `unverified` 상태는 정리 시 최신 증거로 재확인합니다. 이전 병합 커밋을 `integration_ref`로 사용할 수 있고, `preserve_branch=true`는 브랜치와 커밋을 남기고 checkout만 정리합니다. ignored 산출물 요약·부분 복구·Codex 진행 상태도 개선했습니다. [안전 조건과 사용법](gateway/WORKTREE-MAINTENANCE-2.7.2.md)을 확인하세요.
@@ -12,7 +18,7 @@ MCP 서버 `env`에 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED`를 지정할 수
 
 ## 2.6.0 Linux / WSL 업데이트
 
-현재 배포는 **2.7.2**, Gateway는 **2.7.1**, Windows Monitor는 **1.4.1**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
+현재 배포는 **2.7.3**, Gateway는 **2.7.1**, Windows Monitor는 **1.4.1**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
 
 **2.7.0 도구 변경:** cleanup·forget·migrate·recover는 dry_run도 `operation_id`를 즉시 반환합니다. `agent_operation_status`로 완료/실패와 결과를 확인하세요. `background=false`는 기존 동기 동작을 선택하지만 큰 폴더에서는 호스트 요청 제한에 걸릴 수 있습니다. `verbose=true`도 전체 결과의 artifact 경로를 반환합니다. 업데이트 후 MCP를 재연결하고 배포본의 Parent 지침을 병합하세요. 현재 개인 설정·지침은 자동 변경하지 않습니다.
 

@@ -268,7 +268,95 @@ function Run([string]$Name, [scriptblock]$Body) {
     }
 }
 
+function Guard-Row([int]$ProcessId,[int]$ParentId,[string]$Birth,[string]$Name='node.exe') {
+    return [pscustomobject]@{ProcessId=$ProcessId;ParentProcessId=$ParentId;CreationDate=$(if ($Birth) {[DateTime]::Parse($Birth).ToUniversalTime()} else {$null});Name=$Name}
+}
+function Invoke-JobGuard($Jobs,[object[]]$Rows) {
+    $base=Join-Path $script:Root ('ownership-'+[guid]::NewGuid().ToString('N'))
+    $originals=@{}
+    foreach ($job in $Jobs) {
+        $file=PathOf $base ('state/jobs/'+$job.job_id+'.json')
+        $originals[$file]=($job | ConvertTo-Json -Depth 12 -Compress);Put $file $originals[$file]
+    }
+    # Load only the read-only ownership guard, never execute the installer.
+    $tokens=$null;$errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseFile($Updater,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw ($errors | Out-String) }
+    foreach ($name in @('JobField','JobTime','JobProcessIdentity','JobChildBlockers','AssertNoActiveJobs')) {
+        $definition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$false)
+        if (-not $definition) { throw "Missing updater function $name" }
+        Invoke-Expression $definition.Extent.Text
+    }
+    $script:GuardInventoryCalls=0
+    function Get-CimInstance { param($ClassName,$ErrorAction);$script:GuardInventoryCalls++;return $Rows }
+    $failure=$null
+    try { AssertNoActiveJobs $base } catch { $failure=$_.Exception.Message }
+    foreach ($file in $originals.Keys) { Assert ((Read $file) -ceq $originals[$file]) 'Read-only ownership check changed a job record.' }
+    return [pscustomobject]@{Allowed=($null -eq $failure);Error=$failure;InventoryCalls=$script:GuardInventoryCalls}
+}
+
 try {
+    Run 'Job guard allows a reused owner and preserves cancelling records' {
+        $job=[pscustomobject]@{job_id='reused';status='cancelling';ownerPid=26348;startedAt='2026-10-12T02:39:50Z'}
+        $r=Invoke-JobGuard @($job) @((Guard-Row 26348 900 '2026-10-22T01:21:38Z' 'RuntimeBroker.exe'))
+        Assert $r.Allowed "Replacement owner blocked: $($r.Error)"
+        Assert ($r.InventoryCalls -eq 1) 'Ownership inspection did not use one batch inventory.'
+    }
+    Run 'Job guard blocks an active owner and unreadable birth identity' {
+        $job=[pscustomobject]@{job_id='active';status='running';ownerPid=100;startedAt='2026-10-12T02:39:50Z'}
+        $r=Invoke-JobGuard @($job) @((Guard-Row 100 0 '2026-10-12T02:00:00Z'))
+        Assert (-not $r.Allowed -and $r.Error.Contains('ownership is alive')) 'Active owner was ignored.'
+        $r=Invoke-JobGuard @($job) @((Guard-Row 100 0 ''))
+        Assert (-not $r.Allowed -and $r.Error.Contains('ownership is unknown')) 'Unreadable owner birth was ignored.'
+    }
+    Run 'Job guard recognizes exact Windows ticks without losing CIM precision' {
+        $row=Guard-Row 100 0 '2026-10-12T02:00:00.123456Z'
+        $job=[pscustomobject]@{job_id='ticks';status='running';ownerPid=100;ownerStartedAt=($row.CreationDate.Ticks+7).ToString()}
+        $r=Invoke-JobGuard @($job) @($row)
+        Assert (-not $r.Allowed -and $r.Error.Contains('ownership is alive')) 'CIM truncation falsely identified a reused owner.'
+        $job.ownerStartedAt=($row.CreationDate.Ticks-10).ToString()
+        $r=Invoke-JobGuard @($job) @($row)
+        Assert $r.Allowed "Distinct owner generation was not detected: $($r.Error)"
+    }
+    Run 'Job guard blocks malformed recorded birth and start timestamps' {
+        $job=[pscustomobject]@{job_id='malformed';status='cancelling';ownerPid=100;startedAt='2020';ownerCreatedAt='2020'}
+        $rows=@((Guard-Row 100 0 '2026-10-22T01:21:38Z'))
+        $r=Invoke-JobGuard @($job) $rows
+        Assert (-not $r.Allowed -and $r.Error.Contains('ownership is unknown')) 'Malformed birth timestamp was accepted.'
+        $job.ownerCreatedAt=$null
+        $r=Invoke-JobGuard @($job) $rows
+        Assert (-not $r.Allowed -and $r.Error.Contains('ownership is unknown')) 'Malformed job start was accepted.'
+    }
+    Run 'Job guard preserves old surviving children of a reused owner' {
+        $job=[pscustomobject]@{job_id='old-child';status='cancelling';ownerPid=100;startedAt='2026-10-12T02:39:50Z'}
+        $r=Invoke-JobGuard @($job) @((Guard-Row 100 0 '2026-10-22T01:21:38Z'),(Guard-Row 200 100 '2026-10-12T02:40:00Z' 'java.exe'))
+        Assert (-not $r.Allowed -and $r.Error.Contains('PID 200') -and $r.Error.Contains('java.exe')) 'Old provider child was ignored or missing evidence.'
+    }
+    Run 'Job guard excludes proven replacement children but blocks unknown child births' {
+        $job=[pscustomobject]@{job_id='new-child';status='cancelling';ownerPid=100;startedAt='2026-10-12T02:39:50Z'}
+        $owner=Guard-Row 100 0 '2026-10-22T01:21:38Z'
+        $r=Invoke-JobGuard @($job) @($owner,(Guard-Row 200 100 '2026-10-22T01:22:00Z'))
+        Assert $r.Allowed "Unrelated new generation child blocked: $($r.Error)"
+        $r=Invoke-JobGuard @($job) @($owner,(Guard-Row 200 100 ''))
+        Assert (-not $r.Allowed -and $r.Error.Contains('PID 200')) 'Unknown child generation was ignored.'
+    }
+    Run 'Job guard checks reparented tracked children and blocks truncated evidence' {
+        $job=[pscustomobject]@{job_id='tracked';status='cancelling';ownerPid=100;startedAt='2026-10-12T02:39:50Z';runtimeEvidence=@{processCleanup=@{trackedPids=@(200);trackedProcesses=@(@{pid=200;createdAt='2026-10-12T02:40:00Z'})}}}
+        $rows=@((Guard-Row 100 0 '2026-10-22T01:21:38Z'),(Guard-Row 200 900 '2026-10-12T02:40:00Z'))
+        $r=Invoke-JobGuard @($job) $rows
+        Assert (-not $r.Allowed -and $r.Error.Contains('PID 200')) 'Reparented provider child was ignored.'
+        $rows[1]=Guard-Row 200 900 '2026-10-22T02:40:00Z'
+        $r=Invoke-JobGuard @($job) $rows
+        Assert $r.Allowed "Proven reused tracked child blocked: $($r.Error)"
+        $job.runtimeEvidence.processCleanup.trackedPidCount=117
+        $r=Invoke-JobGuard @($job) $rows
+        Assert (-not $r.Allowed -and $r.Error.Contains('Unfinished job (cancelling): tracked.json.') -and $r.Error.Contains('truncated')) 'Truncated child evidence was ignored or lost blocked-job classification.'
+    }
+    Run 'Job guard batches all job owners in one CIM inventory' {
+        $jobs=@(1..117 | ForEach-Object {[pscustomobject]@{job_id="batch-$_";status='cancelling';ownerPid=(1000+$_);startedAt='2026-10-12T02:39:50Z'}})
+        $r=Invoke-JobGuard $jobs @((Guard-Row 100 0 '2026-10-22T01:21:38Z'))
+        Assert ($r.Allowed -and $r.InventoryCalls -eq 1) "Batch inventory failed: $($r.Error), $($r.InventoryCalls) calls"
+    }
     Run 'Native child harness preserves exit codes and separate output' {
         $f=New-Fixture 'native output with spaces'
         $entry=Join-Path $f.Base 'output fixture.ps1'
@@ -388,6 +476,26 @@ exit 23
         $r=Invoke-Runner $f
         Assert ($r.ExitCode -eq 0) "Exited owner still blocked: $($r.Output)"
         Assert ((Read (PathOf $f.Gateway 'state/jobs/orphan.json')) -eq $job) 'Orphan record was modified or removed.'
+    }
+    Run 'Monitor readiness and Windows updater both allow a stale cancelling owner PID' {
+        $f=New-Fixture 'monitor-updater-reused-owner'
+        $entry=PathOf $f.Base 'replacement.js';Put $entry 'setInterval(()=>{},1000);'
+        $replacement=Start-Process -FilePath $NodeExecutable -ArgumentList @($entry) -WindowStyle Hidden -PassThru
+        try {
+            $birth=$replacement.StartTime.ToUniversalTime()
+            $job=([ordered]@{job_id='stale-cancelling';status='cancelling';ownerPid=$replacement.Id;startedAt=$birth.AddDays(-10).ToString('o')} | ConvertTo-Json -Compress)
+            Put (PathOf $f.Gateway 'state/jobs/stale-cancelling.json') $job
+            $readiness=Join-Path (Split-Path -Parent $PSScriptRoot) 'monitor/update/readiness.cjs'
+            $probe=PathOf $f.Base 'readiness.cjs'
+            $config=@{module=$readiness;installRoot=$f.Gateway;inventory=@{complete=$true;processes=@(@{pid=$replacement.Id;parentPid=0;imageName='RuntimeBroker.exe';createdAt=$birth.ToString('o');creationKey=('windows:'+$birth.Ticks)})}} | ConvertTo-Json -Depth 6 -Compress
+            Put $probe ('const c='+$config+';require(c.module).checkReadiness({installRoot:c.installRoot,platform:"win32",inventory:c.inventory}).then(r=>{console.log(JSON.stringify(r));process.exitCode=r.ready?0:1;});')
+            $ready=& $NodeExecutable $probe
+            Assert ($LASTEXITCODE -eq 0) "Monitor readiness rejected replacement owner: $ready"
+            $r=Invoke-Runner $f
+            Assert ($r.ExitCode -eq 0 -and $r.Result.status -eq 'success') "Monitor passed but updater rejected replacement owner: $($r.Output)"
+            Assert ((Read (PathOf $f.Gateway 'state/jobs/stale-cancelling.json')) -ceq $job) 'Stale cancelling record was rewritten.'
+            Assert-Alive $replacement 'Unrelated replacement process was terminated.'
+        } finally { Stop-FixtureProcess $replacement }
     }
     Run 'Live job owner continues to block updating' {
         $f=New-Fixture 'live-job-owner'

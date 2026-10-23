@@ -1,5 +1,7 @@
 # Linux Gateway installation and updates
 
+Release 2.7.3 corrects Windows updater PID ownership checks. Its Linux Gateway remains 2.7.1, identical to release 2.7.2; Linux receives a new distribution receipt without changes to provider execution or authentication.
+
 Release 2.7.2 includes the same worktree maintenance/progress fixes and Standard-default `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED` settings as Windows. Set them in the MCP server `env` (Codex TOML or Claude JSON), then reconnect MCP. Optional `AGENT_MCP_AUTO_CLEAN_IGNORED_ARTIFACTS="true"` cleans only newly created ignored build/.gradle outputs in eligible new managed worktrees after fresh idle checks; the default is false. See the packaged Gateway `WORKTREE-MAINTENANCE-2.7.2.md` for exact safeguards.
 
 Native Linux and WSL use the same Gateway, installer, updater and state layout. Linux x64 and arm64 are accepted; Windows Monitor is optional and is not installed on Linux. Node.js **22.12 or newer** is required; Node 24 LTS is recommended. A distribution-installed Node or a user-managed Node works. The installer never runs `sudo`, changes provider CLI versions, copies authentication, or edits Codex/Claude configuration.
