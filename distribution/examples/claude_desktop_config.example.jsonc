@@ -21,12 +21,18 @@
         "CODEX_ENABLED": "true",
         "GROK_MODEL": "auto",
         "GROK_EFFORT": "auto",
+        // standard only; independent Grok speed control is unverified.
+        "GROK_SPEED": "standard",
         "CLAUDE_MODEL": "auto",
         // Claude CLI choices: low, medium, high, xhigh, max (model/version dependent).
         "CLAUDE_EFFORT": "auto",
+        // standard (default), fast for supported models; Fast uses usage credits.
+        "CLAUDE_SPEED": "standard",
         "CODEX_MODEL": "auto",
         // Codex model/client choices: low, medium, high, xhigh, max, ultra (check model support).
         "CODEX_EFFORT": "auto",
+        // standard (default), fast, ultrafast when advertised by agent_models.
+        "CODEX_SPEED": "standard",
         "CODEX_WINDOWS_SANDBOX": "unelevated",
         "CODEX_IMPLEMENT_SANDBOX": "workspace-write"
       }

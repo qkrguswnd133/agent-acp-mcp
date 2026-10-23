@@ -1,0 +1,12 @@
+{
+  "gateway": [
+    "Gateway 2.7.1: CODEX_SPEED·CLAUDE_SPEED·GROK_SPEED 설정을 추가했습니다. 모델·effort와 독립적이며 모든 기본값은 standard입니다. 값을 생략해도 Standard를 요청하고 개인 설정 파일을 변경하지 않습니다.",
+    "Codex는 선택 모델이 광고한 fast·ultrafast, Claude는 supportsFastMode를 확인한 모델의 fast만 허용합니다. 미지원 설정에서 모델을 자동 변경하거나 작업을 재실행하지 않습니다. Grok은 별도 속도 제어가 확인되지 않아 standard만 허용합니다.",
+    "agent_status·agent_models에 speedPolicy와 지원 속도 정보를 추가하고, 실행 결과에서 요청값과 실제 관측값을 구분합니다. 관측하지 못한 값은 unavailable이며 보고된 fallback은 경고로 남깁니다.",
+    "Windows·Linux/WSL의 Codex TOML·Claude MCP JSON 설정 예제와 문서를 갱신했습니다. Codex 고속 모드는 사용량 소모가 늘 수 있고 Claude Fast는 별도 usage credits를 사용하므로 명시적으로 선택하세요."
+  ],
+  "monitor": [
+    "Monitor 1.4.1: 독립 실행 설정 및 Codex 환경설정에서 provider별 SPEED 값을 전달합니다. 전체 업데이트의 WSL → Windows 순서와 설정·작업 기록 보존 동작은 유지합니다.",
+    "업데이트 후 MCP를 재연결하세요. 기본 Standard를 사용하려면 기존 설정에 값을 추가할 필요가 없습니다."
+  ]
+}

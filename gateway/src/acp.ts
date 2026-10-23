@@ -23,6 +23,7 @@ import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure,M
 import {grokCatalog} from './model-catalog.js';
 import type {RunInput as GatewayRunInput,ProviderRunResult} from './types.js';
 import {confirmSessionConfig} from './session-config.js';
+import {validateExecutionSpeed,SpeedSettingError} from './execution-speed.js';
 import {classifyProviderError, type LimitClassification} from './limits.js';
 
 type ProcessExit={code:number|null;signal:string|null;phase:string;at:string;intentionalShutdown:boolean;promptCompleted:boolean};
@@ -75,8 +76,8 @@ async function boundedObservation<T>(operation:Promise<T>,timeoutMs:number,fallb
 
 export async function runGrok(kind:string,input:RunInput,signal?:AbortSignal,hooks?:RunHooks,deps:RunGrokDependencies={}):Promise<ProviderRunResult> {
  let settings:ReturnType<typeof resolveProviderSettings>|undefined;
- try{settings=resolveProviderSettings('grok',input);return withSelection({provider:'grok',...await executeGrok(kind,input,settings,signal,hooks,deps)},settings.selection);}
- catch(error){if(error instanceof ModelSelectionError)return selectionFailure('grok',error,settings?.selection);if(error instanceof Error)Object.assign(error,{selection:settings?.selection});throw error;}
+ try{settings=resolveProviderSettings('grok',input);validateExecutionSpeed('grok',settings.model);return withSelection({provider:'grok',...await executeGrok(kind,input,settings,signal,hooks,deps)},settings.selection);}
+ catch(error){if(error instanceof ModelSelectionError||error instanceof SpeedSettingError)return selectionFailure('grok',error,settings?.selection);if(error instanceof Error)Object.assign(error,{selection:settings?.selection});throw error;}
 }
 async function executeGrok(kind:string,input:RunInput,requested:ReturnType<typeof resolveProviderSettings>,signal?:AbortSignal,hooks?:RunHooks,deps:RunGrokDependencies={}) {
   const healthCheck=deps.ensureHealth??ensureHealth,weeklyUsage=deps.getWeeklyUsage??getWeeklyUsage,sessionUsage=deps.getSessionUsage??getSessionUsage;

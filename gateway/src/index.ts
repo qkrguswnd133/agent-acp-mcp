@@ -60,7 +60,7 @@ const maintenanceInput={background:z.boolean().default(true).describe('Return op
 const dispatchMaintenance=(kind:string,input:any,run:(phase:(name:string,ms:number)=>void)=>Promise<unknown>)=>input.background!==false?operations.start(kind,input,run):run(()=>{});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.7.0'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.7.1'});
  server.registerTool('agent_operation_status',{
    description:'Read a background worktree maintenance operation and per-phase timings. Requests and polling cancellation never cancel the operation. Inspect status and result; verbose returns full details through an artifact.',
    inputSchema:z.object({operation_id:z.string().uuid(),verbose:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
@@ -160,11 +160,11 @@ process.stdout.on('error',error=>{if((error as NodeJS.ErrnoException).code==='EP
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.7.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.7.1'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.7.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.7.1',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

@@ -17,9 +17,11 @@
         "CODEX_MODEL": "auto",
         "CODEX_EFFORT": "auto",
         "CODEX_WINDOWS_SANDBOX": "unelevated",
-        "CODEX_IMPLEMENT_SANDBOX": "workspace-write"
+        "CODEX_IMPLEMENT_SANDBOX": "workspace-write",
+        "GROK_SPEED": "standard",
+        "CLAUDE_SPEED": "standard",
+        "CODEX_SPEED": "standard"
       }
     }
   }
 }
-

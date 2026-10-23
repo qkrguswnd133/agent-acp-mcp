@@ -1,5 +1,5 @@
 import type {ProviderName} from './types.js';
-export interface CatalogModel {id:string;name?:string;efforts?:string[];effortsAuthoritative:boolean}
+export interface CatalogModel {id:string;name?:string;efforts?:string[];effortsAuthoritative:boolean;speeds?:string[];speedsAuthoritative?:boolean}
 export interface ModelCatalog {provider:ProviderName;status:'available'|'partial'|'unavailable';source:string;version:string;observedAt:string;expiresAt:string;modelsAuthoritative:boolean;models:CatalogModel[];note?:string}
 export const catalogTtlMs=300_000;
 export function catalog(provider:ProviderName,source:string,version:string,models:CatalogModel[],authoritative:boolean,note?:string):ModelCatalog{
@@ -27,11 +27,11 @@ export function grokCatalog(state:any,version:string,options:any[]=[]):ModelCata
  return catalog('grok','grok_acp_model_state',version,models,(Array.isArray(raw)&&raw.length>0)||configModels.length>0,models.length?undefined:'ACP did not advertise a usable model catalog; support is unverified.');
 }
 export function codexCatalog(rows:any[],version:string,complete=true):ModelCatalog{
- const models:CatalogModel[]=rows.filter(m=>typeof m?.model==='string'||typeof m?.id==='string').map(m=>({id:m.model??m.id,name:m.displayName,efforts:ids(m.supportedReasoningEfforts),effortsAuthoritative:Array.isArray(m.supportedReasoningEfforts)}));
+ const models:CatalogModel[]=rows.filter(m=>typeof m?.model==='string'||typeof m?.id==='string').map(m=>({id:m.model??m.id,name:m.displayName,efforts:ids(m.supportedReasoningEfforts),effortsAuthoritative:Array.isArray(m.supportedReasoningEfforts),speeds:[...new Set(['standard',...ids(m.serviceTiers??m.additionalSpeedTiers).map(t=>t==='priority'?'fast':t).filter(t=>['fast','ultrafast'].includes(t))])],speedsAuthoritative:Array.isArray(m.serviceTiers)}));
  return catalog('codex','codex_app_server_model_list',version,models,complete&&models.length>0,!complete?'Incomplete model/list pagination; model absence is unverified.':models.length?undefined:'model/list returned no usable models; support is unverified.');
 }
 export function claudeCatalog(value:any,version:string):ModelCatalog{
  const raw=value?.models;
- const models:CatalogModel[]=Array.isArray(raw)?raw.filter(m=>typeof m?.value==='string'&&!['auto','default'].includes(m.value)).map(m=>({id:m.value,name:m.displayName,efforts:ids(m.supportedEffortLevels),effortsAuthoritative:Array.isArray(m.supportedEffortLevels)})):[];
+ const models:CatalogModel[]=Array.isArray(raw)?raw.filter(m=>typeof m?.value==='string'&&!['auto','default'].includes(m.value)).map(m=>({id:m.value,name:m.displayName,efforts:ids(m.supportedEffortLevels),effortsAuthoritative:Array.isArray(m.supportedEffortLevels),speeds:['standard',...(m.supportsFastMode===true?['fast']:[])],speedsAuthoritative:typeof m.supportsFastMode==='boolean'})):[];
  return catalog('claude','claude_control_initialize',version,models,false,models.length?'CLI supported-model choices may be aliases rather than an exhaustive snapshot catalog; absence does not establish unsupported model. Effort support is validated only when enumerated.':'CLI initialize did not advertise supported models; support is unverified.');
 }

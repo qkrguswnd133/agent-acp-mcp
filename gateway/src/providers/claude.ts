@@ -10,6 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {runCommand,safeChildEnv,type LaunchCommand} from '../process.js';
 import {resolveClaudeLaunch} from '../claude-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
+import {claudeSpeedSettings,speedPolicy,observedSpeed,type ExecutionSpeed} from '../execution-speed.js';
 import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from '../model-settings.js';
 import {CatalogCache,claudeCatalog,unavailableCatalog} from '../model-catalog.js';
 import {buildPrompt} from '../prompt.js';
@@ -105,8 +106,9 @@ export class ClaudeProvider implements ProviderAdapter{
   const {model,effort,modelSource,effortSource}=resolveProviderSettings('claude',input);
   if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('--effort',effort);
   args.push('--strict-mcp-config','--mcp-config','{"mcpServers":{}}');
+  const speedSettings=claudeSpeedSettings(speedPolicy('claude').value as ExecutionSpeed);args.push(...speedSettings.args);
   const gradle=writable?gradleEnvironment(input.cwd):undefined;
-  const r=await runClaudeCommand(command,args,{cwd:input.cwd,env:providerChildEnv({DISABLE_AUTOUPDATER:'1',...gradle?.env}),stdin:buildPrompt(kind,input,'Claude'),timeoutMs:(input.max_runtime_minutes??120)*60_000,signal,onActivity:hooks?.onActivity});
+  const r=await runClaudeCommand(command,args,{cwd:input.cwd,env:providerChildEnv({DISABLE_AUTOUPDATER:'1',...gradle?.env,...speedSettings.env}),stdin:buildPrompt(kind,input,'Claude'),timeoutMs:(input.max_runtime_minutes??120)*60_000,signal,onActivity:hooks?.onActivity});
   const parsed=parseJson(r.stdout)??r.terminalResult;
   const interrupted=interruptionKind(r.timedOut,signal);
   const failed=(r.code!==0&&!(r.stopReason==='completed'&&r.completion.confirmed))||parsed?.is_error===true||!!interrupted;
@@ -116,7 +118,7 @@ export class ClaudeProvider implements ProviderAdapter{
   // transcript is still attributable because this run supplied its UUID.
   const telemetry=await readClaudeSessionTelemetry(input.cwd,sessionId);
   const {text:partialText,usage:transcriptUsage,model:transcriptModel,observedModels:transcriptModels,usageSource:transcriptUsageSource,usageScope:transcriptUsageScope,observedUsage,commandExecutions,...sessionEffort}=telemetry;
-  const runtimeEffort=directEffort?{effort:directEffort,effortSource:'cli_result',observedEfforts:[directEffort],effortComplete:true}:sessionEffort;
+  const runtimeEffort={...(directEffort?{effort:directEffort,effortSource:'cli_result',observedEfforts:[directEffort],effortComplete:true}:sessionEffort),speed:observedSpeed(parsed?.usage?.speed)??'unavailable',speedSource:observedSpeed(parsed?.usage?.speed)?'cli_result.usage.speed':'unavailable',fastModeState:['on','off','cooldown'].includes(parsed?.fast_mode_state)?parsed.fast_mode_state:'unavailable',fastModeDisabledReason:typeof parsed?.fast_mode_disabled_reason==='string'?parsed.fast_mode_disabled_reason:null};
   const metadata={...claudeModelMetadata(parsed,transcriptModels??(transcriptModel?[transcriptModel]:[])),...runtimeEffort,requestedModel:model,requestedEffort:effort,requestedModelSource:modelSource,requestedEffortSource:effortSource,sessionId,commandExecutions,completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},rawEvents:r.stdout,...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,commandExecutions)}:{})};
   if(failed){
    const structured=parsed?.is_error===true?resultError(parsed,''):undefined;

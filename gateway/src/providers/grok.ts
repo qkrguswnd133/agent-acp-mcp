@@ -70,7 +70,7 @@ export class GrokProvider implements ProviderAdapter{
   // session id, and usage) when state persistence is unavailable.
   if(value.error&&classification.limitKind){await quota.markLimited('grok',classification,'Grok ACP reported a provider limit.').catch(()=>{});}
   else if(!value.error)await quota.markAvailable('grok','runtime_success',observedAt).catch(()=>{});
-  return {...value,errorKind:value.error&&['MODEL_SELECTION_REQUIRED','FIXED_SETTING_CONFLICT','SELECTION_REASON_REQUIRED','UNSUPPORTED_MODEL_OR_EFFORT'].includes(value.errorKind??'')?value.errorKind:value.error?classification.errorKind:value.errorKind};
+  return {...value,errorKind:value.error&&['MODEL_SELECTION_REQUIRED','FIXED_SETTING_CONFLICT','SELECTION_REASON_REQUIRED','UNSUPPORTED_MODEL_OR_EFFORT','UNSUPPORTED_EXECUTION_SPEED'].includes(value.errorKind??'')?value.errorKind:value.error?classification.errorKind:value.errorKind};
  }
  async cliStatus(){const status=await this.status(false);return status;}
  async update(){

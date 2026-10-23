@@ -11,10 +11,16 @@ AGENT_MCP_STATE_DIR = "/home/USERNAME/.local/state/agent-acp-mcp"
 ALLOW_SELF_PROVIDER = "false"
 CLAUDE_MODEL = "auto"
 CLAUDE_EFFORT = "auto"
+# Speed: standard (default), fast only for advertised models; Fast uses usage credits.
+CLAUDE_SPEED = "standard"
 CODEX_MODEL = "auto"
 CODEX_EFFORT = "auto"
+# Speed: standard (default), fast, ultrafast only when agent_models advertises it.
+CODEX_SPEED = "standard"
 GROK_MODEL = "auto"
 GROK_EFFORT = "auto"
+# Speed: standard only; independent Grok speed control is not verified.
+GROK_SPEED = "standard"
 # auto requires the parent to choose explicit model/effort via agent_models.
 # Common effort names: low, medium, high, xhigh. Availability varies by model;
 # use agent_models as the source of truth, not this illustrative list.

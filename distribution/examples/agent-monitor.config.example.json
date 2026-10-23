@@ -9,6 +9,9 @@
     "CLAUDE_MODEL": "auto",
     "CLAUDE_EFFORT": "auto",
     "CODEX_MODEL": "auto",
-    "CODEX_EFFORT": "auto"
+    "CODEX_EFFORT": "auto",
+    "GROK_SPEED": "standard",
+    "CLAUDE_SPEED": "standard",
+    "CODEX_SPEED": "standard"
   }
 }

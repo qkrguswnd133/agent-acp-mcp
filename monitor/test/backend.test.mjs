@@ -32,6 +32,7 @@ test('default gateway uses neutral per-user Programs directory ahead of legacy i
 test('gateway env parser accepts only allowlisted settings within the exact table',()=>{
   const result=parseGatewayEnvironment(`[mcp_servers.other.env]\nGROK_MODEL="wrong"\n[mcp_servers.agent.env]\nGROK_MODEL="auto"\nCLAUDE_CLI='C:\\a\\claude.cmd'\nXAI_API_KEY="secret"\nMCP_HOST="codex"\nOTHER="oops"\n[other]\nGROK_EFFORT="wrong"`);
   assert.deepEqual(result,{GROK_MODEL:'auto',CLAUDE_CLI:'C:\\a\\claude.cmd'});
+  assert.deepEqual(parseGatewayEnvironment('[mcp_servers.agent.env]\nCODEX_SPEED="standard"\nCLAUDE_SPEED="fast"\nGROK_SPEED="standard"'),{CODEX_SPEED:'standard',CLAUDE_SPEED:'fast',GROK_SPEED:'standard'});
 });
 test('job summaries discard prompts, response text, raw events and unrelated usage fields',()=>{
   const job=sanitizeJob({job_id:'x',cwd:'C:\\dev\\sample-project',status:'failed',prompt:'secret',error:'token secret',result:{results:[{provider:'claude',model:'opus',effort:'high',sessionId:'s',text:'private response',rawEvents:'private',error:'error secret',errorKind:'quota_exhausted',usage:{input_tokens:4,output_tokens:2,prompt:'secret'}}]}});

@@ -7,6 +7,7 @@ import {codexShellEnvironment,codexShellFailure} from '../codex-shell.js';
 import {home,resolveExecutable,runCommand,safeChildEnv,findExecutableInChildDirs,type LaunchCommand} from '../process.js';
 import {resolveNpmLaunch,type OfficialNpmPackage} from '../npm-launch.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
+import {codexSpeedArgs,speedPolicy,observedSpeed,type ExecutionSpeed} from '../execution-speed.js';
 import {resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from '../model-settings.js';
 import {CatalogCache,codexCatalog,unavailableCatalog} from '../model-catalog.js';
 import {buildPrompt} from '../prompt.js';
@@ -79,7 +80,7 @@ function interruptionKind(timedOut:boolean,signal?:AbortSignal):string|undefined
 }
 function parseEvents(stdout:string){
  const texts:string[]=[],seenTexts=new Set<string>();let threadId:string|undefined,usage:any='unavailable',terminalError:string|undefined,terminalEvidence:unknown,streamError:string|undefined,streamEvidence:unknown,completed=false,model:string|undefined,effort:string|undefined;
- const commands=new Map<string,CommandExecution>();let anonymousCommand=0;
+ const commands=new Map<string,CommandExecution>();let anonymousCommand=0;const speeds=new Set<ExecutionSpeed>();
  for(const line of stdout.split(/\r?\n/)){try{
   const event=JSON.parse(line);const item=event?.item;
   if(item?.type==='command_execution'&&['item.started','item.updated','item.completed'].includes(event?.type)){
@@ -103,13 +104,14 @@ function parseEvents(stdout:string){
   if(typeof (event?.reasoning_effort??event?.reasoningEffort??event?.effort)==='string')effort=event.reasoning_effort??event.reasoningEffort??event.effort;
   if(event?.usage!==undefined)usage=event.usage;else if(item?.usage!==undefined)usage=item.usage;
   if(event?.type==='turn.completed')completed=true;
+  if(event?.type==='turn.completed'){const speed=observedSpeed(event?.service_tier??event?.usage?.speed);if(speed)speeds.add(speed);}
   if(event?.type==='turn.failed'&&!terminalError){terminalError=eventError(event,item);terminalEvidence=event?.error??item?.error??event;}
   else if(event?.type==='error'||item?.type==='error'){
    const message=eventError(event,item),evidence=event?.error??item?.error??event;
    if(completed&&!terminalError){terminalError=message;terminalEvidence=evidence;}else if(!streamError){streamError=message;streamEvidence=evidence;}
   }
  }catch{/* A malformed line is not assistant text and must not become a fallback response. */}}
- return {text:texts.join('\n'),threadId,usage,completed,error:terminalError??(completed?undefined:streamError),errorEvidence:terminalEvidence??(completed?undefined:streamEvidence),model,effort,commandExecutions:[...commands.values()]};
+ return {text:texts.join('\n'),threadId,usage,completed,error:terminalError??(completed?undefined:streamError),errorEvidence:terminalEvidence??(completed?undefined:streamEvidence),model,effort,speed:speeds.size===1?[...speeds][0]:undefined,observedSpeeds:[...speeds],commandExecutions:[...commands.values()]};
 }
 
 export class CodexProvider implements ProviderAdapter{
@@ -166,7 +168,7 @@ export class CodexProvider implements ProviderAdapter{
  }
  private async execute(kind:AgentKind,input:RunInput,signal?:AbortSignal,hooks?:RunHooks):Promise<ProviderRunResult>{
   const runStartedAt=Date.now();const command=await exe();if(!command)throw Error('Codex CLI not found');const writable=kind==='agent_implement';const {model,effort,modelSource,effortSource}=resolveProviderSettings('codex',input);
-  const args=codexExecutionArgs(writable);if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
+  const args=[...codexExecutionArgs(writable),...codexSpeedArgs(speedPolicy('codex').value as ExecutionSpeed)];if(model!=='auto')args.push('--model',model);if(effort!=='auto')args.push('-c',`model_reasoning_effort=\"${effort.replace(/\"/g,'')}\"`);args.push('-');
   const gradle=writable?gradleEnvironment(input.cwd):undefined;
   const shellEnvironment=await codexShellEnvironment(providerChildEnv(gradle?.env??{}));
   const r=await runCodexCommand(command,args,{cwd:input.cwd,env:shellEnvironment.env,timeoutMs:(input.max_runtime_minutes??120)*60_000,stdin:buildPrompt(kind,input,'Codex'),signal,onActivity:hooks?.onActivity},runStartedAt);
@@ -174,7 +176,7 @@ export class CodexProvider implements ProviderAdapter{
   const session=await readCodexSessionTelemetry(input.cwd,parsed.threadId,runStartedAt);
   if(!parsed.text&&session.completed&&session.text)parsed.text=session.text;
   if(parsed.usage==='unavailable'&&session.usage)parsed.usage=session.usage;
-  const runtime=codexRuntimeMetadata(parsed.model,parsed.effort,session);
+  const runtime={...codexRuntimeMetadata(parsed.model,parsed.effort,session),speed:parsed.speed??'unavailable',speedSource:parsed.speed?'cli_json':'unavailable',observedSpeeds:parsed.observedSpeeds};
   const executionMetadata={completion:r.completion,processCleanup:r.processCleanup,childCleanedUp:r.processCleanup?.verified===true,processExit:{code:r.code,signal:r.signal,stopReason:r.stopReason??null,timedOut:r.timedOut},...(gradle?{gradleUserHome:gradle.userHome,gradle:gradleTelemetry(gradle,parsed.commandExecutions)}:{})};
   const shellExecution={selectedShell:shellEnvironment.shell??null,...codexShellFailure(parsed.commandExecutions)};
   const interrupted=interruptionKind(r.timedOut,signal);

@@ -52,6 +52,7 @@ export interface ProviderStatus {
   version: string;
   modelPolicy: string;
   effortPolicy: string;
+  speedPolicy?: string;
   resolvedModel?: string;
   resolvedEffort?: string;
   modelCatalog?: import('./model-catalog.js').ModelCatalog;

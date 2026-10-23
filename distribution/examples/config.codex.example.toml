@@ -15,16 +15,22 @@ CLAUDE_ENABLED = "true"
 CODEX_ENABLED = "true"
 GROK_MODEL = "auto"
 GROK_EFFORT = "auto"
+# Speed: standard only; independent Grok speed control is not verified.
+GROK_SPEED = "standard"
 CLAUDE_MODEL = "auto"
 # auto means parent task-based selection; fixed values cannot be overridden by calls.
 # Claude example levels: low, medium, high, xhigh, max (check agent_models).
 # Actual support depends on model/CLI version. auto requires the parent to select and pass a supported effort.
 CLAUDE_EFFORT = "auto"
+# Speed: standard (default), fast only for advertised models; Fast uses usage credits.
+CLAUDE_SPEED = "standard"
 CODEX_MODEL = "auto"
 # Codex choices advertised by models/clients: low, medium, high, xhigh, max, ultra.
 # Use only values supported by your selected model/client; auto requires a concrete parent selection and selection_reason.
 # These env settings affect delegated CLI sessions, not the parent host's effort.
 CODEX_EFFORT = "auto"
+# Speed: standard (default), fast, ultrafast only when agent_models advertises it.
+CODEX_SPEED = "standard"
 # Native Windows sandbox implementation: unelevated (default), elevated (requires setup).
 CODEX_WINDOWS_SANDBOX = "unelevated"
 # Implementation only: workspace-write (default), danger-full-access, read-only.

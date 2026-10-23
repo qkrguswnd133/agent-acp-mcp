@@ -2,6 +2,12 @@
 
 Windows x64 및 Linux용 MCP 게이트웨이와 Windows 독립 실행형 Agent Monitor입니다. 게이트웨이는 Codex, Claude Code, Grok Build의 로그인된 CLI를 하나의 `agent_*` 도구 집합으로 연결합니다. WSL은 일반 Linux와 동일한 설치·업데이트 경로를 사용합니다. Monitor는 각 provider의 상태와 사용량을 표시하고, 서명된 GitHub 릴리스 업데이트를 확인합니다.
 
+## 위임 에이전트 실행 속도
+
+**2.7.2 / Gateway 2.7.1 / Monitor 1.4.1**에 포함됩니다.
+
+Gateway 환경설정의 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED` 기본값은 모두 `standard`입니다. 모델·reasoning effort와 독립적인 고정 설정이며, 생략해도 Standard를 요청합니다. Windows·Linux 설정 예제에 포함되어 있습니다. 지원 모델·추가 사용량·관측값 구분은 [실행 속도 설정](gateway/EXECUTION-SPEED.md)을 확인하세요.
+
 ## Linux / WSL
 
 **2.7.1 / Gateway 2.7.0 / Monitor 1.4.0:** 상단 다운로드 아이콘 또는 **전체 업데이트**를 누르면 설치된 WSL Gateway들을 먼저, Windows Gateway·Monitor를 마지막에 업데이트합니다. 모든 대상의 작업 상태를 먼저 확인하고, 미설치 Gateway는 건너뜁니다. 중지된 배포판은 전체 업데이트 클릭 시에만 시작합니다. 개별 업데이트는 상세 영역에 유지됩니다. 별도 Linux PC는 기존 `agent-acp update`를 사용합니다.

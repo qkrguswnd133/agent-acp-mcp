@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type {RunInput} from '../src/types.js';
+import {catalog} from '../src/model-catalog.js';
 
 async function fakeCli(root:string,name:string,output:string,code=0){
  const script=path.join(root,`${name}.mjs`),argsFile=path.join(root,`${name}-args.json`);
@@ -25,10 +26,10 @@ const input=(provider:'claude'|'codex',settings:Partial<RunInput>={}):RunInput=>
 for(const name of ['claude','codex'] as const){
  test(`${name} direct adapter enforces parent selection and retains observed telemetry`,async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),`agent-${name}-selection-`));
-  const output=name==='claude'?JSON.stringify({type:'result',result:'done',modelUsage:{'observed-snapshot':{inputTokens:1}},effort:'low'}):JSON.stringify({type:'turn.completed',model:'observed-snapshot',reasoning_effort:'low'});
+  const output=name==='claude'?JSON.stringify({type:'result',result:'done',modelUsage:{'observed-snapshot':{inputTokens:1}},effort:'low',usage:{speed:'standard'}}):JSON.stringify({type:'turn.completed',model:'observed-snapshot',reasoning_effort:'low',service_tier:'default'});
   const cli=await fakeCli(root,name,output);
   const prefix=name.toUpperCase();
-  try{await withEnv({[`${prefix}_CLI`]:cli.command,[`${prefix}_MODEL`]:'auto',[`${prefix}_EFFORT`]:'auto',AGENT_MCP_STATE_DIR:root,CLAUDE_CONFIG_DIR:root,CODEX_HOME:root},async()=>{
+  try{await withEnv({[`${prefix}_CLI`]:cli.command,[`${prefix}_MODEL`]:'auto',[`${prefix}_EFFORT`]:'auto',[`${prefix}_SPEED`]:undefined,AGENT_MCP_STATE_DIR:root,CLAUDE_CONFIG_DIR:root,CODEX_HOME:root},async()=>{
    const module=await import(`../src/providers/${name}.js?fixture=${Math.random()}`);const provider=name==='claude'?new module.ClaudeProvider():new module.CodexProvider();
    const missing=await provider.run('agent_ask',input(name));assert.equal(missing.errorKind,'MODEL_SELECTION_REQUIRED');
    await assert.rejects(fs.stat(cli.argsFile));
@@ -39,6 +40,16 @@ for(const name of ['claude','codex'] as const){
    assert.equal(result.error,null);assert.equal(result.model,'observed-snapshot');assert.equal(result.effort,'low');
    assert.deepEqual(result.selection,{model:{value:'chosen',source:'parent',reason:'bounded task'},effort:{value:'low',source:'parent',reason:'bounded task'}});
    assert.equal(result.observation.model.verified,true);assert.equal(result.observation.model.value,'observed-snapshot');
+   assert.equal(result.executionSpeed.requested,'standard');assert.equal(result.executionSpeed.observed,'standard');
+   if(name==='codex')assert.ok(args.includes('service_tier="standard"'));else assert.equal(JSON.parse(flag(args,'--settings')!).fastMode,false);
+   provider.models=async()=>catalog(name,'fixture','1',[{id:'chosen',efforts:['low'],effortsAuthoritative:true,speeds:['standard','fast']}],true);
+   process.env[`${prefix}_SPEED`]='fast';
+   const fast=await provider.run('agent_ask',input(name,{model:'chosen',effort:'low',selection_reason:'bounded task'}));const fastArgs=await argsAt(cli.argsFile);
+   assert.equal(flag(fastArgs,'--model'),'chosen');assert.equal(fast.error,null);assert.equal(fast.executionSpeed.requested,'fast');assert.equal(fast.executionSpeed.observed,'standard');assert.match(fast.executionSpeed.warning,/not retried/);
+   if(name==='codex')assert.ok(fastArgs.includes('service_tier="fast"'));else assert.equal(JSON.parse(flag(fastArgs,'--settings')!).fastMode,true);
+   provider.models=async()=>catalog(name,'fixture','1',[{id:'chosen',efforts:['low'],effortsAuthoritative:true,speeds:['standard']}],true);
+   const denied=await provider.run('agent_ask',input(name,{model:'chosen',effort:'low',selection_reason:'bounded task'}));assert.equal(denied.errorKind,'UNSUPPORTED_EXECUTION_SPEED');assert.deepEqual(await argsAt(cli.argsFile),fastArgs);
+   process.env[`${prefix}_SPEED`]='standard';provider.models=async()=>catalog(name,'fixture','1',[],false);
    process.env[`${prefix}_MODEL`]='fixed';process.env[`${prefix}_EFFORT`]='high';
    const fixed=await provider.run('agent_ask',input(name));assert.equal(fixed.selection.model.source,'configured');assert.equal(flag(await argsAt(cli.argsFile),'--model'),'fixed');
    const conflict=await provider.run('agent_ask',input(name,{model:'other'}));assert.equal(conflict.errorKind,'FIXED_SETTING_CONFLICT');assert.equal(conflict.model,'unavailable');

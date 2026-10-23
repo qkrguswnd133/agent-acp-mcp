@@ -5,6 +5,7 @@ import {allowSelfProvider} from './config.js';
 import {validateRunSettings,resolveProviderSettings,validateCatalog,withSelection,selectionFailure} from './model-settings.js';
 import {unavailableCatalog} from './model-catalog.js';
 import {modelPolicy,effortPolicy} from './config.js';
+import {speedPolicy} from './execution-speed.js';
 import type {AgentKind,ProviderAdapter,ProviderName,ProviderRunResult,ProviderStatus,RunHooks,RunInput,SkippedProvider} from './types.js';
 
 const names:ProviderName[]=['grok','claude','codex'];
@@ -50,14 +51,14 @@ export class AgentRouter{
   private adapter(name:ProviderName){const value=this.map.get(name);if(!value)throw Error(`Provider adapter unavailable: ${name}`);return value;}
   async statuses(force=false){
     const entries=await Promise.all(names.map(async name=>{try{return [name,await this.adapter(name).status(force)] as const;}catch(e){return [name,{provider:name,enabled:true,available:false,authenticated:'unknown' as const,version:'unavailable',modelPolicy:'unknown',effortPolicy:'unknown',quota:{state:'unknown' as const,source:'status_error'},reason:(e as Error).message}] as const;}}));
-    return Object.fromEntries(entries) as Record<ProviderName,ProviderStatus>;
+    return Object.fromEntries(entries.map(([name,status])=>[name,{...status,speedPolicy:speedPolicy(name).value}])) as Record<ProviderName,ProviderStatus>;
   }
   async status(host:HostDetection,force=false,override?:boolean){
     const allowSelf=allowSelfProvider(override);
     const statuses=await this.statuses(force);const providers:any={};
     const catalogs=Object.fromEntries(await Promise.all(names.map(async name=>[name,statuses[name].enabled?await this.catalog(name,force):unavailableCatalog(name,'Provider disabled.')])));
     for(const name of names){const status=statuses[name];const reason=blockedReason(status,host,name,allowSelf);providers[name]={...status,modelCatalog:catalogs[name],quota:{...status.quota,resetsAt:status.quota.resetsAt??null,retryAfter:status.quota.retryAfter??null,limitKind:status.quota.limitKind??(status.quota.state==='exhausted'?'quota_exhausted':null)},callable:!reason,blocked_reason:reason??null,selfProvider:name===host.host};}
-    return {server:'agent-acp-mcp',version:'2.7.0',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
+    return {server:'agent-acp-mcp',version:'2.7.1',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
   }
   async plan(spec:string|undefined,host:HostDetection,forceStatus=false,override?:boolean){
     if(isDelegatedProcess())throw Error('NESTED_DELEGATION_BLOCKED: delegated provider sessions cannot invoke this gateway');
@@ -78,7 +79,7 @@ export class AgentRouter{
   }
   async models(spec='grok,claude,codex',force=false){
     const parsed=parseProviderSpec(spec);if(parsed.mode!=='explicit')throw Error('agent_models requires explicit provider names; routing auto is not supported');
-    const providers=Object.fromEntries(await Promise.all(parsed.requested.map(async name=>[name,{modelPolicy:modelPolicy(name),effortPolicy:effortPolicy(name),catalog:await this.catalog(name,force)}])));
+    const providers=Object.fromEntries(await Promise.all(parsed.requested.map(async name=>[name,{modelPolicy:modelPolicy(name),effortPolicy:effortPolicy(name),speedPolicy:speedPolicy(name).value,catalog:await this.catalog(name,force)}])));
     return {providers,selectionPolicy:'auto requires a concrete parent value and selection_reason per call; fixed configuration rejects conflicting values',discoveryOnly:true};
   }
   private async catalog(name:ProviderName,force=false){try{return await this.adapter(name).models?.(force)??unavailableCatalog(name);}catch(error){return unavailableCatalog(name,`Catalog discovery failed: ${error instanceof Error?error.message:String(error)}; support remains unverified.`);}}
