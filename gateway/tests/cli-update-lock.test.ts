@@ -69,17 +69,17 @@ test('active Gateway jobs and matching external sessions exclude the writer',asy
  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
 test('external session detection handles native paths and npm script paths with spaces, ignores decoy arguments and separate desktop binary',()=>{
- const packageRoot='C:/Users/User Name/npm/node_modules/@openai/codex',node='C:/bin/node.exe';
- const target='C:/Users/User Name/Programs/OpenAI/Codex/bin/codex.exe';
+ const packageRoot='C:/fixtures/Example Profile/npm/node_modules/@openai/codex',node='C:/bin/node.exe';
+ const target='C:/fixtures/Example Profile/Programs/OpenAI/Codex/bin/codex.exe';
  const script=packageRoot+'/bin/codex.js';
  assert.equal(processUsesCli(row(101,{imageName:'node.exe',executablePath:node,commandLine:'node.exe "'+script+'" exec'}),'codex',[packageRoot],'win32'),true);
  assert.equal(processUsesCli(row(101,{imageName:'node.exe',executablePath:node,commandLine:'node.exe C:/other/script.js "'+script+'"'}),'codex',[packageRoot],'win32'),false);
  assert.equal(processUsesCli(row(102,{imageName:'codex.exe',executablePath:'C:/Program Files/WindowsApps/OpenAI/app/resources/codex.exe'}),'codex',[target],'win32'),false);
  assert.equal(processUsesCli(row(102,{imageName:'codex.exe'}),'codex',[target],'win32'),true);
- assert.equal(processUsesCli(row(103,{imageName:'node',argv:['node','/home/user name/pkg/cli.js','exec']}),'claude',['/home/user name/pkg'],'linux'),true);
- assert.equal(processUsesCli(row(103,{imageName:'node',cwd:'/home/test/pkg',argv:['node','--require','/elsewhere/support.js','./cli.js']}),'claude',['/home/test/pkg'],'linux'),true);
+ assert.equal(processUsesCli(row(103,{imageName:'node',argv:['node','/fixtures/example profile/pkg/cli.js','exec']}),'claude',['/fixtures/example profile/pkg'],'linux'),true);
+ assert.equal(processUsesCli(row(103,{imageName:'node',cwd:'/fixtures/test/pkg',argv:['node','--require','/elsewhere/support.js','./cli.js']}),'claude',['/fixtures/test/pkg'],'linux'),true);
  assert.equal(processUsesCli(row(103,{imageName:'node',argv:['node','-e','CODE',script]}),'codex',[packageRoot],'win32'),false);
- assert.equal(processUsesCli(row(103,{imageName:'claude',argv:['claude'],executablePath:'/usr/bin/node'}),'claude',['/home/test/pkg'],'linux'),true);
+ assert.equal(processUsesCli(row(103,{imageName:'claude',argv:['claude'],executablePath:'/usr/bin/node'}),'claude',['/fixtures/test/pkg'],'linux'),true);
 });
 test('native process inventory blocks an independently launched CLI script and permits retry after exit',async()=>{
  const {dir,options}=await fixture(),packageDir=path.join(dir,'fixture package'),script=path.join(packageDir,'cli.cjs');

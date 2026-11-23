@@ -64,9 +64,9 @@ test('offline Gateway path discovery reads registered CLI overrides exclusively'
  const conf=path.join(dir,'.codex');await fs.mkdir(conf);
  const codexConfig=path.join(conf,'config.toml');const sample={HOME:dir,CODEX_HOME:conf,APPDATA:path.join(dir,'roaming'),LOCALAPPDATA:path.join(dir,'local'),USERPROFILE:dir};
  await fs.writeFile(codexConfig,'model="other"\n');assert.deepEqual(await savedCliConfiguration(sample,'linux'),[]);
- await fs.writeFile(codexConfig,'[mcp_servers.agent.env]\nCLAUDE_CLI="/home/fixture/claude"\nOPENAI_API_KEY="never"\n');
+ await fs.writeFile(codexConfig,'[mcp_servers.agent.env]\nCLAUDE_CLI="/fixtures/sample/claude"\nOPENAI_API_KEY="never"\n');
  await fs.writeFile(path.join(dir,'.claude.json'),JSON.stringify({projects:{'/project':{mcpServers:{agent:{env:{CODEX_CLI:'/opt/codex',SECRET:'x'}}}}}}));
- assert.deepEqual(await savedCliConfiguration(sample,'linux'),[{CLAUDE_CLI:'/home/fixture/claude'},{CODEX_CLI:'/opt/codex'}]);
+ assert.deepEqual(await savedCliConfiguration(sample,'linux'),[{CLAUDE_CLI:'/fixtures/sample/claude'},{CODEX_CLI:'/opt/codex'}]);
  const msix=path.join(sample.LOCALAPPDATA,'Packages','Claude_example','LocalCache','Roaming','Claude');await fs.mkdir(msix,{recursive:true});
  await fs.writeFile(path.join(msix,'claude_desktop_config.json'),JSON.stringify({mcpServers:{agent:{env:{GROK_CLI:'/opt/grok',TOKEN:'secret'}}}}));
  assert.deepEqual((await savedCliConfiguration(sample,'win32')).at(-1),{GROK_CLI:'/opt/grok'});
