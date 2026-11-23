@@ -126,10 +126,11 @@ async function checkReadiness(options = {}) {
         catch (error) { if (error.code === 'ENOENT') return; throw error; }
       }
     };
-    const json = async (file, optional = false) => {
+    const json = async (file, optional = false, maxBytes = 4 * 1024 * 1024) => {
       bounded(); await safePath(file);
       let before; try { before = await fs.lstat(file); } catch (error) { if (optional && error.code === 'ENOENT') return null; throw error; }
-      if (!before.isFile() || before.size > 4 * 1024 * 1024) throw Error('Unsafe or oversized readiness record: ' + file);
+      if (!before.isFile()) throw Error('Unsafe readiness record: ' + file);
+      if (before.size > maxBytes) throw Error('Oversized readiness record (' + before.size + ' bytes, limit ' + maxBytes + '): ' + file);
       const handle = await fs.open(file, 'r');
       try {
         const opened = await handle.stat();
@@ -221,12 +222,12 @@ async function checkReadiness(options = {}) {
       if (['absent', 'reused'].includes(owner.state) && !owner.children?.length) return;
       target.push({ id: record.job_id || record.operation_id || path.basename(file), status: record.status, ownerPid: owner.pid ?? null, ownership: owner.state, childPids: owner.children || [] });
     };
-    const scanRecords = async (directory, target, kind) => {
+    const scanRecords = async (directory, target, kind, maxBytes) => {
       for (const item of await list(directory)) {
         bounded(); const file = path.join(directory, item.name);
         if (item.isSymbolicLink()) throw Error('Unsafe linked ' + kind + ' record: ' + file);
         if (item.isDirectory()) continue;
-        if (item.name.endsWith('.json')) checkActive(await json(file), target, kind, file);
+        if (item.name.endsWith('.json')) checkActive(await json(file, false, maxBytes), target, kind, file);
         else if (item.name.endsWith('.cleanup.lock')) {
           const lock = await json(file), owner = ownerState(lock);
           if (!['absent', 'reused'].includes(owner.state) || owner.children?.length) result.activeOperations.push({ id: item.name, status: 'maintenance_lock', ownerPid: owner.pid ?? null, ownership: owner.state });
@@ -234,7 +235,8 @@ async function checkReadiness(options = {}) {
       }
     };
     await scanRecords(path.join(stateRoot, 'jobs'), result.activeJobs, 'job');
-    await scanRecords(path.join(stateRoot, 'operations'), result.activeOperations, 'maintenance operation');
+    // Maintenance results can include a full inventory of changed files.
+    await scanRecords(path.join(stateRoot, 'operations'), result.activeOperations, 'maintenance operation', 32 * 1024 * 1024);
     // Linux discovery covers nonstandard Node invocation flags. Only a matching
     // generation can contribute; stale registry files never imply live work.
     for (const item of await list(path.join(stateRoot, 'gateways'))) {

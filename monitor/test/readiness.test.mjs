@@ -34,6 +34,17 @@ test('active jobs in external state block; dead and reused owners only pass with
   value = await f.check([row(88, { parentPid: 55, createdAt: start })]); assert.equal(value.ready, false); assert.deepEqual(value.activeJobs[0].childPids, [88]);
   value = await f.check([row(55, { createdAt: null })]); assert.equal(value.ready, false); assert.equal(value.activeJobs[0].ownership, 'unknown');
 });
+test('large maintenance results are inspected for their top-level status', async t => {
+  const f = await fixture(t);
+  const record = { operation_id: 'cleanup', ownerPid: 55, startedAt: start,
+    result: { status: 'completed', listing: 'x'.repeat(4685912) }, status: 'running' };
+  await f.write('operations/cleanup.json', record);
+  assert.equal((await f.check([row(55)])).activeOperations[0].id, 'cleanup');
+  await f.write('operations/cleanup.json', { ...record, status: 'completed' });
+  assert.equal((await f.check([row(55)])).ready, true);
+  await f.write('jobs/job.json', record);
+  assert.match((await f.check()).reason, /oversized/i);
+});
 test('recorded orphaned child identity blocks even after Linux reparenting', async t => {
   const f = await fixture(t);
   await f.write('jobs/job.json', { job_id: 'job', status: 'running', ownerPid: 55, startedAt: start,
