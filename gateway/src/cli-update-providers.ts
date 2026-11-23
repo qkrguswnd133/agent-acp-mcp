@@ -35,11 +35,17 @@ interface Dependencies{
  run:Runner;
  metadata:(url:string)=>Promise<string>;
 }
+export function cliUpdateEnvironment(install:boolean){
+ // The official Windows Codex installer identifies its platform through $env:OS.
+ return safeChildEnv(install
+   ? {CI:'1',CODEX_NON_INTERACTIVE:'true',...(windows?{OS:'Windows_NT'}:{})}
+   : {CI:'1',DISABLE_AUTOUPDATER:'1',GROK_DISABLE_AUTOUPDATER:'1'});
+}
 async function command(launch:LaunchCommand,args:string[],install=false){
  const call=launchInvocation(launch,args);
  // Only executables (or Node + a verified package entry) may be launched.
  if(windows&&!/\.exe$/i.test(call.command))throw Error('실행 가능한 공식 CLI 경로를 확인할 수 없습니다.');
- const env=safeChildEnv(install?{CI:'1',CODEX_NON_INTERACTIVE:'true'}:{CI:'1',DISABLE_AUTOUPDATER:'1',GROK_DISABLE_AUTOUPDATER:'1'});
+ const env=cliUpdateEnvironment(install);
  const child=execute(call.command,call.args,{cwd:home,env,windowsHide:true,timeout:install?300000:15000,maxBuffer:1024*1024,encoding:'utf8'});
  child.child.stdin?.end();
  return (await child).stdout.trim();
@@ -275,9 +281,10 @@ export function createCliProviderUpdates(deps:Dependencies=defaults){
      if(actual!==row.latestVersion)return {...row,currentVersion:actual,status:'error',message:'Gateway 실행 파일의 버전이 업데이트 대상과 일치하지 않습니다.'};
      return {...row,currentVersion:actual,status:'current',message:'업데이트 후 Gateway 실행 버전을 확인했습니다.'};
    }catch(error){
-     const raw=error as {code?:string;stderr?:string};
-     const needsTerminal=['EACCES','EPERM'].includes(raw?.code??'')||/\b(EACCES|EPERM|sudo|requires? (?:an? )?(?:tty|terminal)|interactive terminal|not a terminal|permission denied)\b/i.test(String(raw?.stderr??''));
-     return {...row,currentVersion:null,status:needsTerminal?'manual':'error',message:needsTerminal?'설치 관리자 권한 또는 대화형 터미널에서 이 CLI를 업데이트하세요.':'CLI 업데이트 결과를 확인할 수 없습니다. 다시 확인하세요.'};
+     const raw=error as {code?:string|number;stderr?:string};
+     const needsTerminal=['EACCES','EPERM'].includes(String(raw?.code))||/\b(EACCES|EPERM|sudo|requires? (?:an? )?(?:tty|terminal)|interactive terminal|not a terminal|permission denied)\b/i.test(String(raw?.stderr??''));
+     const message=typeof raw?.code==='number'?`CLI 설치 명령이 종료 코드 ${raw.code}로 실패했습니다.`:'CLI 업데이트 결과를 확인할 수 없습니다. 다시 확인하세요.';
+     return {...row,currentVersion:null,status:needsTerminal?'manual':'error',message:needsTerminal?'설치 관리자 권한 또는 대화형 터미널에서 이 CLI를 업데이트하세요.':message};
    }
  }
  return {inspectCli,applyCli};

@@ -3,8 +3,17 @@ import test from 'node:test';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import {createCliProviderUpdates} from '../src/cli-update-providers.js';
+import {cliUpdateEnvironment,createCliProviderUpdates} from '../src/cli-update-providers.js';
+import {execFileSync} from 'node:child_process';
 import type {ProviderName} from '../src/types.js';
+
+test('native install environment passes the official Windows installer platform check', {skip:process.platform!=='win32'}, ()=>{
+ const env=cliUpdateEnvironment(true);
+ const shell=path.join(process.env.SystemRoot!,'System32','WindowsPowerShell','v1.0','powershell.exe');
+ const output=execFileSync(shell,['-NoProfile','-Command',"if ($env:OS -ne 'Windows_NT') { exit 1 }; $env:CODEX_NON_INTERACTIVE"],{env,windowsHide:true,encoding:'utf8'});
+ assert.equal(output.trim(),'true');
+ assert.equal(env.OPENAI_API_KEY,undefined);
+});
 
 function fixture(provider:ProviderName,method:'native'|'npm'|'desktop'|'unknown',options:{unchanged?:boolean;offline?:boolean;alternate?:boolean;directory?:string}={}){
  const directory=options.directory??os.tmpdir(),selected=path.join(directory,provider);

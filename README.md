@@ -1,5 +1,9 @@
 # Agent ACP MCP
 
+## 2.9.2 Windows Codex CLI 업데이트 수정
+
+Gateway 2.9.1이 공식 Codex 네이티브 설치기에 Windows 플랫폼 정보를 전달합니다. Monitor에서 CLI 업데이트를 다시 시도할 수 있습니다.
+
 ## 2.9.1 업데이트 보류 수정
 
 Monitor 1.5.1은 최대 32 MiB의 유지보수 기록에서 작업 상태를 확인합니다. 이전 Monitor에서 완료된 대용량 기록 때문에 전체 업데이트가 보류되면 **개별 업데이트 → Windows만 업데이트**로 이번 버전을 먼저 적용하고 WSL을 업데이트하세요.

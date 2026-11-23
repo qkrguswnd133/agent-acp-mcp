@@ -28,7 +28,7 @@ MCP 서버 `env`에 `CODEX_SPEED`, `CLAUDE_SPEED`, `GROK_SPEED`를 지정할 수
 
 ## 2.6.0 Linux / WSL 업데이트
 
-현재 배포는 **2.9.1**, Gateway는 **2.9.0**, Windows Monitor는 **1.5.1**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
+현재 배포는 **2.9.2**, Gateway는 **2.9.1**, Windows Monitor는 **1.5.1**입니다. **전체 업데이트** 버튼으로 설치된 WSL Gateway들을 먼저 업데이트하고 Windows Gateway·Monitor를 마지막에 업데이트합니다. 설치 전에 모든 대상의 작업 상태를 확인합니다. [통합 업데이트 안내](UNIFIED-UPDATE.md)를 확인하세요. Linux·WSL의 최초 설치는 [Linux 설치 설명](https://github.com/qkrguswnd133/agent-acp-mcp/blob/main/distribution/linux/README.md)을 따릅니다. Linux에는 Gateway만 설치하며 Windows ZIP이나 Node 모듈을 임의 복사하지 않습니다.
 
 **2.7.0 도구 변경:** cleanup·forget·migrate·recover는 dry_run도 `operation_id`를 즉시 반환합니다. `agent_operation_status`로 완료/실패와 결과를 확인하세요. `background=false`는 기존 동기 동작을 선택하지만 큰 폴더에서는 호스트 요청 제한에 걸릴 수 있습니다. `verbose=true`도 전체 결과의 artifact 경로를 반환합니다. 업데이트 후 MCP를 재연결하고 배포본의 Parent 지침을 병합하세요. 현재 개인 설정·지침은 자동 변경하지 않습니다.
 
