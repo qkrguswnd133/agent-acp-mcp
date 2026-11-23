@@ -58,12 +58,23 @@
       <div class="wsl-tools"><button id="wsl-refresh" type="button" aria-label="WSL 배포판 목록 새로고침, 중지된 배포판은 시작하지 않음">목록 새로고침</button></div>
     </div>
   </details>
+  <details id="cli-section" class="disclosure cli" hidden>
+    <summary id="cli-summary"><span>Agent CLI</span><small id="cli-badge"></small></summary>
+    <div class="cli-body">
+      <p id="cli-message" class="cli-message" role="status" aria-live="polite"></p>
+      <ul id="cli-targets" class="cli-targets" aria-label="환경별 Agent CLI 목록"></ul>
+      <div class="cli-tools">
+        <button id="cli-refresh" type="button" aria-label="Agent CLI 상태 새로고침, 중지된 WSL 배포판은 시작하지 않음">새로고침</button>
+        <button id="cli-run-all" class="primary" type="button" disabled>CLI 모두 업데이트 (0)</button>
+      </div>
+    </div>
+  </details>
   <details id="changelog-disclosure" class="disclosure"><summary>변경 사항</summary><div id="notes"></div></details>
   <div id="history-section">
     <details id="github-disclosure" class="disclosure"><summary>GitHub 릴리스 기록</summary><div id="github-history" class="history"></div></details>
     <details id="local-disclosure" class="disclosure"><summary>로컬 설치 기록</summary><div id="local-history" class="history"></div></details>
   </div>
 </main>
-<script src="update-flow.js"></script><script src="update.js"></script>
+<script src="update-flow.js"></script><script src="update.js"></script><script src="cli-update.js"></script>
 </body>
 </html>

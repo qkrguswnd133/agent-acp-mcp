@@ -37,6 +37,14 @@ function unifiedView(value){
 const flow=window.createUpdateFlow(window.monitor,{onBusy:()=>renderUpdate(latestUpdateState),onError:()=>{localFlowError='업데이트 요청에 실패했습니다. 업데이트 창에서 상태를 확인하세요.';renderUpdate(latestUpdateState);}});
 function renderUpdate(value){
   latestUpdateState=value||{};const action=value?.updateAction||{},phase=value?.phase,result=value?.result,open=value?.barProgressOpen===true,unified=unifiedView(value?.unified),active=action.active===true||unified.active||flow.isBusy();
+  const cliButton=document.querySelector('#cli-updates'), offers=value?.cliOffers??[];
+  if(cliButton){
+    cliButton.hidden=!offers.length;
+    cliButton.disabled=!!value?.cliActionBusy;
+    cliButton.title='CLI 모두 업데이트 · '+offers.join(', ');
+    cliButton.setAttribute('aria-label',cliButton.title);
+    document.querySelector('#cli-count').textContent=String(offers.length);
+  }
   updateButton.hidden=action.available!==true;updateButton.disabled=action.active===true||unified.active||flow.isBusy();updateButton.setAttribute('aria-expanded',String(open));
   updateButton.title=active?'업데이트 진행 중':action.canStart===false||value?.blocked||result?.status==='rollback_failed'?'업데이트 문제 확인':'전체 업데이트';updateButton.setAttribute('aria-label',updateButton.title);
   document.body.dataset.updateOpen=String(open);clearTimeout(closeTimer);
@@ -70,3 +78,10 @@ updateButton.addEventListener('click',()=>{const action=latestUpdateState?.updat
 cancelButton.addEventListener('click',()=>flow.cancel());closeButton.addEventListener('click',()=>window.monitor.dismissUpdateProgress());
 window.monitor.onUpdate(renderUpdate);window.monitor.updateState().then(renderUpdate);
 
+
+document.querySelector('#cli-updates')?.addEventListener('click',async event=>{
+  const button=event.currentTarget;
+  if(button.disabled||button.hidden)return;
+  button.disabled=true;
+  try{await window.monitor.cliRun();}finally{renderUpdate(latestUpdateState);}
+});

@@ -20,7 +20,7 @@ import {observedExitCode,observedOutput} from '../command-telemetry.js';
 import type {CommandExecution} from '../command-telemetry.js';
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
-const modelCache=new CatalogCache();
+let modelCache=new CatalogCache();
 let cachedExecutable:LaunchCommand|undefined;let statusCache:{at:number,value:ProviderStatus}|undefined;let observedRuntimeBlock=false;
 const quota=new QuotaCache(path.join(resolveUserStateRoot(),'codex-quota.json'));
 export const codexNpmPackage:OfficialNpmPackage={name:'@openai/codex',binNames:['codex'],label:'Codex',defaultMinimumNode:16};
@@ -50,11 +50,15 @@ export function codexAppServerArgs(writable:boolean,speed:ExecutionSpeed,platfor
 // One resolved launcher serves status, app-server telemetry and run alike.
 async function exe(){
  if(cachedExecutable)return cachedExecutable;
+ const selected=await resolveCodexExecutable();
+ return cachedExecutable=selected&&await resolveNpmLaunch(selected,codexNpmPackage);
+}
+export async function resolveCodexExecutable():Promise<string|undefined>{
  const common=[path.join(home,'AppData','Local','Programs','OpenAI','Codex','bin','codex.exe'),path.join(home,'.local','bin',process.platform==='win32'?'codex.exe':'codex')];
- const direct=await resolveExecutable(process.env.CODEX_CLI??process.env.CODEX_CLI_PATH,['codex'],common);if(direct)return cachedExecutable=await resolveNpmLaunch(direct,codexNpmPackage);
+ const direct=await resolveExecutable(process.env.CODEX_CLI??process.env.CODEX_CLI_PATH,['codex'],common);if(direct)return direct;
  if(process.platform==='win32'){
    const local=process.env.LOCALAPPDATA??path.join(home,'AppData','Local');
-   const runtime=await findExecutableInChildDirs(path.join(local,'OpenAI','Codex','bin'),'codex.exe');if(runtime)return cachedExecutable=runtime;
+   return findExecutableInChildDirs(path.join(local,'OpenAI','Codex','bin'),'codex.exe');
  }
  return undefined;
 }
@@ -120,6 +124,7 @@ function parseEvents(stdout:string){
 }
 
 export class CodexProvider implements ProviderAdapter{
+ invalidateCliCaches(){cachedExecutable=undefined;modelCache=new CatalogCache();statusCache=undefined;}
  readonly name='codex' as const;
  async status(force=false):Promise<ProviderStatus>{
   const runtimeQuota=await quota.get('codex');

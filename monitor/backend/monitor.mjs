@@ -143,7 +143,7 @@ export function createMonitor({gatewayRoot,home=os.homedir(),env=process.env,ada
   })().finally(()=>{inFlight=undefined;});}};
 }
 
-export async function loadMonitor({home=process.env.USERPROFILE??os.homedir(),env=process.env,configFile=path.join(path.dirname(process.execPath),'agent-monitor.config.json')}={}){
+export async function loadMonitorEnvironment({home=process.env.USERPROFILE??os.homedir(),env=process.env,configFile=path.join(path.dirname(process.execPath),'agent-monitor.config.json')}={}){
   let configured={};try{configured=parseGatewayEnvironment(await fs.readFile(path.join(env.CODEX_HOME??path.join(home,'.codex'),'config.toml'),'utf8'));}catch{}
   // A standalone installation can configure the monitor without a Codex host.
   const local=await readJson(configFile,64*1024);
@@ -156,8 +156,17 @@ export async function loadMonitor({home=process.env.USERPROFILE??os.homedir(),en
   const neutralExists=await fs.stat(neutralRoot).then(s=>s.isDirectory()).catch(()=>false);
   const legacyExists=await fs.stat(legacyRoot).then(s=>s.isDirectory()).catch(()=>false);
   const gatewayRoot=env.AGENT_GATEWAY_ROOT??(neutralExists||!legacyExists?neutralRoot:legacyRoot);
+  return {gatewayRoot,home,env};
+}
+export async function loadMonitor(options={}){
+  const {gatewayRoot,home,env}=await loadMonitorEnvironment(options);
   const module=relative=>import(pathToFileURL(path.join(gatewayRoot,'dist','src',relative)).href);
-  const imports=await Promise.allSettled([module('billing.js'),module('providers/claude.js'),module('providers/codex.js')]);
-  const adapters={};if(imports[1].status==='fulfilled')adapters.claude=new imports[1].value.ClaudeProvider();if(imports[2].status==='fulfilled')adapters.codex=new imports[2].value.CodexProvider();
-  return createMonitor({gatewayRoot,home,env,adapters,getWeeklyUsage:imports[0].status==='fulfilled'?imports[0].value.getWeeklyUsage:undefined,getGrokAccountStatus:imports[0].status==='fulfilled'?imports[0].value.getGrokAccountStatus:undefined});
+  const imports=await Promise.allSettled([module('billing.js'),module('providers/claude.js'),module('providers/codex.js'),module('cli-update-lock.js')]);
+  const locks=imports[3].status==='fulfilled'?imports[3].value:null;
+  const guard=adapter=>locks?locks.guardProviderCli(adapter):adapter;
+  const adapters={};
+  if(imports[1].status==='fulfilled')adapters.claude=guard(new imports[1].value.ClaudeProvider());
+  if(imports[2].status==='fulfilled')adapters.codex=guard(new imports[2].value.CodexProvider());
+  const billing=method=>imports[0].status==='fulfilled'?(...args)=>locks?locks.withProviderCliUse('grok',()=>imports[0].value[method](...args)):imports[0].value[method](...args):undefined;
+  return createMonitor({gatewayRoot,home,env,adapters,getWeeklyUsage:billing('getWeeklyUsage'),getGrokAccountStatus:billing('getGrokAccountStatus')});
 }

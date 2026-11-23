@@ -1,0 +1,10 @@
+{
+  "gateway": [
+    "Windows·Linux·WSL에서 Gateway가 선택한 Grok, Claude, Codex CLI의 경로와 버전을 확인하고 업데이트합니다. 사용 중인 CLI는 보류하고 설치 후 같은 경로의 버전을 검증합니다.",
+    "Linux와 WSL에서 agent-acp cli list, update, status 명령을 지원합니다. 설치 후 MCP를 재연결하세요."
+  ],
+  "monitor": [
+    "상단 바의 CLI ↑ 숫자를 누르면 업데이트 가능한 Windows·WSL CLI를 순서대로 갱신합니다. 사용 중이라 보류된 항목은 나중에 다시 누를 수 있습니다.",
+    "소프트웨어 업데이트의 Agent CLI 섹션에서 환경별 버전과 경로를 확인하고 개별 업데이트 또는 CLI 모두 업데이트를 실행할 수 있습니다."
+  ]
+}

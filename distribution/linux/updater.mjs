@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Linux/WSL share this updater. No provider CLI, credentials or host settings are changed. */
+/** Shared Linux/WSL launcher. Provider updates require an explicit cli update command. */
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import {spawn} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 
 export const UPDATER_VERSION='1.0.0';
 export const REPOSITORY='qkrguswnd133/agent-acp-mcp';
@@ -121,6 +121,23 @@ export async function acquireLock(stateRoot){
   return async()=>{try{const current=await readJson(lock);if(current.pid===process.pid&&current.identity===identity)await fs.unlink(lock);}catch{}};
 }
 async function maintenance(root,emit,stateRoot){
+  // acquireLock(stateRoot) is held until the entire update/rollback completes.
+  // CLI writers announce their PID before checking that same lock.
+  const cliDirectory=root+'.cli-operations';
+  await ensureSafePath(cliDirectory);
+  let claims;try{claims=await fs.readdir(cliDirectory);}catch(e){if(e.code!=='ENOENT')throw e;claims=[];}
+  for(const name of claims){
+    const match=/^update-(\d+)-[\da-f-]{36}$/i.exec(name);
+    if(!match)continue;
+    try{process.kill(Number(match[1]),0);}catch(e){if(e.code==='ESRCH')continue;throw e;}
+    const file=path.join(cliDirectory,name);
+    let previous;try{previous=await fs.readFile(file,'utf8');}catch(e){if(e.code==='ENOENT')continue;throw e;}
+    if(/^linux:[a-f0-9-]{36}:\d+:\d+$/i.test(previous)){
+      const current=await linuxIdentity(Number(match[1])).catch(()=>null);
+      if(current&&current!==previous)continue;
+    }
+    throw Error('Gateway is busy with an agent CLI update (PID '+match[1]+'). Retry after it finishes.');
+  }
   const file=root+'.maintenance.json';await ensureSafePath(file);
   const before=await scanProcesses(root,stateRoot),operationId=crypto.randomUUID();
   if(await exists(file)){const old=await readJson(file);if(Date.parse(old.expiresAt)>Date.now())throw Error('Gateway has an active maintenance request');}
@@ -254,6 +271,21 @@ async function rollback(paths,emit){
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function parseArgs(args){const result={command:args.shift()||'status',json:false,check:false,background:false};if(!['status','install','update','rollback','operation'].includes(result.command))throw Error('Usage: agent-acp status|install|update|rollback|operation [--json] [--check] [--package-dir DIR]');if(result.command==='operation'){result.operationId=args.shift();if(!UUID.test(result.operationId||''))throw Error('A valid operation UUID is required');}for(let i=0;i<args.length;i++){const a=args[i];if(a==='--json')result.json=true;else if(a==='--check')result.check=true;else if(a==='--background')result.background=true;else if(['--package-dir','--install-dir','--state-dir','--operation-id'].includes(a)){if(!args[i+1]||args[i+1].startsWith('--'))throw Error(`Missing value for ${a}`);result[a.slice(2).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=args[++i];}else throw Error(`Unknown option: ${a}`);}if(result.check&&result.command!=='update')throw Error('--check is only valid with update');if(result.background&&(result.command!=='update'||result.check))throw Error('--background requires update without --check');if(result.operationId&&!UUID.test(result.operationId))throw Error('Invalid operation UUID');return result;}
 export async function main(argv=process.argv.slice(2)){
+  if(argv[0]==='cli'){
+    try{
+      if(process.platform!=='linux')throw Error('The agent-acp Linux launcher requires Linux or WSL');
+      // Pin the worker to this launcher’s installation, including custom install/state paths.
+      const entry=path.join(SELF,'..','dist','src','cli-update-command.js');
+      if(!await exists(entry))throw Error('Update the installed Linux Gateway to use agent-acp cli.');
+      const {runCliMain}=await import(pathToFileURL(entry).href);
+      return await runCliMain(argv.slice(1));
+    }catch(error){
+      process.exitCode=1;
+      if(argv.includes('--json'))console.log(JSON.stringify({busy:false,operationId:null,rows:[],error:error.message}));
+      else console.error(error.message);
+      return;
+    }
+  }
   let options,paths,releaseLock,operationFile;let committing=false;const controller=new AbortController();const abort=()=>{if(!committing)controller.abort(Error('Update cancelled'));};process.on('SIGINT',abort);process.on('SIGTERM',abort);
   // Writes are serialized; the final snapshot must not be overwritten by an older progress write.
   let writes=Promise.resolve();const save=value=>{if(operationFile)writes=writes.then(()=>atomicJson(operationFile,{operationId:options.operationId,pid:process.pid,updatedAt:now(),...value}));};

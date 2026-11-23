@@ -76,6 +76,18 @@ test('Linux signed local install, background update and rollback preserve settin
     await fs.writeFile(path.join(assets,'linux-update-manifest.sig'),'invalid');r=await invoke(installed,['update','--package-dir',assets]);assert.equal(r.code,1);assert.match(r.records.at(-1).error,/signature/);assert.equal(JSON.parse(await fs.readFile(path.join(root,'package.json'))).version,'2.6.0');
   }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
+test('Linux Gateway replacement refuses active CLI update even without a connected MCP host',{skip:process.platform!=='linux'},async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'linux-cli-conflict-'));
+  try{
+    const paths={installRoot:path.join(dir,'gateway'),stateRoot:path.join(dir,'state'),launcher:path.join(dir,'bin/agent-acp')};
+    const {archive,manifest}=fixture(),entries=parseArchive(archive);
+    await installVerified(paths,entries,manifest,()=>{},{legacyStateRoot:false});
+    const claims=paths.installRoot+'.cli-operations';await fs.mkdir(claims);
+    await fs.writeFile(path.join(claims,'update-'+process.pid+'-11111111-1111-4111-8111-111111111111'),'');
+    await assert.rejects(installVerified(paths,entries,{...manifest,version:'2.6.1'},()=>{},{legacyStateRoot:false}),/busy with an agent CLI update/);
+    assert.equal(JSON.parse(await fs.readFile(path.join(paths.stateRoot,'installations/gateway.json'))).version,'2.6.0');
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
 test('Linux busy Gateway is never killed or replaced; idle acknowledged Gateway shuts down safely',{skip:process.platform!=='linux'},async()=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'linux-maintenance-test-'));const root=path.join(dir,'gateway'),state=path.join(dir,'state');let child;
   try{

@@ -633,6 +633,15 @@ exit 1
         Assert-Old $f
     }
 
+    Run 'Provider CLI update blocks Gateway replacement' {
+        $f = New-Fixture 'provider-cli-busy'
+        $claim = Join-Path ($f.Gateway+'.cli-operations') ('update-'+$PID+'-'+[guid]::NewGuid().ToString())
+        Put $claim ''
+        $result = Invoke-Update $f @('-Component','Gateway','-NoAutoClose')
+        Assert ($result.ExitCode -ne 0 -and $result.Output -match 'agent CLI update is in progress') 'CLI update conflict was not reported.'
+        Assert-Old $f
+    }
+
     Run 'NoAutoClose leaves a running gateway untouched' {
         $f = New-Fixture 'no-autoclose'
         $process = Start-Gateway $f

@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {fileURLToPath} from 'node:url';
+import {launcherText} from '../distribution/linux/updater.mjs';
+
+test('installed Linux launcher delegates cli status to its own gateway and reads custom external job journal',{skip:process.platform!=='linux'},async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'agent-cli-launch-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const source=fileURLToPath(new URL('../',import.meta.url));
+  const root=path.join(dir,"my installation's gateway"),state=path.join(dir,'custom state');
+  const runner=path.join(root,'linux','updater.mjs'),launcher=path.join(dir,'agent-acp');
+  await fs.mkdir(path.dirname(runner),{recursive:true});
+  await fs.copyFile(path.join(source,'distribution/linux/updater.mjs'),runner);
+  await fs.cp(path.join(source,'gateway/dist/src'),path.join(root,'dist/src'),{recursive:true});
+  await fs.writeFile(path.join(root,'package.json'),'{"type":"module"}');
+  await fs.writeFile(launcher,launcherText(process.execPath,runner),{mode:0o700});
+  await fs.writeFile(path.join(root,'agent-acp-installation.json'),JSON.stringify({schemaVersion:1,stateRoot:state}));
+  const journal=path.join(state,'updates','cli-operations');await fs.mkdir(journal,{recursive:true});
+  const operationId='11111111-1111-1111-1111-111111111111';
+  const rows=[{provider:'claude',currentVersion:'1.2.4',previousVersion:'1.2.3',status:'updated',method:'npm',path:'/cli/claude'}];
+  await fs.writeFile(path.join(journal,operationId+'.json'),JSON.stringify({operationId,startedAt:new Date().toISOString(),busy:false,rows}));
+  const env={...process.env,HOME:dir};delete env.AGENT_MCP_STATE_DIR;
+  const result=await promisify(execFile)(launcher,['cli','status','--operation-id',operationId,'--json'],{env});
+  assert.deepEqual(JSON.parse(result.stdout),{operationId,busy:false,rows});
+});

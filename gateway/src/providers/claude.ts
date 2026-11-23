@@ -22,7 +22,7 @@ import {claudeUsageAccountKey,refreshClaudeCredentials} from '../claude-auth-ref
 import type {AgentKind,ProviderAdapter,ProviderRunResult,ProviderStatus,RunHooks,RunInput,QuotaStatus} from '../types.js';
 
 const quota=new QuotaCache(path.join(resolveUserStateRoot(),'claude-quota.json'));
-const modelCache=new CatalogCache();
+let modelCache=new CatalogCache();
 let cachedExecutable:LaunchCommand|undefined;
 // One resolved launcher serves status, auth refresh, run and update alike.
 async function exe(){return cachedExecutable??=await resolveClaudeLaunch({explicit:process.env.CLAUDE_CLI});}
@@ -49,6 +49,7 @@ function structuredErrorEvidence(parsed:any, message:string|undefined):unknown{
 }
 
 export class ClaudeProvider implements ProviderAdapter{
+ invalidateCliCaches(){cachedExecutable=undefined;modelCache=new CatalogCache();}
  readonly name='claude' as const;
  async status():Promise<ProviderStatus>{
   const enabled=providerEnabled('claude');let command:LaunchCommand|undefined,launchError:string|undefined;

@@ -59,7 +59,12 @@ try{
     await fs.mkdir(path.join(repo,'distribution'),{recursive:true});await fs.mkdir(path.join(repo,'tests'),{recursive:true});
     await fs.cp(path.join(source,'distribution/linux'),path.join(repo,'distribution/linux'),{recursive:true});
     await fs.copyFile(path.join(source,'tests/linux-updater.test.mjs'),path.join(repo,'tests/linux-updater.test.mjs'));
-    await run('linux-updater-test',process.execPath,['--test','tests/linux-updater.test.mjs'],repo);
+    const tests=['tests/linux-updater.test.mjs'];
+    if(suite==='all'){
+      tests.push('tests/linux-cli-launcher.test.mjs');
+      await fs.copyFile(path.join(source,tests[1]),path.join(repo,tests[1]));
+    }
+    await run('linux-updater-test',process.execPath,['--test',...tests],repo);
   }
 }catch(error){failed=error;console.error(error.stack??String(error));}
 finally{

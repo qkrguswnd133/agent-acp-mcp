@@ -23,9 +23,12 @@ export function defaultClaudeCandidates(platform:NodeJS.Platform=process.platfor
  * batch shim is replaced by the package's own bin so no cmd.exe is involved;
  * any other launcher is returned unchanged. */
 export async function resolveClaudeLaunch(options:ClaudeLaunchOptions={}):Promise<LaunchCommand|undefined>{
-  const platform=options.platform??process.platform;
-  const selected=await resolveExecutable(options.explicit,options.names??['claude'],options.candidates??defaultClaudeCandidates(platform));
+  const selected=await resolveClaudeExecutable(options);
   return selected&&await resolveNpmLaunch(selected,claudeNpmPackage,options);
+}
+export function resolveClaudeExecutable(options:ClaudeLaunchOptions={}){
+  const platform=options.platform??process.platform;
+  return resolveExecutable(options.explicit,options.names??['claude'],options.candidates??defaultClaudeCandidates(platform));
 }
 
 /** Returns undefined when the shim is not beside the official package. */

@@ -6,6 +6,7 @@ import path from 'node:path';
 import {root,stateRoot,shutdown} from './runtime.js';
 import {active} from './runtime.js';
 import {MaintenanceGate} from './maintenance.js';
+import {guardProviderCli} from './cli-update-lock.js';
 import {GatewayRegistry} from './gateway-registry.js';
 import {assertLinuxStateMigrated} from './state-paths.js';
 import {setMcpSelfTest} from './health.js';
@@ -23,7 +24,7 @@ import {CodexProvider} from './providers/codex.js';
 import type {AgentKind,RunInput} from './types.js';
 
 assertLinuxStateMigrated(root,stateRoot);
-const router=new AgentRouter([new GrokProvider(),new ClaudeProvider(),new CodexProvider()]);
+const router=new AgentRouter([new GrokProvider(),new ClaudeProvider(),new CodexProvider()].map(guardProviderCli));
 const jobs=new JobManager(path.join(stateRoot,'jobs'),(kind,input,signal,hooks)=>{
   const host=(input as any).__host;if(!host)throw Error('HOST_UNKNOWN: job was created without MCP client identity');
   return router.run(kind as AgentKind,input,host,signal,hooks);
@@ -60,7 +61,7 @@ const maintenanceInput={background:z.boolean().default(true).describe('Return op
 const dispatchMaintenance=(kind:string,input:any,run:(phase:(name:string,ms:number)=>void)=>Promise<unknown>)=>input.background!==false?operations.start(kind,input,run):run(()=>{});
 
 function createServer(){
- const server=new McpServer({name:'agent-acp-mcp',version:'2.8.0'});
+ const server=new McpServer({name:'agent-acp-mcp',version:'2.9.0'});
  server.registerTool('agent_operation_status',{
    description:'Read a background worktree maintenance operation and per-phase timings. Requests and polling cancellation never cancel the operation. Inspect status and result; verbose returns full details through an artifact.',
    inputSchema:z.object({operation_id:z.string().uuid(),verbose:z.boolean().default(false)}),annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}
@@ -151,7 +152,7 @@ maintenance=new MaintenanceGate(root,()=>jobs.isIdle()&&operations.isIdle()&&inF
 jobs.setMaintenanceCheck(()=>maintenance.assertAvailable());
 maintenance.start();
 const registry=new GatewayRegistry(root,stateRoot,()=>jobs.isIdle()&&operations.isIdle()&&inFlight===0&&active.size===0);
-registry.start();
+await registry.start();
 process.on('exit',()=>{releaseOwnedMaintenanceLocksSync();registry.stop();maintenance.stop();});
 // A host request timeout may disconnect stdio. It must not become job_cancel.
 // Remain alive until accepted jobs persist their terminal result/deadline.
@@ -160,11 +161,11 @@ process.stdout.on('error',error=>{if((error as NodeJS.ErrnoException).code==='EP
 for(const s of ['SIGINT','SIGTERM'] as const)process.on(s,()=>{void closeBridge().finally(()=>process.exit(0));});
 
 setMcpSelfTest(async()=>{
- const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.8.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
+ const s=createServer();const c=new Client({name:'agent-bridge-compatibility-selftest',version:'2.9.0'});const [ct,st]=InMemoryTransport.createLinkedPair();
  try{await s.connect(st);await c.connect(ct);const result=await c.listTools();return ['agent_ask','agent_review','agent_investigate','agent_implement','agent_status','agent_cli_status','agent_cli_update','agent_job_status','agent_job_cancel'].every(name=>result.tools.some(t=>t.name===name));}
  finally{await c.close();await s.close();}
 });
 
-console.error(JSON.stringify({event:'agent_bridge_start',version:'2.8.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
+console.error(JSON.stringify({event:'agent_bridge_start',version:'2.9.0',providers:{grok:process.env.GROK_ENABLED??'default:true',claude:process.env.CLAUDE_ENABLED??'default:true',codex:process.env.CODEX_ENABLED??'default:true'}}));
 await serveStdio(createServer);
 

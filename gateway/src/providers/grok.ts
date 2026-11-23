@@ -3,7 +3,7 @@ import path from 'node:path';
 import {unavailableCatalog} from '../model-catalog.js';
 import {runGrok} from '../acp.js';
 import {getWeeklyUsage,getGrokAccountStatus} from '../billing.js';
-import {ensureHealth} from '../health.js';
+import {ensureHealth,markUnhealthy} from '../health.js';
 import {providerEnabled,modelPolicy,effortPolicy} from '../config.js';
 import {childEnv,grokLaunch,resetGrokLaunch} from '../runtime.js';
 import {runCommand} from '../process.js';
@@ -52,6 +52,7 @@ export function classifyGrokRunFailure(value:Pick<ProviderRunResult,'error'|'err
 }
 
 export class GrokProvider implements ProviderAdapter{
+ invalidateCliCaches(){resetGrokLaunch();markUnhealthy('CLI installation changed; compatibility check required');}
  readonly name='grok' as const;
  async models(force=false){if(!providerEnabled('grok'))return unavailableCatalog('grok','Provider disabled.');const health=await ensureHealth(force);return health.modelCatalog??unavailableCatalog('grok',health.reason??'ACP model catalog unavailable.',health.version);}
  async status(force=false):Promise<ProviderStatus>{

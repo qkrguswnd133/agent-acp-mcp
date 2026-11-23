@@ -88,6 +88,7 @@ export interface ProviderRunResult {
 }
 
 export interface ProviderAdapter {
+  invalidateCliCaches?():void;
   readonly name: ProviderName;
   status(force?: boolean): Promise<ProviderStatus>;
   run(kind: AgentKind, input: RunInput, signal?: AbortSignal, hooks?: RunHooks): Promise<ProviderRunResult>;

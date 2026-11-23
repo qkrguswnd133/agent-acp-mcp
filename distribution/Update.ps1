@@ -244,6 +244,20 @@ function GatewaySupportsMaintenance([string]$Gateway) {
         return ([version]$package.version -ge [version]'2.2.0')
     } catch { return $false }
 }
+function AssertNoProviderCliUpdate([string]$Gateway) {
+    $directory = $Gateway+'.cli-operations'
+    if (-not (Test-Path -LiteralPath $directory)) { return }
+    AssertNoLinks $directory
+    foreach ($claim in Get-ChildItem -LiteralPath $directory -File -ErrorAction Stop) {
+        if ($claim.Name -match '^update-([0-9]+)-[0-9a-f-]{36}$') {
+            $cliOwner = Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue
+            if ($cliOwner) {
+                if ($cliOwner.StartTime -and $cliOwner.StartTime.ToUniversalTime() -gt $claim.LastWriteTimeUtc.AddSeconds(2)) { continue }
+                throw "An agent CLI update is in progress (PID $($cliOwner.Id)). Retry after it finishes."
+            }
+        }
+    }
+}
 function WaitForMaintenance([object[]]$Entries,[string]$Gateway) {
     $requestFile=$Gateway+'.maintenance.json'
     $id=[guid]::NewGuid().ToString()
@@ -411,6 +425,9 @@ try {
         # Retain the empty lock file so another updater cannot lock a deleted inode.
         AssertNoLinks $lockPath
         $updateLocks += [IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    }
+    foreach ($item in $items) {
+        if ($item.Name -eq 'Gateway') { AssertNoProviderCliUpdate $item.Target }
     }
     if (-not $NoAutoClose) { CloseForUpdate $items }
     else { AssertStopped $items }

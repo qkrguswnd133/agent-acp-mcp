@@ -34,6 +34,7 @@ function blockedReason(status:ProviderStatus|undefined,host:HostDetection,provid
   if(host.host==='unknown')return 'host_unknown';
   if(provider===host.host&&!allowSelf)return 'self_provider';
   if(!status)return 'status_unavailable';
+  if(status.quota.source==='cli_update_in_progress')return 'cli_update_in_progress';
   if(!status.enabled)return 'disabled';
   if(!status.available)return 'unavailable';
   if(status.authenticated===false)return 'auth_failed';
@@ -49,8 +50,15 @@ export class AgentRouter{
   private map=new Map<ProviderName,ProviderAdapter>();
   constructor(adapters:ProviderAdapter[],private options:{rng?:()=>number;now?:()=>number}={}){for(const adapter of adapters)this.map.set(adapter.name,adapter);}
   private adapter(name:ProviderName){const value=this.map.get(name);if(!value)throw Error(`Provider adapter unavailable: ${name}`);return value;}
+  private async readStatus(name:ProviderName,force:boolean):Promise<ProviderStatus>{
+    try{return await this.adapter(name).status(force);}
+    catch(error){
+      const source=(error as NodeJS.ErrnoException)?.code==='CLI_UPDATE_BUSY'?'cli_update_in_progress':'status_error';
+      return {provider:name,enabled:true,available:false,authenticated:'unknown',version:'unavailable',modelPolicy:'unknown',effortPolicy:'unknown',quota:{state:'unknown',source},reason:(error as Error).message};
+    }
+  }
   async statuses(force=false){
-    const entries=await Promise.all(names.map(async name=>{try{return [name,await this.adapter(name).status(force)] as const;}catch(e){return [name,{provider:name,enabled:true,available:false,authenticated:'unknown' as const,version:'unavailable',modelPolicy:'unknown',effortPolicy:'unknown',quota:{state:'unknown' as const,source:'status_error'},reason:(e as Error).message}] as const;}}));
+    const entries=await Promise.all(names.map(async name=>[name,await this.readStatus(name,force)] as const));
     return Object.fromEntries(entries.map(([name,status])=>[name,{...status,speedPolicy:speedPolicy(name).value}])) as Record<ProviderName,ProviderStatus>;
   }
   async status(host:HostDetection,force=false,override?:boolean){
@@ -58,7 +66,7 @@ export class AgentRouter{
     const statuses=await this.statuses(force);const providers:any={};
     const catalogs=Object.fromEntries(await Promise.all(names.map(async name=>[name,statuses[name].enabled?await this.catalog(name,force):unavailableCatalog(name,'Provider disabled.')])));
     for(const name of names){const status=statuses[name];const reason=blockedReason(status,host,name,allowSelf);providers[name]={...status,modelCatalog:catalogs[name],quota:{...status.quota,resetsAt:status.quota.resetsAt??null,retryAfter:status.quota.retryAfter??null,limitKind:status.quota.limitKind??(status.quota.state==='exhausted'?'quota_exhausted':null)},callable:!reason,blocked_reason:reason??null,selfProvider:name===host.host};}
-    return {server:'agent-acp-mcp',version:'2.8.0',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
+    return {server:'agent-acp-mcp',version:'2.9.0',host,allow_self_provider:allowSelf,self_provider_policy_source:typeof override==='boolean'?'call':'environment_default',auto_excludes_self:!allowSelf,providers};
   }
   async plan(spec:string|undefined,host:HostDetection,forceStatus=false,override?:boolean){
     if(isDelegatedProcess())throw Error('NESTED_DELEGATION_BLOCKED: delegated provider sessions cannot invoke this gateway');
@@ -69,7 +77,7 @@ export class AgentRouter{
     const statuses={} as Record<ProviderName,ProviderStatus>;
     await Promise.all(requested.map(async name=>{
       if(name===host.host&&!allowSelf)return;
-      try{statuses[name]=await this.adapter(name).status(forceStatus);}catch(e){statuses[name]={provider:name,enabled:true,available:false,authenticated:'unknown',version:'unavailable',modelPolicy:'unknown',effortPolicy:'unknown',quota:{state:'unknown',source:'status_error'},reason:(e as Error).message};}
+      statuses[name]=await this.readStatus(name,forceStatus);
     }));
     const eligible:ProviderName[]=[];
     for(const name of requested){const reason=blockedReason(statuses[name],host,name,allowSelf);if(reason)skipped.push({provider:name,reason});else eligible.push(name);}

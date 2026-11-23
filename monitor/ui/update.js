@@ -62,9 +62,9 @@ function render(value){
   $('check').disabled=active;$('update').disabled=active||busy||!startable;
   $('update').textContent=phase==='downloading'?'다운로드 중':phase==='preparing'?'검증 중':phase==='installing'?'설치 중':unifiedActive?'업데이트 중':'전체 업데이트';
   const windowsApi=typeof window.monitor?.updateWindows==='function';$('individual-section').hidden=!windowsApi;
-  $('update-windows').disabled=!windowsApi||active||busy||!newer||!!current.blocked||recoveryFailed;
+  $('update-windows').disabled=!windowsApi||current.cliInstalling===true||active||busy||!newer||!!current.blocked||recoveryFailed;
   $('cancel').hidden=unifiedActive?!unified.canCancel:!['downloading','preparing'].includes(phase)&&!(phase==='downloaded'&&busy);
-  renderUnified(unified);if(wslReady)renderWsl();
+  renderUnified(unified);if(wslReady)renderWsl();window.cliUpdate?.setExternalBusy(current.cliActionBusy===true||unifiedActive||busy);
   $('progress').hidden=phase!=='downloading'&&!(unifiedActive&&current.progress);if(current.progress){$('progress').max=current.progress.total;$('progress').value=current.progress.received;$('progress-label').textContent=current.progress.unit==='percent'?`${Math.round(current.progress.received/current.progress.total*100)}%`:`${Math.floor(current.progress.received/1048576)} / ${Math.ceil(current.progress.total/1048576)} MB`;}else $('progress-label').textContent='';
   $('github-history').replaceChildren();for(const item of current.history||[])historyRow($('github-history'),item.version,`${item.publishedAt} · Gateway ${item.components.gateway} · Monitor ${item.components.monitor}`);if(!current.history?.length)$('github-history').textContent='검증된 릴리스 기록이 없습니다.';
   $('local-history').replaceChildren();if(installed?.version)historyRow($('local-history'),installed.version,installed.installedAt||'설치 시간 확인 불가');for(const item of current.localHistory||[])historyRow($('local-history'),`${item.version||'버전 확인 불가'} · ${resultLabels[item.status]||'확인 필요'}`,item.finishedAt||item.startedAt||'시간 확인 불가');if(!$('local-history').children.length)$('local-history').textContent='로컬 설치 기록이 없습니다.';
@@ -92,7 +92,7 @@ function normalizeWslState(value){
   if(status==='available'&&!targets.length)status='empty';
   return {status,message:wslText(value.message)||null,targets,busy:value.busy===true};
 }
-function wslBusy(){return wsl.pending||wsl.state?.busy===true||current.unified?.active===true;}
+function wslBusy(){return wsl.pending||wsl.state?.busy===true||current.cliInstalling===true||current.unified?.active===true;}
 function wslButton(label,aria,key,disabled,handler,title){
   const button=document.createElement('button');button.type='button';button.textContent=label;button.setAttribute('aria-label',aria);button.disabled=disabled;button.dataset.wslKey=key;if(title)button.title=title;
   button.addEventListener('click',handler);wsl.buttons.set(key,button);return button;

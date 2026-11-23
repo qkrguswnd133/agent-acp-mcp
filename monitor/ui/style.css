@@ -40,3 +40,9 @@
 .setting[data-setting=verified] .setting-status{color:#8ac9b4}.setting[data-setting=selected] .setting-value,.setting[data-setting=observed] .setting-value{color:#c4c9d9}.setting[data-setting=unknown] .setting-value{color:#9196aa;font-weight:500}.setting[data-setting=mismatch] .setting-status{color:#efc96e}
 .facts{padding:8px 20px}
 .facts>div[hidden]{display:none}
+
+.facts .link-button{background:transparent;color:var(--accent);font-size:10px;font-weight:600;padding:2px 4px;border-radius:5px;text-decoration:underline;text-underline-offset:2px}.link-button:hover{background:#ffffff0e}
+
+.cli-indicator{flex:none;min-width:48px;height:26px;padding:0 5px;background:#22332f;color:#a1e0c6;font-size:11px;border-radius:6px;white-space:nowrap}.cli-indicator[hidden]{display:none}.cli-indicator:hover{background:#2d453c}.cli-indicator:disabled{opacity:.55}
+
+.cli-version-actions{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;justify-content:flex-end;min-width:0}.cli-version-actions b{max-width:165px}

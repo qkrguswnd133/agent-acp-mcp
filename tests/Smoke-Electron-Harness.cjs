@@ -62,6 +62,7 @@
   Module._load=function(request,parent,isMain){
     const value=originalLoad.apply(this,arguments);
     if(!parent?.filename?.endsWith(path.sep+'main.cjs'))return value;
+    if(request==='./update/cli-manager.cjs')return {...value,createCliUpdates:options=>value.createCliUpdates({...options,listTargets:async()=>[]})};
     if(request==='electron')return {...value,BrowserWindow:ObservedWindow};
     if(request==='./update/wsl.cjs')return {...value,createWslUpdates:options=>value.createWslUpdates({...options,exec:async(file,args)=>{
       if(file!=='wsl.exe')throw Error('Unexpected fixture executable');

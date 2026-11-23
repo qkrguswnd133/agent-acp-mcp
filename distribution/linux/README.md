@@ -1,5 +1,18 @@
 # Linux Gateway installation and updates
 
+## Update a provider CLI on Linux or WSL
+
+Run these commands from the account that runs the Gateway. The first command checks the installed versions and update channels. Choose a single provider or request all eligible updates in sequence.
+
+```sh
+agent-acp cli list
+agent-acp cli update codex
+agent-acp cli update --all
+agent-acp cli status --json
+```
+
+Use `grok`, `claude`, or `codex` for an individual update. Every command accepts `--json`. Each result identifies the provider and installed path. An update records the previous version and checks the selected executable again after installation. A busy CLI or conflicting host configuration has a message explaining why it needs attention. Windows Monitor uses the same launcher for its WSL targets.
+
 Release 2.8.1 updates Windows Monitor to 1.4.2 with readable same-task model/effort/speed details. Linux/WSL Gateway remains 2.8.0; its execution behavior is unchanged and the distribution receipt advances to 2.8.1. Linux does not include a desktop Monitor.
 
 
